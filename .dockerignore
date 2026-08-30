@@ -1,0 +1,12 @@
+.git
+.gitignore
+.tools
+bin
+runtime
+data
+secrets
+.env
+*.zip
+*.log
+*.tmp
+.DS_Store

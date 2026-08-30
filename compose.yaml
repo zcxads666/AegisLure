@@ -1,0 +1,77 @@
+services:
+  aegislure:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${HP_IMAGE:-aegislure:standalone-v1}
+    restart: unless-stopped
+    read_only: true
+    # The bind-mounted runtime directory is created by the installing user.
+    # Keep the container non-root while matching that user for writable state.
+    user: "${HP_CONTAINER_UID:-1000}:${HP_CONTAINER_GID:-1000}"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /var/lib/aegislure/config.json && kill -0 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1.0
+    environment:
+      HP_CONFIG: /var/lib/aegislure/config.json
+      HP_DATA_DIR: /var/lib/aegislure/data
+      HP_PROFILES: ${HP_PROFILES:-ollama,vllm}
+      HP_ADMIN_PORT: ${HP_ADMIN_PORT:-28443}
+      HP_COOKIE_SECURE: "1"
+      # Public profile listeners are plain HTTP in this baseline. Set this to
+      # 1 only when a trusted HTTPS edge terminates those listeners too.
+      HP_PUBLIC_COOKIE_SECURE: "0"
+      HP_TLS_CERT: /var/lib/aegislure/secrets/admin.crt
+      HP_TLS_KEY: /var/lib/aegislure/secrets/admin.key
+    volumes:
+      - ./runtime:/var/lib/aegislure
+    ports:
+      - target: ${NEW_API_TARGET_PORT:-3000}
+        published: "${NEW_API_PORT:-3000}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: ${VLLM_TARGET_PORT:-8000}
+        published: "${VLLM_PORT:-8000}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: ${OLLAMA_TARGET_PORT:-11434}
+        published: "${OLLAMA_PORT:-11434}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: ${SGLANG_TARGET_PORT:-30000}
+        published: "${SGLANG_PORT:-30000}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: ${LOCALAI_TARGET_PORT:-8080}
+        published: "${LOCALAI_PORT:-8080}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: ${HP_ADMIN_PORT:-28443}
+        published: "${HP_ADMIN_PORT:-28443}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+    networks:
+      # Docker Desktop does not create a host-side port publisher when the
+      # container's default network is `internal: true`. Keep the bait and
+      # admin networks isolated, but put the published listeners on this
+      # dedicated edge bridge. Masquerading is disabled because the process
+      # has no legitimate outbound dependency.
+      - edge_net
+      - bait_net
+      - admin_net
+
+networks:
+  edge_net:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "false"
+      com.docker.network.bridge.enable_icc: "false"
+  bait_net:
+    internal: true
+  admin_net:
+    internal: true

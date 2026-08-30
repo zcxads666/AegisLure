@@ -1,0 +1,714 @@
+package app
+
+import (
+	"bytes"
+	"context"
+	"crypto/tls"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/zcxads666/AegisLure/internal/config"
+	"github.com/zcxads666/AegisLure/internal/detect"
+	"github.com/zcxads666/AegisLure/internal/model"
+	"github.com/zcxads666/AegisLure/internal/profiles"
+	"github.com/zcxads666/AegisLure/internal/security"
+	"github.com/zcxads666/AegisLure/internal/store"
+)
+
+type Session struct {
+	ID        string
+	Product   string
+	UserID    string
+	CreatedAt time.Time
+	LastSeen  time.Time
+}
+
+type Observation struct {
+	EventType             string
+	RouteTemplate         string
+	ModelID               string
+	ModelResolved         bool
+	InvocationAttempted   bool
+	AuthOutcome           string
+	ExecutionOutcome      string
+	EffectOutcome         string
+	InvocationID          string
+	InvocationLevel       string
+	ResponseObserved      bool
+	SimulatedInputTokens  int
+	SimulatedOutputTokens int
+	SimulatedCost         int64
+	IntentClass           string
+	ExtraScore            int
+	ExtraReasons          []string
+	MatchedRuleIDs        []string
+	CredentialFingerprint string
+	Metadata              map[string]string
+}
+
+type App struct {
+	cfg            *config.Config
+	store          *store.Store
+	profiles       map[string]profiles.Profile
+	log            *log.Logger
+	mu             sync.Mutex
+	sessions       map[string]Session
+	anonymous      map[string]string
+	adminSessions  map[string]AdminSession
+	setupMu        sync.Mutex
+	rateMu         sync.Mutex
+	rateBuckets    map[string]rateBucket
+	publicSem      chan struct{}
+	personaMu      sync.Mutex
+	personaRuntime map[string]*personaRuntimeState
+	servers        []*http.Server
+}
+
+type rateBucket struct {
+	StartedAt time.Time
+	Count     int
+}
+
+func New(cfg *config.Config, st *store.Store) *App {
+	return &App{
+		cfg: cfg, store: st, profiles: profiles.Build(cfg), log: log.New(os.Stdout, "aegislure ", log.LstdFlags|log.LUTC), sessions: make(map[string]Session), anonymous: make(map[string]string), adminSessions: make(map[string]AdminSession), rateBuckets: make(map[string]rateBucket), publicSem: make(chan struct{}, 64), personaRuntime: make(map[string]*personaRuntimeState),
+	}
+}
+
+func (a *App) Start() error {
+	listeners := make([]net.Listener, 0, len(a.cfg.EnabledProfiles)+1)
+	for _, name := range a.cfg.EnabledProfiles {
+		profile, ok := a.profiles[name]
+		if !ok {
+			return fmt.Errorf("unknown profile %q", name)
+		}
+		if profile.DefaultPort == 0 {
+			return fmt.Errorf("profile %q has no configured port", name)
+		}
+		addr := fmt.Sprintf("%s:%d", a.cfg.PublicBind, profile.DefaultPort)
+		listener, err := net.Listen("tcp", addr)
+		if err != nil {
+			for _, bound := range listeners {
+				_ = bound.Close()
+			}
+			return fmt.Errorf("bind %s: %w", addr, err)
+		}
+		listeners = append(listeners, listener)
+		server := &http.Server{Addr: addr, Handler: a.publicHandler(profile), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 35 * time.Second, IdleTimeout: 15 * time.Second, MaxHeaderBytes: 32 * 1024}
+		a.servers = append(a.servers, server)
+		go a.serve(server, listener, false)
+	}
+	adminAddr := fmt.Sprintf("%s:%d", a.cfg.AdminBind, a.cfg.AdminPort)
+	adminListener, err := net.Listen("tcp", adminAddr)
+	if err != nil {
+		for _, bound := range listeners {
+			_ = bound.Close()
+		}
+		return fmt.Errorf("bind admin %s: %w", adminAddr, err)
+	}
+	if certFile, keyFile := os.Getenv("HP_TLS_CERT"), os.Getenv("HP_TLS_KEY"); certFile != "" && keyFile != "" {
+		cert, certErr := tls.LoadX509KeyPair(certFile, keyFile)
+		if certErr != nil {
+			_ = adminListener.Close()
+			for _, bound := range listeners {
+				_ = bound.Close()
+			}
+			return fmt.Errorf("load admin TLS certificate: %w", certErr)
+		}
+		adminListener = tls.NewListener(adminListener, &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}, CurvePreferences: []tls.CurveID{tls.X25519, tls.CurveP256}})
+	}
+	listeners = append(listeners, adminListener)
+	admin := &http.Server{Addr: adminAddr, Handler: a.adminHandler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 35 * time.Second, IdleTimeout: 15 * time.Second, MaxHeaderBytes: 32 * 1024}
+	a.servers = append(a.servers, admin)
+	go a.serve(admin, adminListener, true)
+	return nil
+}
+
+func (a *App) serve(server *http.Server, listener net.Listener, admin bool) {
+	a.log.Printf("listening role=%s addr=%s", map[bool]string{true: "admin", false: "public"}[admin], server.Addr)
+	err := server.Serve(listener)
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		a.log.Printf("listener stopped role=%s addr=%s error=%v", map[bool]string{true: "admin", false: "public"}[admin], server.Addr, err)
+	}
+}
+
+func (a *App) Shutdown(ctx context.Context) error {
+	var first error
+	for _, server := range a.servers {
+		if err := server.Shutdown(ctx); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+func (a *App) publicHandler(profile profiles.Profile) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		setSecurityHeaders(w)
+		if profile.Product == model.ProductVLLM {
+			w.Header().Set("Server", "uvicorn")
+		}
+		select {
+		case a.publicSem <- struct{}{}:
+			defer func() { <-a.publicSem }()
+		default:
+			a.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": map[string]string{"message": "service busy", "type": "rate_limited"}})
+			return
+		}
+		start := time.Now()
+		body, tooLarge := readBoundedBody(r, 1<<20)
+		cw := &captureWriter{ResponseWriter: w}
+		session := a.sessionFor(r, profile.Product)
+		route := profiles.Route(profile.Product, r.Method, r.URL.Path)
+		obs := &Observation{RouteTemplate: route, ResponseObserved: true, Metadata: map[string]string{"event_type": "http.request.classified", "scenario": profile.Scenario}}
+		if r.ContentLength >= 0 {
+			obs.Metadata["declared_body_bytes"] = fmt.Sprintf("%d", r.ContentLength)
+		}
+		if tooLarge {
+			obs.Metadata["body_truncated"] = "true"
+		}
+		if len(r.Header) > 100 || headerBytes(r) > 32*1024 {
+			obs.ExtraScore = 20
+			obs.ExtraReasons = append(obs.ExtraReasons, "request_header_limit_exceeded")
+			a.writeJSON(cw, http.StatusRequestHeaderFieldsTooLarge, map[string]any{"error": map[string]string{"message": "request headers too large", "type": "invalid_request_error"}})
+		} else if requiresPost(route) && r.Method != http.MethodPost {
+			cw.Header().Set("Allow", http.MethodPost)
+			a.writeMethodNotAllowed(cw, profile.Product)
+		} else if tooLarge {
+			obs.ExtraScore = 20
+			obs.ExtraReasons = append(obs.ExtraReasons, "request_body_limit_exceeded")
+			a.writeJSON(cw, http.StatusRequestEntityTooLarge, map[string]any{"error": map[string]string{"message": "request body too large", "type": "invalid_request_error"}})
+		} else {
+			a.handleProduct(cw, r, profile, session, body, obs)
+		}
+		if cw.status == 0 {
+			cw.status = http.StatusOK
+		}
+		if obs.RouteTemplate == "" {
+			obs.RouteTemplate = route
+		}
+		a.record(profile, r, body, cw, session, obs, time.Since(start))
+	})
+}
+
+func (a *App) sessionFor(r *http.Request, product string) Session {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	sourceIP, _, splitErr := net.SplitHostPort(r.RemoteAddr)
+	if splitErr != nil || sourceIP == "" {
+		sourceIP = r.RemoteAddr
+	}
+	anonymousKey := security.Fingerprint(a.cfg.InstanceKey, sourceIP+"\x00"+product+"\x00"+r.UserAgent())
+	if existingID := a.anonymous[anonymousKey]; existingID != "" {
+		if existing, ok := a.sessions[existingID]; ok && time.Since(existing.LastSeen) <= 30*time.Minute {
+			existing.LastSeen = time.Now().UTC()
+			a.sessions[existingID] = existing
+			return existing
+		}
+		delete(a.anonymous, anonymousKey)
+	}
+	id, err := security.RandomToken(18)
+	if err != nil {
+		id = fmt.Sprintf("session-%d", time.Now().UnixNano())
+	}
+	now := time.Now().UTC()
+	session := Session{ID: id, Product: product, CreatedAt: now, LastSeen: now}
+	a.sessions[id] = session
+	a.anonymous[anonymousKey] = id
+	if len(a.anonymous) > 4096 {
+		for key, sessionID := range a.anonymous {
+			if value, ok := a.sessions[sessionID]; !ok || time.Since(value.LastSeen) > 30*time.Minute {
+				delete(a.anonymous, key)
+			}
+		}
+	}
+	return session
+}
+
+func (a *App) setSessionUser(sessionID, userID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	session := a.sessions[sessionID]
+	session.UserID = userID
+	session.LastSeen = time.Now().UTC()
+	a.sessions[sessionID] = session
+}
+
+func (a *App) currentSession(id string) (Session, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	session, ok := a.sessions[id]
+	if ok && time.Since(session.LastSeen) > 24*time.Hour {
+		delete(a.sessions, id)
+		return Session{}, false
+	}
+	return session, ok
+}
+
+func readBoundedBody(r *http.Request, limit int64) ([]byte, bool) {
+	if r.Body == nil {
+		return nil, false
+	}
+	defer r.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
+	if err != nil {
+		return b, true
+	}
+	if int64(len(b)) > limit {
+		// Consume only a small bounded tail so a compliant client can be
+		// rejected without making memory or CPU proportional to its body.
+		_, _ = io.CopyN(io.Discard, r.Body, 64*1024)
+		return b[:limit], true
+	}
+	return b, false
+}
+
+func headerBytes(r *http.Request) int {
+	total := 0
+	for name, values := range r.Header {
+		total += len(name)
+		for _, value := range values {
+			total += len(value)
+		}
+	}
+	return total
+}
+
+func requiresPost(route string) bool {
+	switch route {
+	case "newapi.user.register", "newapi.user.login", "newapi.checkin", "newapi.token.create", "openai.chat.completions", "openai.completions", "openai.responses", "openai.embeddings", "ollama.show", "ollama.generate", "ollama.chat", "ollama.embeddings", "ollama.pull", "ollama.push", "ollama.create", "ollama.copy", "ollama.delete", "vllm.invocations", "vllm.tokenize", "vllm.detokenize", "sglang.generate", "sglang.lora.load", "sglang.weights.update", "localai.models.apply", "localai.models.delete", "localai.audio.transcriptions":
+		return true
+	default:
+		return false
+	}
+}
+
+type captureWriter struct {
+	http.ResponseWriter
+	status int
+	bytes  int64
+}
+
+func (w *captureWriter) WriteHeader(status int) {
+	if w.status != 0 {
+		return
+	}
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *captureWriter) Write(b []byte) (int, error) {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	n, err := w.ResponseWriter.Write(b)
+	w.bytes += int64(n)
+	return n, err
+}
+
+func (w *captureWriter) Flush() {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (a *App) record(profile profiles.Profile, r *http.Request, body []byte, cw *captureWriter, session Session, obs *Observation, duration time.Duration) {
+	digest, preview := security.BodyDigest(body, 2048)
+	analysis := detect.Analyze(profile.Product, obs.RouteTemplate, string(body))
+	score := analysis.Score + obs.ExtraScore
+	if score > 100 {
+		score = 100
+	}
+	intent := analysis.IntentClass
+	if obs.IntentClass != "" {
+		intent = obs.IntentClass
+	}
+	if obs.AuthOutcome == "bypass_simulated" || obs.AuthOutcome == "leaked_key_reused" {
+		score += 40
+		if score > 100 {
+			score = 100
+		}
+		intent = "exploit_chain"
+	}
+	reasons := append([]string{}, analysis.Reasons...)
+	reasons = append(reasons, obs.ExtraReasons...)
+	if obs.AuthOutcome == "bypass_simulated" {
+		reasons = append(reasons, "auth_bypass_then_honey_invoke")
+	}
+	if obs.AuthOutcome == "leaked_key_reused" {
+		reasons = append(reasons, "honey_credential_reuse")
+	}
+	matchedRuleIDs := append([]string{}, obs.MatchedRuleIDs...)
+	matchedRuleIDs = append(matchedRuleIDs, detect.BuiltinRuleIDs(reasons)...)
+	level := obs.InvocationLevel
+	if level == "" && obs.ExecutionOutcome != "" {
+		level = detect.InvocationLevel(obs.AuthOutcome, obs.ExecutionOutcome, obs.ResponseObserved, obs.EffectOutcome == "verified")
+	}
+	sourceIP, sourcePort, _ := net.SplitHostPort(r.RemoteAddr)
+	if sourceIP == "" {
+		sourceIP = r.RemoteAddr
+	}
+	modelID := obs.ModelID
+	modelResolved := obs.ModelResolved
+	if obs.InvocationID != "" && modelID == "" {
+		modelID = a.requestModel(body)
+	}
+	if obs.InvocationID != "" && modelID == "" {
+		modelResolved = true
+	}
+	eventType := obs.EventType
+	if obs.InvocationID != "" {
+		switch obs.ExecutionOutcome {
+		case "rejected_before_dispatch":
+			eventType = "llm.invoke.rejected"
+		case "synthetic_stream_completed":
+			eventType = "llm.stream.completed"
+		case "synthetic_stream_started":
+			eventType = "llm.stream.started"
+		case "synthetic_accepted":
+			eventType = "llm.invoke.accepted"
+		}
+	}
+	if eventType == "" {
+		eventType = "http.request.classified"
+	}
+	event := model.Event{
+		EventID: security.MustRandomToken(16), EventType: eventType, ObservedAt: time.Now().UTC(), Product: profile.Product, ProfileID: profile.ID, RouteTemplate: obs.RouteTemplate,
+		Method: r.Method, SourceIP: sourceIP, SourcePort: sourcePort, UserAgent: security.RedactPreview(r.UserAgent(), 256), ContentType: r.Header.Get("Content-Type"), Status: cw.status,
+		RequestBytes: int64(len(body)), ResponseBytes: cw.bytes, DurationMS: duration.Milliseconds(), BodySHA256: digest, BodyPreview: preview, BodyBytesRead: int64(len(body)),
+		HeaderNames: headerNames(r), SessionID: session.ID, InvocationID: obs.InvocationID, CredentialFingerprint: obs.CredentialFingerprint, ModelID: modelID, ModelResolved: modelResolved, InvocationAttempted: obs.InvocationAttempted || obs.InvocationID != "", AuthOutcome: obs.AuthOutcome, ExecutionOutcome: obs.ExecutionOutcome, EffectOutcome: obs.EffectOutcome,
+		ResponseObserved: obs.ResponseObserved, InvocationLevel: model.InvocationLevel(level), SimulatedInputTokens: obs.SimulatedInputTokens, SimulatedOutputTokens: obs.SimulatedOutputTokens, SimulatedCost: obs.SimulatedCost, IntentClass: intent, Score: score, Confidence: analysis.Confidence, ReasonCodes: uniqueStrings(reasons), MatchedRuleIDs: uniqueStrings(matchedRuleIDs), Metadata: obs.Metadata,
+	}
+	if event.Score >= 60 {
+		event.Confidence = "high"
+	}
+	if err := a.store.AppendEvent(event); err != nil {
+		a.log.Printf("event append failed: %v", err)
+	}
+}
+
+func headerNames(r *http.Request) []string {
+	result := make([]string, 0, len(r.Header))
+	for name := range r.Header {
+		result = append(result, strings.ToLower(name))
+	}
+	return result
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]bool)
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value != "" && !seen[value] {
+			seen[value] = true
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
+func (a *App) writeJSON(w http.ResponseWriter, status int, value any) {
+	setSecurityHeaders(w)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
+}
+
+func (a *App) writeHTML(w http.ResponseWriter, status int, title, body string) {
+	a.writeHTMLWithNonce(w, status, title, body, "")
+}
+
+func (a *App) writeHTMLWithNonce(w http.ResponseWriter, status int, title, body, nonce string) {
+	setSecurityHeaders(w)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	// The admin page uses same-origin fetch() for setup, login and dashboard
+	// calls. Keep the default deny policy, but explicitly allow those
+	// same-origin connections; relying on default-src would make browsers
+	// block the page's own API requests.
+	csp := "default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'"
+	if nonce != "" {
+		csp += "; script-src 'nonce-" + nonce + "'"
+	}
+	w.Header().Set("Content-Security-Policy", csp)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(status)
+	if strings.HasPrefix(strings.TrimSpace(body), "<!doctype html>") {
+		_, _ = fmt.Fprint(w, body)
+		return
+	}
+	fmt.Fprintf(w, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>%s</title><style>body{font-family:system-ui,sans-serif;max-width:860px;margin:3rem auto;padding:0 1rem;background:#101827;color:#e5edf7}a{color:#8bd3ff}code,pre{background:#182438;padding:.25rem .4rem;border-radius:4px}button,input{padding:.6rem;margin:.25rem 0;border-radius:5px;border:1px solid #52657f;background:#122036;color:#fff}</style></head><body>%s</body></html>", htmlEscape(title), body)
+}
+
+func setSecurityHeaders(w http.ResponseWriter) {
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Frame-Options", "DENY")
+}
+
+func (a *App) allowRate(key string, limit int, window time.Duration) bool {
+	now := time.Now()
+	a.rateMu.Lock()
+	defer a.rateMu.Unlock()
+	if len(a.rateBuckets) > 4096 {
+		for name, bucket := range a.rateBuckets {
+			if now.Sub(bucket.StartedAt) >= window {
+				delete(a.rateBuckets, name)
+			}
+		}
+	}
+	bucket := a.rateBuckets[key]
+	if bucket.StartedAt.IsZero() || now.Sub(bucket.StartedAt) >= window {
+		bucket = rateBucket{StartedAt: now}
+	}
+	if bucket.Count >= limit {
+		a.rateBuckets[key] = bucket
+		return false
+	}
+	bucket.Count++
+	a.rateBuckets[key] = bucket
+	return true
+}
+
+func htmlEscape(value string) string {
+	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "\"", "&quot;", "'", "&#39;").Replace(value)
+}
+
+func (a *App) jsonBody(body []byte) map[string]any {
+	value, ok := decodeJSONObject(body)
+	if !ok {
+		return map[string]any{}
+	}
+	return value
+}
+
+// decodeJSONObject applies a small structural budget before decoding an
+// attacker-controlled JSON object. The HTTP body limit is still enforced by
+// the edge; this protects the parser from deeply nested or token-heavy input.
+func decodeJSONObject(body []byte) (map[string]any, bool) {
+	if len(body) == 0 || len(body) > 1<<20 {
+		return nil, false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	depth, tokens := 0, 0
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, false
+		}
+		tokens++
+		if tokens > 20000 {
+			return nil, false
+		}
+		switch value := token.(type) {
+		case json.Delim:
+			switch value {
+			case '{', '[':
+				depth++
+				if depth > 64 {
+					return nil, false
+				}
+			case '}', ']':
+				depth--
+				if depth < 0 {
+					return nil, false
+				}
+			}
+		case string:
+			if len(value) > 256*1024 {
+				return nil, false
+			}
+		}
+	}
+	if depth != 0 {
+		return nil, false
+	}
+	var value map[string]any
+	if json.Unmarshal(body, &value) != nil || value == nil {
+		return nil, false
+	}
+	return value, true
+}
+
+func stringValue(value any) string {
+	if text, ok := value.(string); ok {
+		return text
+	}
+	return ""
+}
+
+func (a *App) bearer(r *http.Request) string {
+	header := r.Header.Get("Authorization")
+	if strings.HasPrefix(strings.ToLower(header), "bearer ") {
+		return strings.TrimSpace(header[7:])
+	}
+	if value := r.Header.Get("X-API-Key"); value != "" {
+		return value
+	}
+	return ""
+}
+
+func (a *App) honeyAuth(r *http.Request) (model.HoneyToken, string) {
+	value := a.bearer(r)
+	if value == "" {
+		return model.HoneyToken{}, "missing"
+	}
+	hash := security.Fingerprint(a.cfg.InstanceKey, value)
+	token, ok := a.store.FindToken(hash)
+	if !ok {
+		return model.HoneyToken{}, "invalid"
+	}
+	return token, "valid_honey_key"
+}
+
+func (a *App) requestModel(body []byte) string {
+	value := a.jsonBody(body)
+	if modelID := stringValue(value["model"]); modelID != "" {
+		return modelID
+	}
+	return ""
+}
+
+func personaResponseText(body []byte, product string) string {
+	value := string(body)
+	lower := strings.ToLower(value)
+	if strings.Contains(lower, "reply with ok") || strings.Contains(lower, "respond with ok") {
+		return "OK"
+	}
+	if strings.Contains(lower, "what model") {
+		return "The server is ready to process requests."
+	}
+	if product == model.ProductOllama {
+		return "The request was processed successfully."
+	}
+	return "The request was completed successfully."
+}
+
+func syntheticText(body []byte, product string) string {
+	return personaResponseText(body, product)
+}
+
+func (a *App) startInvocation(obs *Observation, auth string, accepted bool) {
+	id, err := security.RandomToken(12)
+	if err != nil {
+		id = fmt.Sprintf("inv-%d", time.Now().UnixNano())
+	}
+	obs.InvocationID = "inv_" + id
+	obs.InvocationAttempted = true
+	obs.AuthOutcome = auth
+	obs.ResponseObserved = true
+	if accepted {
+		obs.ExecutionOutcome = "synthetic_accepted"
+	} else {
+		obs.ExecutionOutcome = "rejected_before_dispatch"
+	}
+}
+
+func (a *App) writeOpenAIResponse(w http.ResponseWriter, body []byte, product string, stream bool, obs *Observation, modelName string) {
+	a.writeOpenAIResponseForRoute(w, body, product, "openai.chat.completions", stream, obs, modelName)
+}
+
+func (a *App) writeOpenAIResponseForRoute(w http.ResponseWriter, body []byte, product, route string, stream bool, obs *Observation, modelName string) {
+	obs.ExecutionOutcome = "synthetic_accepted"
+	if ruleID := detect.LivenessRuleID(string(body)); ruleID != "" {
+		obs.MatchedRuleIDs = append(obs.MatchedRuleIDs, ruleID)
+		if obs.Metadata == nil {
+			obs.Metadata = map[string]string{}
+		}
+		obs.Metadata["matched_liveness_rule"] = ruleID
+	}
+	text := personaResponseText(body, product)
+	inputTokens := maxInt(8, len(body)/4)
+	outputTokens := maxInt(6, len(text)/4)
+	obs.SimulatedInputTokens = inputTokens
+	obs.SimulatedOutputTokens = outputTokens
+	obs.SimulatedCost = int64(inputTokens + outputTokens)
+	obs.ResponseObserved = true
+	if route == "openai.embeddings" {
+		a.writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": []any{map[string]any{"object": "embedding", "embedding": []float64{0.0123, -0.0456, 0.0789}, "index": 0}}, "model": modelName, "usage": map[string]int{"prompt_tokens": inputTokens, "total_tokens": inputTokens}})
+		return
+	}
+	if stream {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		chunks := []string{"The request was ", "processed successfully."}
+		for i, chunk := range chunks {
+			payload := map[string]any{"id": obs.InvocationID, "choices": []any{map[string]any{"index": 0}}}
+			if route == "openai.completions" {
+				payload["object"] = "text_completion"
+				payload["choices"] = []any{map[string]any{"index": 0, "text": chunk, "finish_reason": nil}}
+			} else if route == "openai.responses" {
+				payload["type"] = "response.output_text.delta"
+				payload["delta"] = chunk
+			} else {
+				payload["object"] = "chat.completion.chunk"
+				payload["choices"] = []any{map[string]any{"index": 0, "delta": map[string]string{"content": chunk}}}
+			}
+			if i == 0 {
+				payload["model"] = modelName
+			}
+			encoded, _ := json.Marshal(payload)
+			fmt.Fprintf(w, "data: %s\n\n", encoded)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		obs.ExecutionOutcome = "synthetic_stream_completed"
+		return
+	}
+	if route == "openai.completions" {
+		a.writeJSON(w, http.StatusOK, map[string]any{"id": obs.InvocationID, "object": "text_completion", "created": time.Now().Unix(), "model": modelName, "choices": []any{map[string]any{"index": 0, "text": text, "finish_reason": "stop"}}, "usage": map[string]int{"prompt_tokens": inputTokens, "completion_tokens": outputTokens, "total_tokens": inputTokens + outputTokens}})
+		return
+	}
+	if route == "openai.responses" {
+		a.writeJSON(w, http.StatusOK, map[string]any{"id": obs.InvocationID, "object": "response", "created_at": time.Now().Unix(), "model": modelName, "status": "completed", "output_text": text, "output": []any{map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": text}}}}, "usage": map[string]int{"input_tokens": inputTokens, "output_tokens": outputTokens, "total_tokens": inputTokens + outputTokens}})
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"id": obs.InvocationID, "object": "chat.completion", "created": time.Now().Unix(), "model": modelName, "choices": []any{map[string]any{"index": 0, "message": map[string]string{"role": "assistant", "content": text}, "finish_reason": "stop"}}, "usage": map[string]int{"prompt_tokens": inputTokens, "completion_tokens": outputTokens, "total_tokens": inputTokens + outputTokens}})
+}
+
+func (a *App) writeOllamaStream(w http.ResponseWriter, body []byte, modelName string, obs *Observation) {
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	flusher, _ := w.(http.Flusher)
+	chunks := []string{"The request was ", "processed successfully."}
+	for _, chunk := range chunks {
+		_ = json.NewEncoder(w).Encode(map[string]any{"model": modelName, "created_at": time.Now().UTC().Format(time.RFC3339Nano), "response": chunk, "done": false})
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"model": modelName, "created_at": time.Now().UTC().Format(time.RFC3339Nano), "done": true, "total_duration": 28000000, "prompt_eval_count": maxInt(8, len(body)/4), "eval_count": 12})
+	obs.ExecutionOutcome = "synthetic_stream_completed"
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func (a *App) statePath() string {
+	return filepath.Join(a.cfg.DataDir, "state.json")
+}

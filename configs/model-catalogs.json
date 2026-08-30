@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "revision": "seed-2026q3",
+  "catalogs": [
+    {
+      "id": "newapi-popular-closed-2026q3",
+      "origin_policy": "closed",
+      "products": ["new-api"],
+      "models": ["gpt-5.6-sol", "claude-sonnet-5", "gemini-3.7-flash"]
+    },
+    {
+      "id": "selfhosted-popular-open-2026q3",
+      "origin_policy": "open",
+      "products": ["vllm", "ollama", "sglang", "localai"],
+      "models": ["Qwen/Qwen3.6-35B-A3B", "openai/gpt-oss-20b", "meta-llama/Llama-4-Scout-17B-16E-Instruct"]
+    }
+  ],
+  "safety_contract": {
+    "contains_endpoint": false,
+    "contains_secret": false,
+    "contains_download_url": false,
+    "real_inference": false
+  }
+}

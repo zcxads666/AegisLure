@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "revision": "builtin-rules-v1",
+  "dsl": {"allowed_types": ["atomic", "sequence", "threshold", "credential_reuse", "campaign"], "regex_engine": "RE2", "code_execution": false},
+  "rules": [
+    {"id": "SSRF_URL_CLASS_V1", "type": "atomic", "reason_code": "exploit_probe_ssrf", "score": 45, "confidence": "high", "url_classes": ["loopback", "unspecified", "link_local", "private", "file_scheme"]},
+    {"id": "PATH_TRAVERSAL_V1", "type": "atomic", "reason_code": "path_traversal_probe", "score": 50, "confidence": "high"},
+    {"id": "SERIALIZATION_PROBE_V1", "type": "atomic", "reason_code": "dangerous_serialization_or_execution_probe", "score": 60, "confidence": "high"},
+    {"id": "VLLM_KEY_GAP_BYPASS_V1", "type": "sequence", "reason_code": "auth_bypass_then_honey_invoke", "score": 60, "within": "10m", "steps": ["llm.invoke.rejected", "vllm.invocations accepted", "llm.stream.completed"]},
+    {"id": "HONEY_TOKEN_REUSE_V1", "type": "credential_reuse", "reason_code": "honey_credential_reuse", "score": 65, "confidence": "high"},
+    {"id": "NEWAPI_NORMAL_USE_V1", "type": "sequence", "reason_code": "intentional_compute_use", "score": 35, "within": "30m", "steps": ["newapi.user.register.success", "newapi.checkin.success", "newapi.token.created", "llm.invoke.accepted"]}
+  ]
+}

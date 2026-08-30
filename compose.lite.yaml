@@ -1,0 +1,6 @@
+services:
+  aegislure:
+    mem_limit: 256m
+    cpus: 0.5
+    environment:
+      HP_PROFILES: ${HP_PROFILES:-ollama,vllm}

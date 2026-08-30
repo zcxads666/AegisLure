@@ -1,0 +1,13 @@
+/bin/
+/.tools/
+/data/
+/secrets/
+/runtime/
+/.env
+*.log
+*.sqlite
+*.sqlite-*
+*.pem
+*.key
+*.crt
+coverage.out
