@@ -94,6 +94,6 @@ Windows 的 Hyper-V 防火墙规则中允许对应 TCP 端口。WSL NAT 模式�
 
 ## 参考代码
 
-`new-api` 上游派生仓库位于同级目录 `/home/zcxads/projects/new-api`，AegisLure 本仓库中的 `new-api` profile 只模拟安全的用户侧业务契约。任何要合并进上游派生版的变更，都必须保留 AGPLv3、上游历史、署名、原仓库链接和对应 source-code 入口，并通过出站/secret/危险解析审查。
+`new-api` 上游派生仓库由部署者在项目外部的受控源码目录维护，AegisLure 本仓库中的 `new-api` profile 只模拟安全的用户侧业务契约。任何要合并进上游派生版的变更，都必须保留 AGPLv3、上游历史、署名、原仓库链接和对应 source-code 入口，并通过出站/secret/危险解析审查。
 
 架构与发布门见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，运维命令见 [docs/OPERATIONS.md](docs/OPERATIONS.md)，安全边界见 [SECURITY.md](SECURITY.md)。
