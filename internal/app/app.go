@@ -20,6 +20,7 @@ import (
 	"github.com/zcxads666/AegisLure/internal/config"
 	"github.com/zcxads666/AegisLure/internal/detect"
 	"github.com/zcxads666/AegisLure/internal/model"
+	"github.com/zcxads666/AegisLure/internal/oauth"
 	"github.com/zcxads666/AegisLure/internal/profiles"
 	"github.com/zcxads666/AegisLure/internal/security"
 	"github.com/zcxads666/AegisLure/internal/store"
@@ -53,6 +54,7 @@ type Observation struct {
 	ExtraReasons          []string
 	MatchedRuleIDs        []string
 	CredentialFingerprint string
+	ScoreOverride         *int
 	Metadata              map[string]string
 }
 
@@ -72,6 +74,7 @@ type App struct {
 	personaMu      sync.Mutex
 	personaRuntime map[string]*personaRuntimeState
 	ruleEngine     *detect.RuleEngine
+	oauthBroker    *oauth.Broker
 	serverMu       sync.RWMutex
 	profileServers map[string]*http.Server
 	profilePorts   map[string]net.Listener
@@ -91,6 +94,21 @@ func New(cfg *config.Config, st *store.Store) *App {
 	seedBuiltinPacks(a)
 	loadPersistedRuleEngine(a)
 	return a
+}
+
+// SetOAuthBroker attaches the optional, fixed-endpoint identity broker. A
+// nil broker leaves all OAuth routes disabled and performs no outbound work.
+// Deployments should keep the broker in its own process/network boundary.
+func (a *App) SetOAuthBroker(broker *oauth.Broker) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.oauthBroker = broker
+}
+
+func (a *App) currentOAuthBroker() *oauth.Broker {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.oauthBroker
 }
 
 func (a *App) Start() error {
@@ -372,7 +390,7 @@ func allowedMethods(route string) string {
 		return method
 	}
 	switch route {
-	case "newapi.token.list", "newapi.user.status", "newapi.usage.logs", "ollama.home", "ollama.version", "ollama.tags", "ollama.ps", "openai.models", "vllm.root", "vllm.health", "vllm.version", "vllm.metrics", "vllm.docs", "vllm.openapi", "sglang.health", "sglang.model_info", "sglang.metrics", "sglang.docs", "sglang.redoc", "sglang.openapi", "sglang.server_info", "localai.home", "localai.health", "localai.metrics", "localai.docs", "localai.models.available", "localai.models.installed", "localai.models.task":
+	case "newapi.oauth.start", "newapi.oauth.callback", "newapi.token.list", "newapi.user.status", "newapi.usage.logs", "ollama.home", "ollama.version", "ollama.tags", "ollama.ps", "openai.models", "vllm.root", "vllm.health", "vllm.version", "vllm.metrics", "vllm.docs", "vllm.openapi", "sglang.health", "sglang.model_info", "sglang.metrics", "sglang.docs", "sglang.redoc", "sglang.openapi", "sglang.server_info", "localai.home", "localai.health", "localai.metrics", "localai.docs", "localai.models.available", "localai.models.installed", "localai.models.task":
 		return http.MethodGet
 	case "newapi.token.update":
 		return http.MethodPatch + ", " + http.MethodPut
@@ -510,6 +528,15 @@ func (a *App) record(profile profiles.Profile, r *http.Request, body []byte, cw 
 		}
 		if custom.Confidence == "high" || event.Confidence == "low" {
 			event.Confidence = custom.Confidence
+		}
+	}
+	if obs.ScoreOverride != nil {
+		event.Score = *obs.ScoreOverride
+		if event.Score < 0 {
+			event.Score = 0
+		}
+		if event.Score > 100 {
+			event.Score = 100
 		}
 	}
 	if err := a.store.AppendEvent(event); err != nil {

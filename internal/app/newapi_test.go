@@ -1,14 +1,27 @@
 package app
 
 import (
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/zcxads666/AegisLure/internal/model"
+	"github.com/zcxads666/AegisLure/internal/oauth"
 	"github.com/zcxads666/AegisLure/internal/profiles"
 	"github.com/zcxads666/AegisLure/internal/security"
 )
+
+type appOAuthRoundTripper struct{}
+
+func (appOAuthRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	body := `{"id":"provider-stable-id"}`
+	if request.URL.Path == "/token" {
+		body = `{"access_token":"provider-access-token","scope":""}`
+	}
+	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+}
 
 func TestNewAPITenantTokenLifecycleAndPrivacy(t *testing.T) {
 	a, cfg, st := newTestApp(t, true)
@@ -147,5 +160,62 @@ func TestNewAPIRegistrationRejectsMalformedVerificationWithoutRawPassword(t *tes
 	}, nil)
 	if resp.StatusCode != http.StatusBadRequest || strings.Contains(string(body), "password123") {
 		t.Fatalf("malformed registration was not safely rejected: %d %s", resp.StatusCode, body)
+	}
+}
+
+func TestNewAPIOAuthBindsHoneyIdentityWithoutRiskOrOutboundByDefault(t *testing.T) {
+	a, cfg, st := newTestApp(t, true)
+	cfg.ProfilePorts[model.ProductNewAPI] = 3000
+	profile := profiles.Build(cfg)[model.ProductNewAPI]
+	client := &inProcessClient{handler: a.publicHandler(profile), cookies: map[string]string{}}
+
+	resp := client.do(t, http.MethodGet, "/api/oauth/github", nil, "")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("OAuth was enabled without a broker: %d", resp.StatusCode)
+	}
+
+	providerConfig := oauth.DefaultProviderConfig(oauth.GitHub)
+	providerConfig.Enabled = true
+	providerConfig.ClientID = "client-id"
+	providerConfig.ClientSecret = "client-secret"
+	providerConfig.RedirectURL = "https://admin.test/api/oauth/github/callback"
+	providerConfig.AuthorizationURL = "http://oauth.test/authorize"
+	providerConfig.TokenURL = "http://oauth.test/token"
+	providerConfig.IdentityURL = "http://oauth.test/user"
+	providerConfig.RevokeURL = ""
+	broker, err := oauth.New(oauth.Config{InstanceKey: cfg.InstanceKey, Providers: map[oauth.Provider]oauth.ProviderConfig{oauth.GitHub: providerConfig}, Client: &http.Client{Transport: appOAuthRoundTripper{}}, AllowTestEndpoints: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.SetOAuthBroker(broker)
+
+	resp = client.do(t, http.MethodGet, "/api/oauth/github/start", nil, "")
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("OAuth start status = %d", resp.StatusCode)
+	}
+	authorizationURL, err := resp.Location()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authorizationURL.Query().Get("client_secret") != "" || authorizationURL.Query().Get("state") == "" {
+		t.Fatalf("unsafe OAuth redirect: %s", authorizationURL)
+	}
+	state := authorizationURL.Query().Get("state")
+	resp, body := doRawJSON(t, client, http.MethodGet, "/api/oauth/github/callback?state="+url.QueryEscape(state)+"&code="+url.QueryEscape("one-time-code"), nil, nil)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"success":true`) {
+		t.Fatalf("OAuth callback failed: %d %s", resp.StatusCode, body)
+	}
+	identities := st.ListHoneyIdentities()
+	if len(identities) != 1 || identities[0].SubjectHMAC == "provider-stable-id" || identities[0].Provider != "github" {
+		t.Fatalf("OAuth identity was not safely persisted: %#v", identities)
+	}
+	events, err := st.Events(-1, model.ProductNewAPI, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.RouteTemplate == "newapi.oauth.callback" && event.Score != 0 {
+			t.Fatalf("ordinary OAuth callback gained risk score: %+v", event)
+		}
 	}
 }

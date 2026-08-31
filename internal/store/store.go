@@ -67,6 +67,7 @@ func Open(dir, key string) (*Store, error) {
 	s.state = model.State{
 		HoneyUsers:   make(map[string]model.HoneyUser),
 		HoneyTokens:  make(map[string]model.HoneyToken),
+		Identities:   make(map[string]model.HoneyIdentity),
 		Effects:      make(map[string]model.VirtualEffect),
 		Quotas:       make(map[string]int64),
 		Packs:        make(map[string]model.ConfigPack),
@@ -261,6 +262,9 @@ func (s *Store) ensureMaps() {
 	}
 	if s.state.HoneyTokens == nil {
 		s.state.HoneyTokens = make(map[string]model.HoneyToken)
+	}
+	if s.state.Identities == nil {
+		s.state.Identities = make(map[string]model.HoneyIdentity)
 	}
 	if s.state.Effects == nil {
 		s.state.Effects = make(map[string]model.VirtualEffect)
@@ -619,6 +623,91 @@ func (s *Store) DeleteToken(userID, tokenID string) error {
 		delete(state.HoneyTokens, tokenID)
 		return nil
 	})
+}
+
+func (s *Store) FindHoneyIdentity(provider, subjectHMAC string) (model.HoneyIdentity, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, identity := range s.state.Identities {
+		if identity.Provider == provider && identity.SubjectHMAC == subjectHMAC && identity.RevokedAt.IsZero() {
+			return identity, true
+		}
+	}
+	return model.HoneyIdentity{}, false
+}
+
+func (s *Store) ListHoneyIdentities() []model.HoneyIdentity {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]model.HoneyIdentity, 0, len(s.state.Identities))
+	for _, identity := range s.state.Identities {
+		identity.Scopes = append([]string(nil), identity.Scopes...)
+		result = append(result, identity)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].LinkedAt.Equal(result[j].LinkedAt) {
+			return result[i].ID < result[j].ID
+		}
+		return result[i].LinkedAt.After(result[j].LinkedAt)
+	})
+	return result
+}
+
+func (s *Store) BindHoneyIdentity(identity model.HoneyIdentity, user model.HoneyUser) (model.HoneyIdentity, error) {
+	if identity.Provider == "" || identity.SubjectHMAC == "" || user.ID == "" {
+		return model.HoneyIdentity{}, errors.New("honey identity is incomplete")
+	}
+	returned := model.HoneyIdentity{}
+	err := s.Update(func(state *model.State) error {
+		for id, existing := range state.Identities {
+			if existing.Provider != identity.Provider || existing.SubjectHMAC != identity.SubjectHMAC || !existing.RevokedAt.IsZero() {
+				continue
+			}
+			now := time.Now().UTC()
+			existing.LastSeenAt = now
+			existing.Scopes = append([]string(nil), identity.Scopes...)
+			state.Identities[id] = existing
+			returned = existing
+			return nil
+		}
+		if _, exists := state.HoneyUsers[user.ID]; !exists {
+			state.HoneyUsers[user.ID] = user
+			state.Quotas[user.ID] = user.VirtualQuota
+		}
+		if identity.ID == "" {
+			identity.ID = "hi_" + identity.SubjectHMAC[:minStringLength(len(identity.SubjectHMAC), 24)]
+		}
+		if identity.LinkedAt.IsZero() {
+			identity.LinkedAt = time.Now().UTC()
+		}
+		if identity.LastSeenAt.IsZero() {
+			identity.LastSeenAt = identity.LinkedAt
+		}
+		identity.Scopes = append([]string(nil), identity.Scopes...)
+		state.Identities[identity.ID] = identity
+		returned = identity
+		return nil
+	})
+	return returned, err
+}
+
+func (s *Store) RevokeHoneyIdentity(id string) error {
+	return s.Update(func(state *model.State) error {
+		identity, ok := state.Identities[id]
+		if !ok {
+			return errors.New("honey identity not found")
+		}
+		identity.RevokedAt = time.Now().UTC()
+		state.Identities[id] = identity
+		return nil
+	})
+}
+
+func minStringLength(value, maximum int) int {
+	if value < maximum {
+		return value
+	}
+	return maximum
 }
 
 func (s *Store) AddQuota(userID string, amount int64) (int64, error) {

@@ -205,6 +205,13 @@ func newAPIRoute(method, path string) string {
 		return "newapi.user.register"
 	case path == "/api/user/login":
 		return "newapi.user.login"
+	case strings.HasPrefix(path, "/api/oauth/"):
+		if strings.HasSuffix(path, "/callback") {
+			return "newapi.oauth.callback"
+		}
+		if strings.HasSuffix(path, "/start") || strings.Count(strings.TrimPrefix(path, "/api/oauth/"), "/") == 0 {
+			return "newapi.oauth.start"
+		}
 	case path == "/api/user/checkin":
 		return "newapi.checkin"
 	case path == "/api/token":

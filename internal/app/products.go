@@ -14,6 +14,7 @@ import (
 
 	"github.com/zcxads666/AegisLure/internal/detect"
 	"github.com/zcxads666/AegisLure/internal/model"
+	"github.com/zcxads666/AegisLure/internal/oauth"
 	"github.com/zcxads666/AegisLure/internal/profiles"
 	"github.com/zcxads666/AegisLure/internal/security"
 )
@@ -43,6 +44,49 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		a.writeHTML(w, http.StatusOK, "Log in", `<h1>Log in</h1><form method="post" action="/api/user/login"><input name="username" placeholder="Username" autocomplete="username"><br><input name="password" type="password" placeholder="Password" autocomplete="current-password"><br><button>Log in</button></form><p><a href="/register">Register</a></p>`)
 	case "newapi.register":
 		a.writeHTML(w, http.StatusOK, "Create account", `<h1>Create account</h1><form method="post" action="/api/user/register"><input name="username" placeholder="Username" autocomplete="username"><br><input name="email" type="email" placeholder="Email" autocomplete="email"><br><input name="password" type="password" placeholder="Password" autocomplete="new-password"><br><button>Create account</button></form><p>OAuth providers, when enabled by the deployment owner, redirect to their official authorization pages.</p>`)
+	case "newapi.oauth.start":
+		broker := a.currentOAuthBroker()
+		provider, ok := newAPIOAuthProvider(r.URL.Path, false)
+		if broker == nil || !ok {
+			a.writeJSON(w, http.StatusNotFound, map[string]any{"error": map[string]string{"message": "Not found", "type": "invalid_request_error"}})
+			return
+		}
+		authorization, err := broker.Begin(provider)
+		if err != nil {
+			a.writeJSON(w, http.StatusNotFound, map[string]any{"error": map[string]string{"message": "Not found", "type": "invalid_request_error"}})
+			return
+		}
+		http.Redirect(w, r, authorization.URL, http.StatusFound)
+	case "newapi.oauth.callback":
+		broker := a.currentOAuthBroker()
+		provider, ok := newAPIOAuthProvider(r.URL.Path, true)
+		if broker == nil || !ok || r.URL.Query().Get("error") != "" {
+			a.writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "OAuth login could not be completed"})
+			return
+		}
+		identity, err := broker.Callback(provider, r.URL.Query().Get("state"), r.URL.Query().Get("code"))
+		if err != nil {
+			obs.Metadata["oauth_callback_outcome"] = "rejected"
+			a.writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "OAuth login could not be completed"})
+			return
+		}
+		user, _, err := a.bindHoneyOAuthIdentity(identity, broker.PolicyMode(provider))
+		if err != nil {
+			obs.Metadata["oauth_callback_outcome"] = "binding_failed"
+			a.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"success": false, "message": "OAuth login could not be completed"})
+			return
+		}
+		_ = a.store.TouchHoneyUser(user.ID, func(current *model.HoneyUser) { current.LastSeen = time.Now().UTC() })
+		a.setSessionUser(session.ID, user.ID)
+		obs.Metadata["oauth_provider"] = string(identity.Provider)
+		obs.Metadata["oauth_scopes"] = strings.Join(identity.Scopes, ",")
+		obs.Metadata["oauth_callback_outcome"] = "accepted"
+		// Ordinary OAuth login is not itself suspicious; only subsequent
+		// behavior contributes risk evidence.
+		score := 0
+		obs.ScoreOverride = &score
+		obs.IntentClass = "normal_use"
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{"id": user.ID, "provider": identity.Provider}})
 	case "newapi.user.register":
 		if r.Method != http.MethodPost {
 			a.methodNotAllowed(w)
@@ -361,6 +405,52 @@ func (a *App) newAPIInvoke(w *captureWriter, r *http.Request, body []byte, sessi
 		return
 	}
 	a.writeOpenAIResponseForRoute(w, body, model.ProductNewAPI, obs.RouteTemplate, streamRequested(r, body), obs, modelName)
+}
+
+func newAPIOAuthProvider(path string, callback bool) (oauth.Provider, bool) {
+	value := strings.TrimPrefix(path, "/api/oauth/")
+	suffix := "/start"
+	if callback {
+		suffix = "/callback"
+	}
+	if strings.HasSuffix(value, suffix) {
+		value = strings.TrimSuffix(value, suffix)
+	}
+	if value == "" || strings.Contains(value, "/") {
+		return "", false
+	}
+	return oauth.ParseProvider(value)
+}
+
+func (a *App) bindHoneyOAuthIdentity(identity oauth.Identity, policyMode string) (model.HoneyUser, model.HoneyIdentity, error) {
+	if identity.Provider == "" || identity.SubjectHMAC == "" {
+		return model.HoneyUser{}, model.HoneyIdentity{}, fmt.Errorf("oauth identity is incomplete")
+	}
+	provider := string(identity.Provider)
+	if existing, ok := a.store.FindHoneyIdentity(provider, identity.SubjectHMAC); ok {
+		user, userOK := a.store.GetHoneyUser(existing.HoneyUserID)
+		if !userOK {
+			return model.HoneyUser{}, model.HoneyIdentity{}, fmt.Errorf("oauth identity user is missing")
+		}
+		updated, err := a.store.BindHoneyIdentity(model.HoneyIdentity{Provider: provider, SubjectHMAC: identity.SubjectHMAC, Scopes: identity.Scopes}, user)
+		return user, updated, err
+	}
+	now := time.Now().UTC()
+	user := model.HoneyUser{
+		ID:                   "hu_" + security.MustRandomToken(10),
+		InstanceID:           a.cfg.InstanceID,
+		UsernameFP:           security.Fingerprint(a.cfg.InstanceKey, "oauth-user:"+provider+":"+identity.SubjectHMAC),
+		UsernameHint:         string(identity.Provider) + " account",
+		PasswordFP:           security.Fingerprint(a.cfg.InstanceKey, "oauth-password:"+identity.SubjectHMAC),
+		PasswordLengthBucket: "oauth",
+		PasswordClasses:      []string{"oauth"},
+		VirtualQuota:         0,
+		CreatedAt:            now,
+		LastSeen:             now,
+	}
+	linked := model.HoneyIdentity{ID: "hi_" + security.MustRandomToken(8), Provider: provider, SubjectHMAC: identity.SubjectHMAC, HoneyUserID: user.ID, Scopes: append([]string(nil), identity.Scopes...), PolicyMode: policyMode, LinkedAt: now, LastSeenAt: now}
+	bound, err := a.store.BindHoneyIdentity(linked, user)
+	return user, bound, err
 }
 
 type newAPITokenOptions struct {

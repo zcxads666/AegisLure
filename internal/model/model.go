@@ -102,6 +102,18 @@ type HoneyToken struct {
 	LastUsedAt     time.Time `json:"last_used_at,omitempty"`
 }
 
+type HoneyIdentity struct {
+	ID          string    `json:"id"`
+	Provider    string    `json:"provider"`
+	SubjectHMAC string    `json:"subject_hmac"`
+	HoneyUserID string    `json:"honey_user_id"`
+	Scopes      []string  `json:"scopes,omitempty"`
+	PolicyMode  string    `json:"policy_mode,omitempty"`
+	LinkedAt    time.Time `json:"linked_at"`
+	LastSeenAt  time.Time `json:"last_seen_at"`
+	RevokedAt   time.Time `json:"revoked_at,omitempty"`
+}
+
 type VirtualEffect struct {
 	ID         string            `json:"id"`
 	OwnerScope string            `json:"owner_scope"`
@@ -150,6 +162,7 @@ type State struct {
 	Admin        AdminState               `json:"admin"`
 	HoneyUsers   map[string]HoneyUser     `json:"honey_users"`
 	HoneyTokens  map[string]HoneyToken    `json:"honey_tokens"`
+	Identities   map[string]HoneyIdentity `json:"identities,omitempty"`
 	Effects      map[string]VirtualEffect `json:"effects"`
 	Quotas       map[string]int64         `json:"quotas"`
 	QuotaLedger  []QuotaEntry             `json:"quota_ledger,omitempty"`
