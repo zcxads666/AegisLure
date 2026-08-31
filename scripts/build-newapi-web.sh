@@ -79,6 +79,42 @@ replace_text "$stage_root/src/features/home/components/sections/features.tsx" \
   "Team Collaboration" "Single-node Isolation"
 replace_text "$stage_root/src/features/home/components/sections/features.tsx" \
   "Multi-user management with flexible permission allocation" "One local tenant with no administrative surface"
+replace_text "$stage_root/src/features/home/components/sections/features.tsx" \
+  "Lightning Fast" "Deterministic Responses"
+replace_text "$stage_root/src/features/home/components/sections/features.tsx" \
+  "Optimized network architecture ensures millisecond response times" "Bounded local responses with stable latency"
+replace_text "$stage_root/src/features/home/components/sections/features.tsx" \
+  "Secure & Reliable" "Local Isolation"
+replace_text "$stage_root/src/features/home/components/sections/features.tsx" \
+  "Enterprise-grade security with comprehensive permission management" "Single-node storage with scoped credentials"
+replace_text "$stage_root/src/features/home/components/sections/features.tsx" \
+  "Global Coverage" "Single-node Boundary"
+replace_text "$stage_root/src/features/home/components/sections/features.tsx" \
+  "Multi-region deployment for stable global access" "One local instance; no multi-region routing"
+replace_text "$stage_root/src/features/home/components/sections/features.tsx" \
+  "Developer Friendly" "Protocol Compatible"
+replace_text "$stage_root/src/features/home/components/sections/features.tsx" \
+  "Compatible API routes for common AI application workflows" "OpenAI-compatible local routes for common client workflows"
+replace_text "$stage_root/src/features/home/components/sections/features.tsx" \
+  "High Performance" "Bounded Runtime"
+replace_text "$stage_root/src/features/home/components/sections/features.tsx" \
+  "Support for high concurrency with automatic load balancing" "Request limits and deterministic synthetic execution"
+
+# The gateway feature tiles are also inherited from the upstream marketing
+# page. Keep the original layout, but make each label describe this local
+# synthetic tenant instead of routing, billing, or pass-through services.
+replace_text "$stage_root/src/features/home/constants.ts" \
+  "'Cost Tracking'," "'Usage Records',"
+replace_text "$stage_root/src/features/home/constants.ts" \
+  "'Budgets'," "'Virtual Quota',"
+replace_text "$stage_root/src/features/home/constants.ts" \
+  "'Load Balancing'," "'Local Routing',"
+replace_text "$stage_root/src/features/home/constants.ts" \
+  "'Rate Limiting'," "'Request Bounds',"
+replace_text "$stage_root/src/features/home/constants.ts" \
+  "'Prompt Caching'," "'Deterministic Output',"
+replace_text "$stage_root/src/features/home/constants.ts" \
+  "'Pass-Through'," "'No Pass-Through',"
 
 # The upstream mobile drawer hard-codes a wallet link. Remove that link and
 # its now-unused icon from the staged copy.
