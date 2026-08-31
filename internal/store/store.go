@@ -134,6 +134,14 @@ CREATE INDEX IF NOT EXISTS events_observed_at_idx ON events(observed_at);
 CREATE INDEX IF NOT EXISTS events_product_idx ON events(product, observed_at);
 CREATE INDEX IF NOT EXISTS events_source_ip_idx ON events(source_ip, observed_at);
 CREATE INDEX IF NOT EXISTS events_route_idx ON events(route_template, observed_at);
+CREATE TABLE IF NOT EXISTS external_event_refs (
+	source_id TEXT NOT NULL,
+	source_file_id TEXT NOT NULL,
+	source_offset INTEGER NOT NULL,
+	source_event_hash TEXT NOT NULL,
+	event_sequence INTEGER NOT NULL,
+	PRIMARY KEY(source_id, source_file_id, source_offset, source_event_hash)
+);
 `)
 	if err != nil {
 		return fmt.Errorf("create sqlite schema: %w", err)
@@ -468,6 +476,9 @@ func (s *Store) ExpireEffects(ownerKey, product, effectType, stateKey, stateValu
 func (s *Store) AppendEvent(event model.Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if event.EventOrigin == "" {
+		event.EventOrigin = "native"
+	}
 	s.eventSeq++
 	event.Sequence = s.eventSeq
 	encoded, err := json.Marshal(event)
@@ -489,6 +500,76 @@ func (s *Store) AppendEvent(event model.Event) error {
 		return err
 	}
 	return f.Sync()
+}
+
+// AppendImportedEvent writes a third-party observation only after its
+// provenance key has been checked in SQLite. Duplicate tail/replay input is
+// acknowledged without creating a second underlying event.
+func (s *Store) AppendImportedEvent(event model.Event, sourceID, sourceFileID string, sourceOffset int64, sourceHash string) (bool, error) {
+	if strings.TrimSpace(sourceID) == "" || strings.TrimSpace(sourceFileID) == "" || sourceOffset < 0 || strings.TrimSpace(sourceHash) == "" {
+		return false, errors.New("import provenance is incomplete")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if event.EventOrigin == "" {
+		event.EventOrigin = "third_party"
+	}
+	event.SourceEventHash = sourceHash
+	event.SourceFileID = sourceFileID
+	event.SourceOffset = sourceOffset
+	var exists int
+	if err := s.db.QueryRow(`SELECT 1 FROM external_event_refs WHERE source_id=? AND source_file_id=? AND source_offset=? AND source_event_hash=?`, sourceID, sourceFileID, sourceOffset, sourceHash).Scan(&exists); err == nil {
+		return false, nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("check imported event provenance: %w", err)
+	}
+	s.eventSeq++
+	event.Sequence = s.eventSeq
+	if event.EventID == "" {
+		event.EventID = fmt.Sprintf("import_%s_%d", sourceHash[:minInt(len(sourceHash), 16)], sourceOffset)
+	}
+	encoded, err := json.Marshal(event)
+	if err != nil {
+		return false, err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, fmt.Errorf("begin imported event: %w", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO events(sequence,event_id,observed_at,product,source_ip,route_template,event_json) VALUES(?,?,?,?,?,?,?)`, event.Sequence, event.EventID, event.ObservedAt.Format(time.RFC3339Nano), event.Product, event.SourceIP, event.RouteTemplate, string(encoded)); err != nil {
+		_ = tx.Rollback()
+		return false, fmt.Errorf("append imported sqlite event: %w", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO external_event_refs(source_id,source_file_id,source_offset,source_event_hash,event_sequence) VALUES(?,?,?,?,?)`, sourceID, sourceFileID, sourceOffset, sourceHash, event.Sequence); err != nil {
+		_ = tx.Rollback()
+		return false, fmt.Errorf("append imported provenance: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit imported event: %w", err)
+	}
+	f, err := os.OpenFile(filepath.Join(s.dir, "events.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return false, err
+	}
+	if _, err := f.Write(append(encoded, '\n')); err != nil {
+		_ = f.Close()
+		return false, err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return false, err
+	}
+	if err := f.Close(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func minInt(left, right int) int {
+	if left < right {
+		return left
+	}
+	return right
 }
 
 func (s *Store) Events(limit int, product, sourceIP string) ([]model.Event, error) {

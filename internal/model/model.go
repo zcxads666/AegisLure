@@ -23,6 +23,12 @@ const (
 type Event struct {
 	EventID               string            `json:"event_id"`
 	EventType             string            `json:"event_type,omitempty"`
+	EventOrigin           string            `json:"event_origin,omitempty"`
+	SourceProduct         string            `json:"source_product,omitempty"`
+	SourceSchemaVersion   string            `json:"source_schema_version,omitempty"`
+	SourceEventHash       string            `json:"source_event_hash,omitempty"`
+	SourceFileID          string            `json:"source_file_id,omitempty"`
+	SourceOffset          int64             `json:"source_offset,omitempty"`
 	Sequence              uint64            `json:"sequence,omitempty"`
 	ObservedAt            time.Time         `json:"observed_at"`
 	Product               string            `json:"product"`

@@ -111,3 +111,29 @@ func TestVirtualEffectsExpireAndVerificationIsScoped(t *testing.T) {
 		t.Fatal("expired effect remained active")
 	}
 }
+
+func TestImportedEventsAreIdempotent(t *testing.T) {
+	st, err := Open(t.TempDir(), "import-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := model.Event{
+		EventID:       "imported-1",
+		Product:       model.ProductVLLM,
+		SourceIP:      "203.0.113.20",
+		RouteTemplate: "/v1/chat/completions",
+		ObservedAt:    time.Now().UTC(),
+	}
+	first, err := st.AppendImportedEvent(event, "promptpot", "run-1", 42, "hash-1")
+	if err != nil || !first {
+		t.Fatalf("first import = %v, %v", first, err)
+	}
+	second, err := st.AppendImportedEvent(event, "promptpot", "run-1", 42, "hash-1")
+	if err != nil || second {
+		t.Fatalf("duplicate import = %v, %v", second, err)
+	}
+	events, err := st.Events(-1, "", "")
+	if err != nil || len(events) != 1 || events[0].EventOrigin != "third_party" || events[0].SourceOffset != 42 {
+		t.Fatalf("unexpected imported events = %#v, %v", events, err)
+	}
+}

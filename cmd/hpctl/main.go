@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/zcxads666/AegisLure/internal/config"
+	"github.com/zcxads666/AegisLure/internal/importer"
 	"github.com/zcxads666/AegisLure/internal/model"
 	"github.com/zcxads666/AegisLure/internal/security"
 	"github.com/zcxads666/AegisLure/internal/store"
@@ -48,6 +49,8 @@ func main() {
 		restoreCommand(os.Args[2:])
 	case "logs":
 		logsCommand(os.Args[2:])
+	case "import":
+		importCommand(os.Args[2:])
 	case "upgrade", "rollback":
 		imageCommand(os.Args[1], os.Args[2:])
 	case "uninstall":
@@ -71,6 +74,7 @@ func usage() {
   backup --output backup.zip [--config config.json]
   restore --input backup.zip [--config config.json] [--data-dir data]
   logs [--data-dir data] [--lines 100]
+	import --input events.jsonl --product ollama [--source-id promptpot] [--file-id name] [--schema-version v1]
   ports plan [--config config.json] [--profile name --port port --output plan.json]
 	ports apply --input plan.json [--config config.json] [--project-dir .]
   upgrade --image registry.example/aegislure@sha256:... [--project-dir .]
@@ -488,6 +492,46 @@ func logsCommand(args []string) {
 	for _, line := range buffer {
 		fmt.Println(line)
 	}
+}
+
+func importCommand(args []string) {
+	fs := flag.NewFlagSet("import", flag.ExitOnError)
+	configPath := fs.String("config", "./config.json", "runtime config path")
+	input := fs.String("input", "", "third-party JSONL file")
+	sourceID := fs.String("source-id", "promptpot", "stable local import source identifier")
+	fileID := fs.String("file-id", "", "stable file identity; defaults to the input basename")
+	product := fs.String("product", "", "source product profile")
+	schemaVersion := fs.String("schema-version", "promptpot-jsonl-v1", "source schema version")
+	_ = fs.Parse(args)
+	if strings.TrimSpace(*input) == "" || strings.TrimSpace(*product) == "" {
+		fatal(errors.New("import requires --input and --product"))
+	}
+	if !knownProfile(*product) {
+		fatal(fmt.Errorf("unsupported import product %q", *product))
+	}
+	file, err := os.Open(*input)
+	if err != nil {
+		fatal(err)
+	}
+	defer file.Close()
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		fatal(err)
+	}
+	st, err := store.Open(cfg.DataDir, cfg.InstanceKey)
+	if err != nil {
+		fatal(err)
+	}
+	defer st.Close()
+	identity := *fileID
+	if strings.TrimSpace(identity) == "" {
+		identity = filepath.Base(*input)
+	}
+	stats, err := importer.ImportJSONL(file, importer.Source{ID: *sourceID, FileID: identity, Product: *product, SchemaVersion: *schemaVersion}, st)
+	if err != nil {
+		fatal(err)
+	}
+	printJSON(stats)
 }
 
 func addFile(zw *zip.Writer, path string) error {

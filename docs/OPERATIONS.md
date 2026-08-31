@@ -17,6 +17,7 @@
 ./hpctl backup --output aegislure-backup.zip
 ./hpctl restore --input aegislure-backup.zip --config ./runtime/config.json --data-dir ./runtime/data
 ./hpctl logs --lines 100
+./hpctl import --input promptpot-events.jsonl --product ollama --source-id promptpot --file-id run-2026-08-31
 ./hpctl upgrade --image registry.example/aegislure@sha256:<64-hex-digest>
 ./hpctl rollback --image registry.example/aegislure@sha256:<64-hex-digest>
 ./hpctl uninstall
@@ -34,6 +35,8 @@ The current admin profile intentionally has no Bootstrap code and no TOTP/MFA. T
 The backup archive contains the runtime config and event/state files. Protect it like a secret because the config contains the instance key and the state contains keyed hashes. Restore only onto an isolated, stopped installation after validating ownership and permissions. Restore accepts only the three expected archive members, applies size limits, stages extraction, and atomically replaces state/data files; it does not restore TLS secrets or arbitrary paths.
 
 The standalone backend uses `aegislure.sqlite` in WAL mode as its authoritative local store, plus append-only `events.jsonl` and atomic `state.json` compatibility/backup mirrors. Event sequence numbers and virtual state are restored after restart. Imported third-party events use a local provenance key for idempotency; this is not the later distributed durable ACK protocol. Do not treat this standalone store as the later PostgreSQL/Hive sensor transport.
+
+`hpctl import` is an offline, bounded JSONL importer for the allowlisted local products (`new-api`, `vllm`, `ollama`, `sglang`, and `localai`). It accepts only the documented event fields, requires an IP address, redacts body previews, and records source product/schema/file/offset/hash provenance. Re-running the same file identity and byte offsets is idempotent. It never downloads models, opens a source URL, or forwards imported content to an external service.
 
 ## Incident response
 
