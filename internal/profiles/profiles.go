@@ -14,8 +14,12 @@ type Profile struct {
 	Product        string
 	DisplayVersion string
 	Scenario       string
-	DefaultPort    int
-	Persona        PersonaConfig
+	// EffectScope and EffectTTL are declarative scenario-pack controls for
+	// virtual-only effects. They never alter a host process or a real model.
+	EffectScope string
+	EffectTTL   time.Duration
+	DefaultPort int
+	Persona     PersonaConfig
 }
 
 // PersonaConfig is the protocol-facing configuration selected for a public
@@ -93,11 +97,11 @@ func Build(c *config.Config) map[string]Profile {
 		},
 	}
 	return map[string]Profile{
-		model.ProductNewAPI:  {ID: "newapi-web-v1", Product: model.ProductNewAPI, DisplayVersion: "1.0.0-rc.18-lure", Scenario: c.Scenario[model.ProductNewAPI], DefaultPort: c.ProfilePorts[model.ProductNewAPI]},
-		model.ProductVLLM:    {ID: "vllm-openai-" + strings.ReplaceAll(vllmVersion, ".", "_"), Product: model.ProductVLLM, DisplayVersion: vllmVersion, Scenario: c.Scenario[model.ProductVLLM], DefaultPort: c.ProfilePorts[model.ProductVLLM], Persona: persona},
-		model.ProductOllama:  {ID: "ollama-native-0.9", Product: model.ProductOllama, DisplayVersion: ollamaVersion, Scenario: c.Scenario[model.ProductOllama], DefaultPort: c.ProfilePorts[model.ProductOllama], Persona: persona},
-		model.ProductSGLang:  {ID: "sglang-http-legacy-lure", Product: model.ProductSGLang, DisplayVersion: "0.5.10", Scenario: c.Scenario[model.ProductSGLang], DefaultPort: c.ProfilePorts[model.ProductSGLang]},
-		model.ProductLocalAI: {ID: "localai-2x-legacy-lure", Product: model.ProductLocalAI, DisplayVersion: "2.19.4", Scenario: c.Scenario[model.ProductLocalAI], DefaultPort: c.ProfilePorts[model.ProductLocalAI]},
+		model.ProductNewAPI:  {ID: "newapi-web-v1", Product: model.ProductNewAPI, DisplayVersion: "1.0.0-rc.18-lure", Scenario: c.Scenario[model.ProductNewAPI], EffectScope: "session", EffectTTL: 90 * time.Second, DefaultPort: c.ProfilePorts[model.ProductNewAPI]},
+		model.ProductVLLM:    {ID: "vllm-openai-" + strings.ReplaceAll(vllmVersion, ".", "_"), Product: model.ProductVLLM, DisplayVersion: vllmVersion, Scenario: c.Scenario[model.ProductVLLM], EffectScope: "session", EffectTTL: 60 * time.Second, DefaultPort: c.ProfilePorts[model.ProductVLLM], Persona: persona},
+		model.ProductOllama:  {ID: "ollama-native-0.9", Product: model.ProductOllama, DisplayVersion: ollamaVersion, Scenario: c.Scenario[model.ProductOllama], EffectScope: "session", EffectTTL: 90 * time.Second, DefaultPort: c.ProfilePorts[model.ProductOllama], Persona: persona},
+		model.ProductSGLang:  {ID: "sglang-http-legacy-lure", Product: model.ProductSGLang, DisplayVersion: "0.5.10", Scenario: c.Scenario[model.ProductSGLang], EffectScope: "session", EffectTTL: 15 * time.Minute, DefaultPort: c.ProfilePorts[model.ProductSGLang]},
+		model.ProductLocalAI: {ID: "localai-2x-legacy-lure", Product: model.ProductLocalAI, DisplayVersion: "2.19.4", Scenario: c.Scenario[model.ProductLocalAI], EffectScope: "session", EffectTTL: 90 * time.Second, DefaultPort: c.ProfilePorts[model.ProductLocalAI]},
 	}
 }
 
@@ -407,18 +411,24 @@ func localAIRoute(method, path string) string {
 }
 
 type CatalogEntry struct {
-	ID                string   `json:"id"`
-	Object            string   `json:"object"`
-	DisplayName       string   `json:"display_name"`
-	Provider          string   `json:"provider"`
-	Origin            string   `json:"origin"`
-	Capabilities      []string `json:"capabilities"`
-	Aliases           []string `json:"aliases,omitempty"`
-	Architecture      string   `json:"-"`
-	Families          []string `json:"-"`
-	ParameterSize     string   `json:"-"`
-	QuantizationLevel string   `json:"-"`
-	ApproxSize        int64    `json:"-"`
+	ID                   string   `json:"id"`
+	Object               string   `json:"object"`
+	DisplayName          string   `json:"display_name"`
+	Provider             string   `json:"provider"`
+	Origin               string   `json:"origin"`
+	Capabilities         []string `json:"capabilities"`
+	Aliases              []string `json:"aliases,omitempty"`
+	APIFamilies          []string `json:"-"`
+	Visibility           []string `json:"-"`
+	AuthRequirement      string   `json:"-"`
+	VirtualContextTokens int64    `json:"-"`
+	VirtualPriceProfile  string   `json:"-"`
+	ResponseTemplateSet  string   `json:"-"`
+	Architecture         string   `json:"-"`
+	Families             []string `json:"-"`
+	ParameterSize        string   `json:"-"`
+	QuantizationLevel    string   `json:"-"`
+	ApproxSize           int64    `json:"-"`
 }
 
 func Catalog(product string) []CatalogEntry {

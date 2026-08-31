@@ -158,16 +158,34 @@ type AdminRecoveryCode struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
+// AuditEntry is a local tamper-evident record for administrator and runtime
+// configuration changes. The chain is authoritative in SQLite; Metadata must
+// contain only bounded, already-redacted values.
+type AuditEntry struct {
+	ID        string            `json:"id"`
+	Actor     string            `json:"actor"`
+	Action    string            `json:"action"`
+	Target    string            `json:"target"`
+	Result    string            `json:"result"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
+	PrevHash  string            `json:"prev_hash,omitempty"`
+	EntryHash string            `json:"entry_hash"`
+	CreatedAt time.Time         `json:"created_at"`
+}
+
 type State struct {
-	Admin        AdminState               `json:"admin"`
-	HoneyUsers   map[string]HoneyUser     `json:"honey_users"`
-	HoneyTokens  map[string]HoneyToken    `json:"honey_tokens"`
-	Identities   map[string]HoneyIdentity `json:"identities,omitempty"`
-	Effects      map[string]VirtualEffect `json:"effects"`
-	Quotas       map[string]int64         `json:"quotas"`
-	QuotaLedger  []QuotaEntry             `json:"quota_ledger,omitempty"`
-	Packs        map[string]ConfigPack    `json:"packs,omitempty"`
-	PackBindings map[string]string        `json:"pack_bindings,omitempty"`
+	Admin                      AdminState                           `json:"admin"`
+	HoneyUsers                 map[string]HoneyUser                 `json:"honey_users"`
+	HoneyTokens                map[string]HoneyToken                `json:"honey_tokens"`
+	Identities                 map[string]HoneyIdentity             `json:"identities,omitempty"`
+	Effects                    map[string]VirtualEffect             `json:"effects"`
+	Quotas                     map[string]int64                     `json:"quotas"`
+	QuotaLedger                []QuotaEntry                         `json:"quota_ledger,omitempty"`
+	Packs                      map[string]ConfigPack                `json:"packs,omitempty"`
+	PackBindings               map[string]string                    `json:"pack_bindings,omitempty"`
+	ImportSources              map[string]ImportSource              `json:"import_sources,omitempty"`
+	IndicatorDecisions         map[string]IndicatorDecision         `json:"indicator_decisions,omitempty"`
+	IdentityIndicatorDecisions map[string]IdentityIndicatorDecision `json:"identity_indicator_decisions,omitempty"`
 }
 
 const (
@@ -215,4 +233,53 @@ type Indicator struct {
 	SiteCount         int       `json:"site_count"`
 	RecommendedAction string    `json:"recommended_action"`
 	EvidenceCount     int       `json:"evidence_count"`
+}
+
+// ImportSource is a local, read-only declaration for an offline event source.
+// RootPathAlias is an installation-owned alias, never a host path supplied by
+// the HTTP control plane. The actual file read remains an explicit hpctl
+// operation so a compromised public listener cannot turn this registry into a
+// filesystem browser.
+type ImportSource struct {
+	ID              string    `json:"id"`
+	SourceType      string    `json:"source_type"`
+	RootPathAlias   string    `json:"root_path_alias"`
+	Product         string    `json:"product"`
+	SchemaVersion   string    `json:"schema_version"`
+	Lifecycle       string    `json:"lifecycle"`
+	Enabled         bool      `json:"enabled"`
+	ReadOnly        bool      `json:"read_only"`
+	ReadCount       int       `json:"read_count"`
+	ImportedCount   int       `json:"imported_count"`
+	DuplicateCount  int       `json:"duplicate_count"`
+	RejectedCount   int       `json:"rejected_count"`
+	LastValidatedAt time.Time `json:"last_validated_at,omitempty"`
+	LastDryRunAt    time.Time `json:"last_dry_run_at,omitempty"`
+	LastImportedAt  time.Time `json:"last_imported_at,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+// IndicatorDecision is an operator decision over one locally aggregated IP.
+// Every actionable state carries an expiry; there is deliberately no
+// permanent-block state in the standalone model.
+type IndicatorDecision struct {
+	IP        string    `json:"ip"`
+	Status    string    `json:"status"`
+	Reviewer  string    `json:"reviewer,omitempty"`
+	Reason    string    `json:"reason,omitempty"`
+	ExpiresAt time.Time `json:"expires_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// IdentityIndicatorDecision records a local review of an observed OAuth
+// association. It cannot authorize cross-site export or create a permanent
+// block.
+type IdentityIndicatorDecision struct {
+	IdentityID string    `json:"identity_id"`
+	Status     string    `json:"status"`
+	Reviewer   string    `json:"reviewer,omitempty"`
+	Reason     string    `json:"reason,omitempty"`
+	ExpiresAt  time.Time `json:"expires_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }

@@ -10,24 +10,30 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
-	InstanceID      string            `json:"instance_id"`
-	InstanceKey     string            `json:"instance_key"`
-	DataDir         string            `json:"data_dir"`
-	PublicBind      string            `json:"public_bind"`
-	AdminBind       string            `json:"admin_bind"`
-	AdminPort       int               `json:"admin_port"`
-	AdminPath       string            `json:"admin_path"`
-	OllamaVersion   string            `json:"ollama_version,omitempty"`
-	VLLMVersion     string            `json:"vllm_version,omitempty"`
-	OllamaKeepAlive string            `json:"ollama_keep_alive,omitempty"`
-	VLLMDocsEnabled bool              `json:"vllm_docs_enabled,omitempty"`
-	VLLMServedNames []string          `json:"vllm_served_model_names,omitempty"`
-	ProfilePorts    map[string]int    `json:"profile_ports"`
-	EnabledProfiles []string          `json:"enabled_profiles"`
-	Scenario        map[string]string `json:"scenario"`
+	InstanceID         string            `json:"instance_id"`
+	InstanceKey        string            `json:"instance_key"`
+	DataDir            string            `json:"data_dir"`
+	PublicBind         string            `json:"public_bind"`
+	AdminBind          string            `json:"admin_bind"`
+	AdminPort          int               `json:"admin_port"`
+	AdminPath          string            `json:"admin_path"`
+	RequireAdminTLS    bool              `json:"require_admin_tls,omitempty"`
+	AdminHostAllowlist []string          `json:"admin_host_allowlist,omitempty"`
+	EventRetentionDays int               `json:"event_retention_days,omitempty"`
+	EventMaxEntries    int               `json:"event_max_entries,omitempty"`
+	PortPools          map[string][]int  `json:"port_pools,omitempty"`
+	OllamaVersion      string            `json:"ollama_version,omitempty"`
+	VLLMVersion        string            `json:"vllm_version,omitempty"`
+	OllamaKeepAlive    string            `json:"ollama_keep_alive,omitempty"`
+	VLLMDocsEnabled    bool              `json:"vllm_docs_enabled,omitempty"`
+	VLLMServedNames    []string          `json:"vllm_served_model_names,omitempty"`
+	ProfilePorts       map[string]int    `json:"profile_ports"`
+	EnabledProfiles    []string          `json:"enabled_profiles"`
+	Scenario           map[string]string `json:"scenario"`
 }
 
 func Load(path string) (*Config, error) {
@@ -48,6 +54,13 @@ func Load(path string) (*Config, error) {
 	if c.OllamaKeepAlive == "" {
 		c.OllamaKeepAlive = "5m"
 	}
+	if c.EventRetentionDays <= 0 {
+		c.EventRetentionDays = 30
+	}
+	if c.EventMaxEntries <= 0 {
+		c.EventMaxEntries = 100000
+	}
+	NormalizePortPools(&c)
 	if c.DataDir == "" {
 		c.DataDir = filepath.Dir(path)
 	}
@@ -86,9 +99,26 @@ func Init(path, dataDir string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	port := 20000 + randomInt(40999)
+	profilePorts := map[string]int{"new-api": 3000, "vllm": 8000, "ollama": 11434, "sglang": 30000, "localai": 8080}
+	reserved := make(map[int]bool)
+	for _, candidates := range DefaultPortPools(profilePorts) {
+		for _, candidate := range candidates {
+			reserved[candidate] = true
+		}
+	}
+	port := 28443
+	for attempts := 0; attempts < 16; attempts++ {
+		candidate := 20000 + randomInt(40999)
+		if !reserved[candidate] {
+			port = candidate
+			break
+		}
+	}
 	if value := os.Getenv("HP_ADMIN_PORT"); value != "" {
 		if configured, parseErr := strconv.Atoi(value); parseErr == nil && configured >= 20000 && configured <= 60999 {
+			if reserved[configured] {
+				return nil, fmt.Errorf("HP_ADMIN_PORT %d conflicts with a default profile port pool", configured)
+			}
 			port = configured
 		}
 	}
@@ -96,24 +126,21 @@ func Init(path, dataDir string) (*Config, error) {
 		port = 28443
 	}
 	c := &Config{
-		InstanceID:      instanceID,
-		InstanceKey:     instanceKey,
-		DataDir:         dataDir,
-		PublicBind:      "0.0.0.0",
-		AdminBind:       "0.0.0.0",
-		AdminPort:       port,
-		AdminPath:       "/" + adminPathToken + "/",
-		OllamaVersion:   "0.9.6",
-		VLLMVersion:     "0.17.0",
-		OllamaKeepAlive: "5m",
-		ProfilePorts: map[string]int{
-			"new-api": 3000,
-			"vllm":    8000,
-			"ollama":  11434,
-			"sglang":  30000,
-			"localai": 8080,
-		},
-		EnabledProfiles: []string{"ollama", "vllm"},
+		InstanceID:         instanceID,
+		InstanceKey:        instanceKey,
+		DataDir:            dataDir,
+		PublicBind:         "0.0.0.0",
+		AdminBind:          "0.0.0.0",
+		AdminPort:          port,
+		AdminPath:          "/" + adminPathToken + "/",
+		OllamaVersion:      "0.9.6",
+		VLLMVersion:        "0.17.0",
+		OllamaKeepAlive:    "5m",
+		EventRetentionDays: 30,
+		EventMaxEntries:    100000,
+		PortPools:          DefaultPortPools(profilePorts),
+		ProfilePorts:       profilePorts,
+		EnabledProfiles:    []string{"ollama", "vllm"},
 		Scenario: map[string]string{
 			"vllm":    "legacy-gap",
 			"ollama":  "no-key",
@@ -131,6 +158,64 @@ func Init(path, dataDir string) (*Config, error) {
 	return c, nil
 }
 
+// DefaultPortPools keeps the default listener and seven nearby operator-
+// approved candidates for each standalone profile. Docker deployments still
+// need a host mapping update for a new published port; native mode can bind
+// these candidates in-process.
+func DefaultPortPools(profilePorts map[string]int) map[string][]int {
+	result := make(map[string][]int)
+	for _, name := range []string{"new-api", "vllm", "ollama", "sglang", "localai"} {
+		base := profilePorts[name]
+		if base < 1 || base > 65535 {
+			continue
+		}
+		ports := make([]int, 0, 8)
+		for offset := 0; offset < 8 && base+offset <= 65535; offset++ {
+			ports = append(ports, base+offset)
+		}
+		result[name] = ports
+	}
+	return result
+}
+
+func NormalizePortPools(c *Config) {
+	if c.PortPools == nil {
+		c.PortPools = DefaultPortPools(c.ProfilePorts)
+		return
+	}
+	for _, name := range []string{"new-api", "vllm", "ollama", "sglang", "localai"} {
+		base := c.ProfilePorts[name]
+		seen := make(map[int]bool)
+		ports := make([]int, 0, len(c.PortPools[name])+1)
+		for _, port := range append([]int{base}, c.PortPools[name]...) {
+			if port < 1 || port > 65535 || seen[port] {
+				continue
+			}
+			seen[port] = true
+			ports = append(ports, port)
+		}
+		if len(ports) > 0 {
+			c.PortPools[name] = ports
+		}
+	}
+}
+
+func PortInPool(c *Config, profile string, port int) bool {
+	if c == nil || port < 1 || port > 65535 {
+		return false
+	}
+	pool, configured := c.PortPools[profile]
+	if !configured || len(pool) == 0 {
+		return true
+	}
+	for _, candidate := range pool {
+		if candidate == port {
+			return true
+		}
+	}
+	return false
+}
+
 func applyEnv(c *Config) {
 	if v := os.Getenv("HP_DATA_DIR"); v != "" {
 		c.DataDir = v
@@ -144,6 +229,22 @@ func applyEnv(c *Config) {
 	if v := os.Getenv("HP_ADMIN_PORT"); v != "" {
 		if p, err := strconv.Atoi(v); err == nil && p > 0 && p < 65536 {
 			c.AdminPort = p
+		}
+	}
+	if v := os.Getenv("HP_REQUIRE_TLS"); v != "" {
+		c.RequireAdminTLS = v == "1" || v == "true"
+	}
+	if v := os.Getenv("HP_ADMIN_HOSTS"); v != "" {
+		c.AdminHostAllowlist = splitComma(v)
+	}
+	if v := os.Getenv("HP_EVENT_RETENTION_DAYS"); v != "" {
+		if days, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && days > 0 && days <= 3650 {
+			c.EventRetentionDays = days
+		}
+	}
+	if v := os.Getenv("HP_EVENT_MAX_ENTRIES"); v != "" {
+		if entries, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && entries >= 1000 && entries <= 1000000 {
+			c.EventMaxEntries = entries
 		}
 	}
 	if v := os.Getenv("HP_PROFILES"); v != "" {

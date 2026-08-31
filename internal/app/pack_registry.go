@@ -28,13 +28,34 @@ func loadPersistedRuleEngine(a *App) {
 	if a.ruleEngine == nil || a.store == nil {
 		return
 	}
+	var globalPack model.ConfigPack
+	globalFound := false
 	for _, pack := range a.store.ListPacks(model.PackKindDetector) {
 		if pack.Lifecycle != model.PackActive || len(pack.Definition) == 0 {
 			continue
 		}
+		if !globalFound || pack.UpdatedAt.After(globalPack.UpdatedAt) {
+			globalPack, globalFound = pack, true
+		}
+	}
+	if globalFound {
 		var document packs.DetectorRulePack
-		if json.Unmarshal(pack.Definition, &document) == nil && a.ruleEngine.Load(document) == nil {
-			return
+		if json.Unmarshal(globalPack.Definition, &document) == nil {
+			_ = a.ruleEngine.Load(document)
+		}
+	}
+	for key := range a.store.PackBindings() {
+		parts := strings.SplitN(key, "\x00", 2)
+		if len(parts) != 2 || parts[0] != model.PackKindDetector {
+			continue
+		}
+		pack, ok := a.store.BoundPack(model.PackKindDetector, parts[1])
+		if !ok {
+			continue
+		}
+		var document packs.DetectorRulePack
+		if json.Unmarshal(pack.Definition, &document) == nil {
+			_ = a.ruleEngine.LoadFor(parts[1], document)
 		}
 	}
 }
@@ -169,6 +190,14 @@ func (a *App) handleAdminPackAPI(w http.ResponseWriter, r *http.Request, path st
 		}
 		return true
 	}
+	if len(parts) == 4 && parts[2] == "models" && kind == model.PackKindModel {
+		if r.Method == http.MethodPatch {
+			a.adminCatalogModelPatch(w, r, parts[1], parts[3])
+		} else {
+			a.writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		}
+		return true
+	}
 	return false
 }
 
@@ -222,6 +251,7 @@ func (a *App) adminPackCreate(w http.ResponseWriter, r *http.Request, kind strin
 		return
 	}
 	stored, _ := a.store.GetPack(kind, mutation.ID)
+	a.recordAudit(r, "pack.create", kind+"/"+mutation.ID, "success", map[string]string{"revision": mutation.Revision, "lifecycle": model.PackDraft})
 	a.writeJSON(w, http.StatusCreated, map[string]any{"pack": packSummary(stored), "message": "pack stored in Draft; validate before activation"})
 }
 
@@ -341,6 +371,7 @@ func (a *App) adminPackAction(w http.ResponseWriter, r *http.Request, kind, id, 
 			a.writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 			return
 		}
+		a.recordAudit(r, "pack.lifecycle.validate", kind+"/"+id, "success", map[string]string{"revision": updated.Revision})
 		a.writeJSON(w, http.StatusOK, map[string]any{"valid": true, "pack": packSummary(updated)})
 	case "shadow", "canary":
 		updated, err := a.store.UpdatePackLifecycle(kind, id, map[string]string{"shadow": model.PackShadow, "canary": model.PackCanary}[action])
@@ -348,6 +379,7 @@ func (a *App) adminPackAction(w http.ResponseWriter, r *http.Request, kind, id, 
 			a.writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 			return
 		}
+		a.recordAudit(r, "pack.lifecycle."+strings.ToLower(action), kind+"/"+id, "success", map[string]string{"revision": updated.Revision})
 		a.writeJSON(w, http.StatusOK, map[string]any{"pack": packSummary(updated), "runtime_effect": "observation_only"})
 	case "activate":
 		if err := packs.ValidateDefinition(kind, pack.Definition); err != nil {
@@ -366,7 +398,15 @@ func (a *App) adminPackAction(w http.ResponseWriter, r *http.Request, kind, id, 
 			a.writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 			return
 		}
+		loadPersistedRuleEngine(a)
+		a.recordAudit(r, "pack.lifecycle.activate", kind+"/"+id, "success", map[string]string{"revision": updated.Revision})
 		a.writeJSON(w, http.StatusOK, map[string]any{"pack": packSummary(updated), "runtime_effect": "hot_loaded_last_known_good"})
+	case "clone":
+		if kind != model.PackKindModel {
+			a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "clone is supported for model catalogs"})
+			return
+		}
+		a.adminModelCatalogClone(w, r, pack)
 	case "rollback":
 		updated, err := a.store.RollbackPack(kind, id)
 		if err != nil {
@@ -380,6 +420,8 @@ func (a *App) adminPackAction(w http.ResponseWriter, r *http.Request, kind, id, 
 				return
 			}
 		}
+		loadPersistedRuleEngine(a)
+		a.recordAudit(r, "pack.lifecycle.rollback", kind+"/"+id, "success", map[string]string{"revision": updated.Revision})
 		a.writeJSON(w, http.StatusOK, map[string]any{"pack": packSummary(updated), "runtime_effect": "previous_revision_restored"})
 	case "replay":
 		a.adminPackReplay(w, r, pack)
@@ -475,6 +517,7 @@ func (a *App) adminRuleAdd(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 	stored, _ := a.store.GetPack(model.PackKindDetector, id)
+	a.recordAudit(r, "rule.create", model.PackKindDetector+"/"+id, "success", map[string]string{"revision": stored.Revision, "rule_id": rule.ID})
 	a.writeJSON(w, http.StatusCreated, map[string]any{"pack": packSummary(stored), "rule": rule})
 }
 
@@ -571,14 +614,15 @@ func (a *App) adminCatalogModels(w http.ResponseWriter, kind, id string) {
 		return
 	}
 	type catalogView struct {
-		ID           string   `json:"id"`
-		OriginPolicy string   `json:"origin_policy"`
-		Products     []string `json:"products"`
-		Models       []string `json:"models"`
+		ID           string                    `json:"id"`
+		OriginPolicy string                    `json:"origin_policy"`
+		Products     []string                  `json:"products"`
+		Models       []string                  `json:"models"`
+		Entries      []packs.ModelCatalogEntry `json:"entries,omitempty"`
 	}
 	items := make([]catalogView, 0, len(document.Catalogs))
 	for _, catalog := range document.Catalogs {
-		items = append(items, catalogView{ID: catalog.ID, OriginPolicy: catalog.OriginPolicy, Products: append([]string(nil), catalog.Products...), Models: append([]string(nil), catalog.Models...)})
+		items = append(items, catalogView{ID: catalog.ID, OriginPolicy: catalog.OriginPolicy, Products: append([]string(nil), catalog.Products...), Models: append([]string(nil), catalog.Models...), Entries: append([]packs.ModelCatalogEntry(nil), catalog.Entries...)})
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"pack_id": id, "revision": document.Revision, "catalogs": items, "data_only": true})
 }
@@ -594,11 +638,20 @@ func (a *App) adminCatalogModelAdd(w http.ResponseWriter, r *http.Request, id st
 		return
 	}
 	var request struct {
-		CatalogID string `json:"catalog_id"`
-		ModelID   string `json:"model_id"`
+		CatalogID string                   `json:"catalog_id"`
+		ModelID   string                   `json:"model_id"`
+		Entry     *packs.ModelCatalogEntry `json:"entry"`
 	}
-	if err := decodeStrictValue(body, &request); err != nil || len(request.ModelID) == 0 || len(request.ModelID) > 256 || strings.ContainsAny(request.ModelID, "\r\n") || strings.Contains(request.ModelID, "://") {
+	if err := decodeStrictValue(body, &request); err != nil {
 		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "model_id is invalid"})
+		return
+	}
+	if request.Entry == nil && (len(request.ModelID) == 0 || len(request.ModelID) > 256 || strings.ContainsAny(request.ModelID, "\r\n") || strings.Contains(request.ModelID, "://")) {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "model_id is invalid"})
+		return
+	}
+	if request.Entry != nil && request.Entry.ID == "" {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "entry.id is required"})
 		return
 	}
 	pack, ok := a.store.GetPack(model.PackKindModel, id)
@@ -614,14 +667,24 @@ func (a *App) adminCatalogModelAdd(w http.ResponseWriter, r *http.Request, id st
 	added := false
 	for index := range document.Catalogs {
 		if request.CatalogID == "" || document.Catalogs[index].ID == request.CatalogID {
-			found := false
-			for _, existing := range document.Catalogs[index].Models {
-				if existing == request.ModelID {
-					found = true
+			if request.Entry != nil {
+				for _, existing := range document.Catalogs[index].Entries {
+					if existing.ID == request.Entry.ID {
+						a.writeJSON(w, http.StatusConflict, map[string]string{"error": "model entry id already exists"})
+						return
+					}
 				}
-			}
-			if !found {
-				document.Catalogs[index].Models = append(document.Catalogs[index].Models, request.ModelID)
+				document.Catalogs[index].Entries = append(document.Catalogs[index].Entries, *request.Entry)
+			} else {
+				found := false
+				for _, existing := range document.Catalogs[index].Models {
+					if existing == request.ModelID {
+						found = true
+					}
+				}
+				if !found {
+					document.Catalogs[index].Models = append(document.Catalogs[index].Models, request.ModelID)
+				}
 			}
 			added = true
 			break
@@ -635,19 +698,219 @@ func (a *App) adminCatalogModelAdd(w http.ResponseWriter, r *http.Request, id st
 		a.writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
 		return
 	}
-	document.Revision = document.Revision + "-edit-" + security.MustRandomToken(4)
-	definition, _ := json.Marshal(document)
+	previousRevision := pack.Revision
+	document.Revision = nextPackRevision(document.Revision, "edit")
+	updated, err := a.saveModelCatalogDraft(pack, document, previousRevision)
+	if err != nil {
+		a.writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	modelID := request.ModelID
+	if request.Entry != nil {
+		modelID = request.Entry.ID
+	}
+	a.recordAudit(r, "catalog.model.create", model.PackKindModel+"/"+id, "success", map[string]string{"revision": updated.Revision, "model_id": modelID})
+	a.writeJSON(w, http.StatusCreated, map[string]any{"pack": packSummary(updated), "model_id": modelID})
+}
+
+func (a *App) adminModelCatalogClone(w http.ResponseWriter, r *http.Request, source model.ConfigPack) {
+	body, tooLarge := readBoundedBody(r, 8*1024)
+	if tooLarge {
+		a.writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "clone request too large"})
+		return
+	}
+	var request struct {
+		ID       string `json:"id"`
+		Revision string `json:"revision"`
+	}
+	if len(bytes.TrimSpace(body)) > 0 {
+		if err := decodeStrictValue(body, &request); err != nil {
+			a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid clone request"})
+			return
+		}
+	}
+	request.ID = strings.TrimSpace(request.ID)
+	if request.ID == "" {
+		request.ID = source.ID + "-clone-" + security.MustRandomToken(4)
+	}
+	if len(request.ID) > 128 || strings.ContainsAny(request.ID, "\r\n:/") {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "clone id is invalid"})
+		return
+	}
+	if _, exists := a.store.GetPack(model.PackKindModel, request.ID); exists {
+		a.writeJSON(w, http.StatusConflict, map[string]string{"error": "clone id already exists"})
+		return
+	}
+	var document packs.ModelCatalogPack
+	if err := json.Unmarshal(source.Definition, &document); err != nil || packs.ValidateModelCatalogPack(document) != nil {
+		a.writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "model catalog definition is invalid"})
+		return
+	}
+	if strings.TrimSpace(request.Revision) == "" {
+		request.Revision = nextPackRevision(document.Revision, "clone")
+	}
+	if len(request.Revision) > 128 || strings.ContainsAny(request.Revision, "\r\n") {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "clone revision is invalid"})
+		return
+	}
+	document.Revision = request.Revision
+	definition, err := json.Marshal(document)
+	if err != nil {
+		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "clone serialization failed"})
+		return
+	}
+	cloned := model.ConfigPack{ID: request.ID, Kind: model.PackKindModel, Revision: document.Revision, Lifecycle: model.PackDraft, Definition: definition, Signature: security.Fingerprint(a.cfg.InstanceKey, string(definition))}
+	if err := a.store.UpsertPack(cloned); err != nil {
+		a.writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	stored, _ := a.store.GetPack(model.PackKindModel, request.ID)
+	a.recordAudit(r, "catalog.clone", model.PackKindModel+"/"+request.ID, "success", map[string]string{"source_id": source.ID, "revision": stored.Revision})
+	a.writeJSON(w, http.StatusCreated, map[string]any{"pack": packSummary(stored), "source_pack_id": source.ID})
+}
+
+func (a *App) saveModelCatalogDraft(pack model.ConfigPack, document packs.ModelCatalogPack, previousRevision string) (model.ConfigPack, error) {
+	definition, err := json.Marshal(document)
+	if err != nil {
+		return model.ConfigPack{}, err
+	}
+	pack.PreviousRevision = previousRevision
 	pack.Revision = document.Revision
 	pack.Lifecycle = model.PackDraft
 	pack.Definition = definition
 	pack.Signature = security.Fingerprint(a.cfg.InstanceKey, string(definition))
 	pack.CreatedAt = time.Time{}
 	if err := a.store.UpsertPack(pack); err != nil {
+		return model.ConfigPack{}, err
+	}
+	stored, ok := a.store.GetPack(model.PackKindModel, pack.ID)
+	if !ok {
+		return model.ConfigPack{}, errors.New("model catalog revision was not stored")
+	}
+	return stored, nil
+}
+
+func nextPackRevision(base, operation string) string {
+	suffix := "-" + operation + "-" + security.MustRandomToken(4)
+	base = strings.TrimSpace(base)
+	maxBase := 128 - len(suffix)
+	if maxBase < 1 {
+		maxBase = 1
+	}
+	if len(base) > maxBase {
+		base = base[:maxBase]
+	}
+	return base + suffix
+}
+
+func (a *App) adminCatalogModelPatch(w http.ResponseWriter, r *http.Request, id, modelID string) {
+	if !sameOriginRequest(r) {
+		a.writeJSON(w, http.StatusForbidden, map[string]string{"error": "cross-site request rejected"})
+		return
+	}
+	body, tooLarge := readBoundedBody(r, 16*1024)
+	if tooLarge {
+		a.writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "model entry too large"})
+		return
+	}
+	var fields map[string]json.RawMessage
+	if err := decodeStrictValue(body, &fields); err != nil || fields == nil {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "model patch must be a JSON object"})
+		return
+	}
+	allowed := map[string]bool{"public_model_id": true, "display_name": true, "provider": true, "origin": true, "capabilities": true, "api_families": true, "visibility": true, "auth_requirement": true, "virtual_context_tokens": true, "virtual_price_profile": true, "status": true, "aliases": true, "response_template_set": true}
+	for key := range fields {
+		if !allowed[key] {
+			a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "model field is immutable or unsupported: " + key})
+			return
+		}
+	}
+	pack, ok := a.store.GetPack(model.PackKindModel, id)
+	if !ok {
+		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "model catalog not found"})
+		return
+	}
+	var document packs.ModelCatalogPack
+	if err := json.Unmarshal(pack.Definition, &document); err != nil || packs.ValidateModelCatalogPack(document) != nil {
+		a.writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "model catalog definition is invalid"})
+		return
+	}
+	modelID = strings.TrimSpace(modelID)
+	found := false
+	for catalogIndex := range document.Catalogs {
+		for entryIndex := range document.Catalogs[catalogIndex].Entries {
+			entry := &document.Catalogs[catalogIndex].Entries[entryIndex]
+			if entry.ID != modelID && entry.PublicModelID != modelID {
+				continue
+			}
+			if err := applyModelCatalogPatch(entry, fields); err != nil {
+				a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			found = true
+			break
+		}
+		if found {
+			break
+		}
+	}
+	if !found {
+		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "model entry not found"})
+		return
+	}
+	if err := packs.ValidateModelCatalogPack(document); err != nil {
+		a.writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		return
+	}
+	previousRevision := pack.Revision
+	document.Revision = nextPackRevision(document.Revision, "edit")
+	updated, err := a.saveModelCatalogDraft(pack, document, previousRevision)
+	if err != nil {
 		a.writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
 	}
-	stored, _ := a.store.GetPack(model.PackKindModel, id)
-	a.writeJSON(w, http.StatusCreated, map[string]any{"pack": packSummary(stored), "model_id": request.ModelID})
+	a.recordAudit(r, "catalog.model.update", model.PackKindModel+"/"+id, "success", map[string]string{"revision": updated.Revision, "model_id": modelID})
+	a.writeJSON(w, http.StatusOK, map[string]any{"pack": packSummary(updated), "model_id": modelID})
+}
+
+func applyModelCatalogPatch(entry *packs.ModelCatalogEntry, fields map[string]json.RawMessage) error {
+	for key, raw := range fields {
+		var target any
+		switch key {
+		case "public_model_id":
+			target = &entry.PublicModelID
+		case "display_name":
+			target = &entry.DisplayName
+		case "provider":
+			target = &entry.Provider
+		case "origin":
+			target = &entry.Origin
+		case "capabilities":
+			target = &entry.Capabilities
+		case "api_families":
+			target = &entry.APIFamilies
+		case "visibility":
+			target = &entry.Visibility
+		case "auth_requirement":
+			target = &entry.AuthRequirement
+		case "virtual_context_tokens":
+			target = &entry.VirtualContextTokens
+		case "virtual_price_profile":
+			target = &entry.VirtualPriceProfile
+		case "status":
+			target = &entry.Status
+		case "aliases":
+			target = &entry.Aliases
+		case "response_template_set":
+			target = &entry.ResponseTemplateSet
+		default:
+			return fmt.Errorf("unsupported model field %q", key)
+		}
+		if err := json.Unmarshal(raw, target); err != nil {
+			return fmt.Errorf("invalid model field %q", key)
+		}
+	}
+	return nil
 }
 
 func (a *App) adminPackAssignment(w http.ResponseWriter, r *http.Request, path string) {
@@ -660,9 +923,13 @@ func (a *App) adminPackAssignment(w http.ResponseWriter, r *http.Request, path s
 		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid assignment target"})
 		return
 	}
-	kind := map[string]string{"model-catalog": model.PackKindModel, "scenario": model.PackKindScenario}[parts[1]]
+	kind := map[string]string{"fingerprint": model.PackKindFingerprint, "model-catalog": model.PackKindModel, "scenario": model.PackKindScenario, "detector": model.PackKindDetector}[parts[1]]
 	if kind == "" {
 		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "unsupported assignment"})
+		return
+	}
+	if _, exists := a.profiles[parts[0]]; !exists {
+		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "profile not found"})
 		return
 	}
 	body, tooLarge := readBoundedBody(r, 8*1024)
@@ -689,5 +956,15 @@ func (a *App) adminPackAssignment(w http.ResponseWriter, r *http.Request, path s
 		a.writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"instance_id": "inst_" + parts[0], "kind": kind, "pack_id": request.PackID, "applied": true})
+	if kind == model.PackKindDetector {
+		if pack, ok := a.store.BoundPack(kind, "inst_"+parts[0]); ok {
+			var document packs.DetectorRulePack
+			if json.Unmarshal(pack.Definition, &document) == nil {
+				_ = a.ruleEngine.LoadFor("inst_"+parts[0], document)
+			}
+		}
+	}
+	bound, _ := a.store.BoundPack(kind, "inst_"+parts[0])
+	a.recordAudit(r, "pack.bind", "inst_"+parts[0], "success", map[string]string{"kind": kind, "pack_id": request.PackID, "revision": bound.Revision})
+	a.writeJSON(w, http.StatusOK, map[string]any{"instance_id": "inst_" + parts[0], "kind": kind, "pack_id": request.PackID, "revision": bound.Revision, "applied": true})
 }

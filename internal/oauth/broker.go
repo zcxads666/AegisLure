@@ -21,6 +21,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -71,6 +72,24 @@ type Config struct {
 	Providers          map[Provider]ProviderConfig
 	Client             *http.Client
 	AllowTestEndpoints bool
+}
+
+// FileConfig is the deliberately small on-disk configuration accepted by the
+// optional standalone broker. Provider URLs are not configurable here: the
+// loader always starts from DefaultProviderConfig so a secret file cannot turn
+// the broker into an arbitrary HTTP proxy.
+type FileConfig struct {
+	Providers map[string]FileProviderConfig `json:"providers"`
+}
+
+type FileProviderConfig struct {
+	Enabled           bool     `json:"enabled"`
+	ClientID          string   `json:"client_id"`
+	ClientSecret      string   `json:"client_secret"`
+	RedirectURL       string   `json:"redirect_url"`
+	Scopes            []string `json:"scopes,omitempty"`
+	PolicyMode        string   `json:"policy_mode,omitempty"`
+	PolicyApprovalRef string   `json:"policy_approval_ref,omitempty"`
 }
 
 type Authorization struct {
@@ -179,6 +198,75 @@ func New(cfg Config) (*Broker, error) {
 		client = &clone
 	}
 	return &Broker{instanceKey: cfg.InstanceKey, providers: providers, transactions: make(map[string]transaction), client: client, now: func() time.Time { return time.Now().UTC() }}, nil
+}
+
+// LoadFile loads the optional broker credentials from a local, mode-restricted
+// JSON file. Only client credentials, exact callback URLs, scopes and policy
+// metadata are accepted. Endpoint URLs remain the provider defaults and the
+// file is never copied into a backup archive by the standalone CLI.
+func LoadFile(path, instanceKey string) (*Broker, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, errors.New("oauth config path is required")
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
+		return nil, errors.New("oauth config must be a regular file readable only by its owner")
+	}
+	if info.Size() <= 0 || info.Size() > 64*1024 {
+		return nil, errors.New("oauth config exceeds the 64 KiB limit")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		for index := range data {
+			data[index] = 0
+		}
+	}()
+	var fileConfig FileConfig
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&fileConfig); err != nil {
+		return nil, fmt.Errorf("decode oauth config: %w", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err == nil {
+		return nil, errors.New("oauth config contains trailing JSON")
+	} else if err != io.EOF {
+		return nil, fmt.Errorf("decode oauth config tail: %w", err)
+	}
+	if len(fileConfig.Providers) > 3 {
+		return nil, errors.New("oauth config contains too many providers")
+	}
+	providers := make(map[Provider]ProviderConfig, len(fileConfig.Providers))
+	for name, fileProvider := range fileConfig.Providers {
+		provider, ok := ParseProvider(name)
+		if !ok {
+			return nil, fmt.Errorf("unsupported oauth provider %q", name)
+		}
+		providerConfig := DefaultProviderConfig(provider)
+		providerConfig.Enabled = fileProvider.Enabled
+		providerConfig.ClientID = strings.TrimSpace(fileProvider.ClientID)
+		providerConfig.ClientSecret = fileProvider.ClientSecret
+		providerConfig.RedirectURL = strings.TrimSpace(fileProvider.RedirectURL)
+		providerConfig.PolicyMode = strings.TrimSpace(fileProvider.PolicyMode)
+		providerConfig.PolicyApprovalRef = strings.TrimSpace(fileProvider.PolicyApprovalRef)
+		if len(fileProvider.Scopes) > 0 {
+			providerConfig.Scopes = append([]string(nil), fileProvider.Scopes...)
+		}
+		for label, value := range map[string]string{"client_id": providerConfig.ClientID, "client_secret": providerConfig.ClientSecret, "redirect_url": providerConfig.RedirectURL, "policy_mode": providerConfig.PolicyMode, "policy_approval_ref": providerConfig.PolicyApprovalRef} {
+			if len(value) > 4096 || strings.ContainsAny(value, "\r\n") {
+				return nil, fmt.Errorf("oauth provider %s %s is invalid", provider, label)
+			}
+		}
+		providers[provider] = providerConfig
+	}
+	return New(Config{InstanceKey: instanceKey, Providers: providers})
 }
 
 func (b *Broker) Begin(provider Provider) (Authorization, error) {

@@ -28,13 +28,14 @@ type RuleEvaluation struct {
 type RuleEngine struct {
 	mu       sync.Mutex
 	active   packs.DetectorRulePack
+	scoped   map[string]packs.DetectorRulePack
 	loaded   bool
 	history  map[string][]model.Event
 	lastSeen map[string]time.Time
 }
 
 func NewRuleEngine() *RuleEngine {
-	return &RuleEngine{history: make(map[string][]model.Event), lastSeen: make(map[string]time.Time)}
+	return &RuleEngine{scoped: make(map[string]packs.DetectorRulePack), history: make(map[string][]model.Event), lastSeen: make(map[string]time.Time)}
 }
 
 func (e *RuleEngine) Load(pack packs.DetectorRulePack) error {
@@ -48,6 +49,22 @@ func (e *RuleEngine) Load(pack packs.DetectorRulePack) error {
 	return nil
 }
 
+// LoadFor installs a validated detector revision for one local instance. The
+// unscoped Load method remains the safe fallback for instances without a
+// binding; a failed caller-side validation never replaces either revision.
+func (e *RuleEngine) LoadFor(target string, pack packs.DetectorRulePack) error {
+	if strings.TrimSpace(target) == "" {
+		return fmt.Errorf("detector target is required")
+	}
+	if err := packs.ValidateDetectorRulePack(pack); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.scoped[target] = pack
+	return nil
+}
+
 func (e *RuleEngine) Active() (packs.DetectorRulePack, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -58,9 +75,22 @@ func (e *RuleEngine) Active() (packs.DetectorRulePack, bool) {
 }
 
 func (e *RuleEngine) Evaluate(event model.Event) RuleEvaluation {
+	return e.EvaluateFor("", event)
+}
+
+// EvaluateFor uses a bound instance revision when available and keeps history
+// isolated by target so a sequence in one profile cannot satisfy a rule in a
+// different profile.
+func (e *RuleEngine) EvaluateFor(target string, event model.Event) RuleEvaluation {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if !e.loaded {
+	active := e.active
+	loaded := e.loaded
+	if scoped, ok := e.scoped[target]; ok {
+		active = scoped
+		loaded = true
+	}
+	if !loaded {
 		return RuleEvaluation{}
 	}
 	key := event.SessionID
@@ -70,9 +100,12 @@ func (e *RuleEngine) Evaluate(event model.Event) RuleEvaluation {
 	if key == "" {
 		key = "anonymous"
 	}
+	if target != "" {
+		key = target + "\x00" + key
+	}
 	previous := append([]model.Event(nil), e.history[key]...)
 	window := append(previous, event)
-	result := evaluateRules(e.active.Rules, window)
+	result := evaluateRules(active.Rules, window)
 	e.history[key] = appendBounded(previous, event, 32)
 	e.lastSeen[key] = time.Now().UTC()
 	if len(e.history) > 4096 {

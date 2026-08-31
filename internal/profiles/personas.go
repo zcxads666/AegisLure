@@ -28,6 +28,7 @@ type OllamaModelProfile struct {
 	CanonicalName     string
 	Name              string
 	Model             string
+	Aliases           []string
 	Family            string
 	Families          []string
 	Format            string
@@ -140,6 +141,28 @@ func OllamaOpenAIModelsForProfile(seed string, persona OllamaPersonaConfig) []Ol
 	return result
 }
 
+// OpenAIModelCardsForCatalog is the public renderer for a catalog-backed
+// OpenAI-compatible endpoint. CatalogEntry is a control-plane type; this
+// renderer deliberately emits only the stable product-facing model-card
+// fields.
+func OpenAIModelCardsForCatalog(seed string, catalog []CatalogEntry, ownedBy string) []OllamaOpenAIModel {
+	result := make([]OllamaOpenAIModel, 0, len(catalog))
+	seen := make(map[string]bool, len(catalog))
+	for _, entry := range catalog {
+		if entry.ID == "" || seen[entry.ID] {
+			continue
+		}
+		seen[entry.ID] = true
+		result = append(result, OllamaOpenAIModel{
+			ID:      entry.ID,
+			Object:  "model",
+			Created: personaModelTime(seed, entry.ID).Unix(),
+			OwnedBy: ownedBy,
+		})
+	}
+	return result
+}
+
 func VLLMModelCards(seed string) []VLLMModelCard {
 	return VLLMModelCardsForProfile(seed, VLLMPersonaProfile{Version: "0.17.0", Model: Catalog(model.ProductVLLM)[0].ID, ServedModelNames: []string{Catalog(model.ProductVLLM)[0].ID}})
 }
@@ -218,7 +241,14 @@ func FindOllamaModel(seed, requested string) (OllamaModel, bool) {
 func FindOllamaModelForProfile(seed string, persona OllamaPersonaConfig, requested string) (OllamaModel, bool) {
 	models := OllamaModelsForProfile(seed, persona)
 	for index, item := range models {
-		if item.Name == requested || item.Model == requested || persona.ModelCatalog[index].CanonicalName == requested {
+		alias := false
+		for _, candidate := range persona.ModelCatalog[index].Aliases {
+			if candidate == requested {
+				alias = true
+				break
+			}
+		}
+		if item.Name == requested || item.Model == requested || persona.ModelCatalog[index].CanonicalName == requested || alias {
 			return item, true
 		}
 	}
@@ -231,6 +261,7 @@ func defaultOllamaModelProfiles() []OllamaModelProfile {
 			CanonicalName:     "Qwen/Qwen3.6-35B-A3B",
 			Name:              "qwen3.6:35b-a3b",
 			Model:             "qwen3.6:35b-a3b",
+			Aliases:           []string{"qwen3.6:35b-a3b"},
 			Family:            "qwen35moe",
 			Families:          []string{"qwen35moe"},
 			Format:            "gguf",
@@ -242,6 +273,7 @@ func defaultOllamaModelProfiles() []OllamaModelProfile {
 			CanonicalName:     "openai/gpt-oss-20b",
 			Name:              "gpt-oss:20b",
 			Model:             "gpt-oss:20b",
+			Aliases:           []string{"gpt-oss:20b"},
 			Family:            "gptoss",
 			Families:          []string{"gptoss"},
 			Format:            "gguf",
@@ -253,6 +285,7 @@ func defaultOllamaModelProfiles() []OllamaModelProfile {
 			CanonicalName:     "meta-llama/Llama-4-Scout-17B-16E-Instruct",
 			Name:              "llama4:scout",
 			Model:             "llama4:scout",
+			Aliases:           []string{"llama4:scout"},
 			Family:            "llama",
 			Families:          []string{"llama"},
 			Format:            "gguf",

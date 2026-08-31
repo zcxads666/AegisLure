@@ -1,6 +1,7 @@
 SHELL := /usr/bin/env bash
+SBOM_OUTPUT ?= sbom.spdx.json
 
-.PHONY: fmt test vet build tools run compose-build
+.PHONY: fmt test vet build sbom tools run compose-build
 
 tools:
 	./scripts/install-tools.sh
@@ -16,6 +17,9 @@ vet:
 
 build:
 	source scripts/env.sh && mkdir -p bin && go build -trimpath -ldflags='-s -w' -o bin/aegislure ./cmd/aegislure && go build -trimpath -ldflags='-s -w' -o bin/hpctl ./cmd/hpctl
+
+sbom:
+	./scripts/generate-sbom.sh "$(SBOM_OUTPUT)"
 
 run:
 	source scripts/env.sh && go run ./cmd/aegislure -config ./config.json

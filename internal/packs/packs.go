@@ -28,7 +28,8 @@ var forbiddenKeys = map[string]bool{
 	"script": true, "scripts": true, "shell": true, "sql": true,
 	"template": true, "wasm": true, "plugin": true, "plugins": true,
 	"endpoint": true, "endpoints": true, "secret": true, "secrets": true,
-	"download_url": true, "source_url": true, "model_path": true,
+	"download_url": true, "source_url": true, "model_path": true, "path": true,
+	"credential": true, "credentials": true, "api_key": true, "access_token": true,
 }
 
 var allowedProducts = map[string]bool{
@@ -66,10 +67,31 @@ type FingerprintPackDocument struct {
 }
 
 type ModelCatalog struct {
-	ID           string   `json:"id"`
-	OriginPolicy string   `json:"origin_policy"`
-	Products     []string `json:"products"`
-	Models       []string `json:"models"`
+	ID           string              `json:"id"`
+	OriginPolicy string              `json:"origin_policy"`
+	Products     []string            `json:"products"`
+	Models       []string            `json:"models"`
+	Entries      []ModelCatalogEntry `json:"entries,omitempty"`
+}
+
+// ModelCatalogEntry is a public-facing model fixture. It contains only
+// display and virtual billing metadata; it cannot point at a provider,
+// endpoint, local path or executable backend.
+type ModelCatalogEntry struct {
+	ID                   string   `json:"id"`
+	PublicModelID        string   `json:"public_model_id"`
+	DisplayName          string   `json:"display_name"`
+	Provider             string   `json:"provider"`
+	Origin               string   `json:"origin"`
+	Capabilities         []string `json:"capabilities"`
+	APIFamilies          []string `json:"api_families,omitempty"`
+	Visibility           []string `json:"visibility,omitempty"`
+	AuthRequirement      string   `json:"auth_requirement,omitempty"`
+	VirtualContextTokens int64    `json:"virtual_context_tokens,omitempty"`
+	VirtualPriceProfile  string   `json:"virtual_price_profile,omitempty"`
+	Status               string   `json:"status,omitempty"`
+	Aliases              []string `json:"aliases,omitempty"`
+	ResponseTemplateSet  string   `json:"response_template_set,omitempty"`
 }
 
 type ModelCatalogPack struct {
@@ -162,7 +184,7 @@ func ValidateModelCatalogPack(pack ModelCatalogPack) error {
 		return errors.New("model catalog pack is incomplete")
 	}
 	for _, catalog := range pack.Catalogs {
-		if catalog.ID == "" || len(catalog.Models) == 0 || (catalog.OriginPolicy != "open" && catalog.OriginPolicy != "closed") {
+		if catalog.ID == "" || len(catalog.Models) == 0 && len(catalog.Entries) == 0 || (catalog.OriginPolicy != "open" && catalog.OriginPolicy != "closed") {
 			return fmt.Errorf("invalid model catalog %q", catalog.ID)
 		}
 		if len(catalog.ID) > 128 || len(catalog.Products) == 0 {
@@ -176,6 +198,55 @@ func ValidateModelCatalogPack(pack ModelCatalogPack) error {
 		for _, value := range catalog.Models {
 			if value == "" || len(value) > 256 || strings.ContainsAny(value, "\r\n") {
 				return fmt.Errorf("invalid model id in catalog %q", catalog.ID)
+			}
+		}
+		seenEntries := make(map[string]bool, len(catalog.Entries))
+		for _, entry := range catalog.Entries {
+			if entry.ID == "" || len(entry.ID) > 128 || seenEntries[entry.ID] || strings.ContainsAny(entry.ID, "\r\n") {
+				return fmt.Errorf("invalid model catalog entry %q", catalog.ID)
+			}
+			seenEntries[entry.ID] = true
+			if entry.PublicModelID == "" || len(entry.PublicModelID) > 256 || strings.ContainsAny(entry.PublicModelID, "\r\n") || strings.Contains(entry.PublicModelID, "://") {
+				return fmt.Errorf("invalid public model id in catalog %q", catalog.ID)
+			}
+			if entry.DisplayName == "" || len(entry.DisplayName) > 256 || strings.ContainsAny(entry.DisplayName, "\r\n") {
+				return fmt.Errorf("invalid model display name in catalog %q", catalog.ID)
+			}
+			if entry.Provider == "" || len(entry.Provider) > 128 || strings.ContainsAny(entry.Provider, "\r\n") {
+				return fmt.Errorf("invalid model provider in catalog %q", catalog.ID)
+			}
+			if entry.Origin != "open" && entry.Origin != "closed" {
+				return fmt.Errorf("invalid model origin in catalog %q", catalog.ID)
+			}
+			if len(entry.Capabilities) == 0 || len(entry.Capabilities) > 16 {
+				return fmt.Errorf("invalid model capabilities in catalog %q", catalog.ID)
+			}
+			for _, capability := range append(append([]string{}, entry.Capabilities...), entry.APIFamilies...) {
+				if capability == "" || len(capability) > 64 || strings.ContainsAny(capability, "\r\n") {
+					return fmt.Errorf("invalid model capability in catalog %q", catalog.ID)
+				}
+			}
+			if len(entry.APIFamilies) > 16 || len(entry.Visibility) > 4 || len(entry.Aliases) > 16 {
+				return fmt.Errorf("model catalog entry %q has too many list values", entry.ID)
+			}
+			for _, visibility := range entry.Visibility {
+				if visibility != "guest" && visibility != "user" {
+					return fmt.Errorf("invalid model visibility in catalog %q", entry.ID)
+				}
+			}
+			if entry.AuthRequirement != "" && entry.AuthRequirement != "none" && entry.AuthRequirement != "honey_key" {
+				return fmt.Errorf("invalid model auth requirement in catalog %q", entry.ID)
+			}
+			if entry.VirtualContextTokens < 0 || entry.VirtualContextTokens > 10_000_000 || len(entry.VirtualPriceProfile) > 128 || len(entry.ResponseTemplateSet) > 128 || strings.ContainsAny(entry.VirtualPriceProfile+entry.ResponseTemplateSet, "\r\n") {
+				return fmt.Errorf("invalid virtual model metadata in catalog %q", entry.ID)
+			}
+			if entry.Status != "" && entry.Status != "active" && entry.Status != "disabled" {
+				return fmt.Errorf("invalid model status in catalog %q", entry.ID)
+			}
+			for _, alias := range entry.Aliases {
+				if alias == "" || len(alias) > 256 || strings.ContainsAny(alias, "\r\n") || strings.Contains(alias, "://") {
+					return fmt.Errorf("invalid model alias in catalog %q", entry.ID)
+				}
 			}
 		}
 	}
@@ -192,7 +263,7 @@ func ValidateScenarioPackDocument(document ScenarioPackDocument) error {
 		return errors.New("scenario pack is incomplete")
 	}
 	for _, pack := range document.Packs {
-		if pack.ID == "" || pack.Product == "" || pack.AuthPosture == "" || pack.EffectTTLSec < 0 || pack.EffectTTLSec > 24*60*60 {
+		if pack.ID == "" || pack.Product == "" || pack.AuthPosture == "" || pack.EffectTTLSec <= 0 || pack.EffectTTLSec > 24*60*60 {
 			return fmt.Errorf("invalid scenario pack %q", pack.ID)
 		}
 		if len(pack.ID) > 128 || !allowedProducts[pack.Product] {

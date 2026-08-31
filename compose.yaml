@@ -15,7 +15,7 @@ services:
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      test: ["CMD-SHELL", "test -s /var/lib/aegislure/config.json && kill -0 1"]
+      test: ["CMD", "/usr/local/bin/hpctl", "health", "--config", "/var/lib/aegislure/config.json"]
       interval: 10s
       timeout: 3s
       retries: 3
@@ -29,6 +29,10 @@ services:
       HP_PROFILES: ${HP_PROFILES:-ollama,vllm}
       HP_ADMIN_PORT: ${HP_ADMIN_PORT:-28443}
       HP_COOKIE_SECURE: "1"
+      HP_REQUIRE_TLS: "1"
+      # Optional exact Host header allowlist, comma-separated. Keep empty to
+      # support a trusted reverse proxy with multiple approved hostnames.
+      HP_ADMIN_HOSTS: ${HP_ADMIN_HOSTS:-}
       # Public profile listeners are plain HTTP in this baseline. Set this to
       # 1 only when a trusted HTTPS edge terminates those listeners too.
       HP_PUBLIC_COOKIE_SECURE: "0"
@@ -40,17 +44,122 @@ services:
       - target: ${NEW_API_TARGET_PORT:-3000}
         published: "${NEW_API_PORT:-3000}"
         host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 3001
+        published: "${NEW_API_PORT_1:-3001}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 3002
+        published: "${NEW_API_PORT_2:-3002}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 3003
+        published: "${NEW_API_PORT_3:-3003}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 3004
+        published: "${NEW_API_PORT_4:-3004}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 3005
+        published: "${NEW_API_PORT_5:-3005}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 3006
+        published: "${NEW_API_PORT_6:-3006}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 3007
+        published: "${NEW_API_PORT_7:-3007}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
       - target: ${VLLM_TARGET_PORT:-8000}
         published: "${VLLM_PORT:-8000}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 8001
+        published: "${VLLM_PORT_1:-8001}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 8002
+        published: "${VLLM_PORT_2:-8002}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 8003
+        published: "${VLLM_PORT_3:-8003}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 8004
+        published: "${VLLM_PORT_4:-8004}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 8005
+        published: "${VLLM_PORT_5:-8005}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 8006
+        published: "${VLLM_PORT_6:-8006}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 8007
+        published: "${VLLM_PORT_7:-8007}"
         host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
       - target: ${OLLAMA_TARGET_PORT:-11434}
         published: "${OLLAMA_PORT:-11434}"
         host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 11435
+        published: "${OLLAMA_PORT_1:-11435}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 11436
+        published: "${OLLAMA_PORT_2:-11436}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 11437
+        published: "${OLLAMA_PORT_3:-11437}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 11438
+        published: "${OLLAMA_PORT_4:-11438}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 11439
+        published: "${OLLAMA_PORT_5:-11439}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 11440
+        published: "${OLLAMA_PORT_6:-11440}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 11441
+        published: "${OLLAMA_PORT_7:-11441}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
       - target: ${SGLANG_TARGET_PORT:-30000}
         published: "${SGLANG_PORT:-30000}"
         host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 30001
+        published: "${SGLANG_PORT_1:-30001}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 30002
+        published: "${SGLANG_PORT_2:-30002}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 30003
+        published: "${SGLANG_PORT_3:-30003}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 30004
+        published: "${SGLANG_PORT_4:-30004}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 30005
+        published: "${SGLANG_PORT_5:-30005}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 30006
+        published: "${SGLANG_PORT_6:-30006}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 30007
+        published: "${SGLANG_PORT_7:-30007}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
       - target: ${LOCALAI_TARGET_PORT:-8080}
         published: "${LOCALAI_PORT:-8080}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 8081
+        published: "${LOCALAI_PORT_1:-8081}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 8082
+        published: "${LOCALAI_PORT_2:-8082}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 8083
+        published: "${LOCALAI_PORT_3:-8083}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 8084
+        published: "${LOCALAI_PORT_4:-8084}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 8085
+        published: "${LOCALAI_PORT_5:-8085}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 8086
+        published: "${LOCALAI_PORT_6:-8086}"
+        host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
+      - target: 8087
+        published: "${LOCALAI_PORT_7:-8087}"
         host_ip: "${HP_PORT_BIND_IP:-0.0.0.0}"
       - target: ${HP_ADMIN_PORT:-28443}
         published: "${HP_ADMIN_PORT:-28443}"

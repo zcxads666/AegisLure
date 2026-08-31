@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,7 +34,7 @@ func (a *App) adminHandler() http.Handler {
 		if r.TLS != nil {
 			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 		}
-		if !strings.HasPrefix(r.URL.Path, a.cfg.AdminPath) {
+		if !a.adminHostAllowed(r.Host) || !strings.HasPrefix(r.URL.Path, a.cfg.AdminPath) {
 			silentClose(w)
 			return
 		}
@@ -75,6 +76,29 @@ func silentClose(w http.ResponseWriter) {
 			_ = conn.Close()
 		}
 		return
+	}
+}
+
+func (a *App) auditActor(r *http.Request) string {
+	if r != nil {
+		if cookie, err := r.Cookie("hp_admin"); err == nil {
+			a.mu.Lock()
+			session, ok := a.adminSessions[cookie.Value]
+			a.mu.Unlock()
+			if ok && session.Username != "" {
+				return session.Username
+			}
+		}
+	}
+	return "system"
+}
+
+func (a *App) recordAudit(r *http.Request, action, target, result string, metadata map[string]string) {
+	if a.store == nil {
+		return
+	}
+	if err := a.store.AppendAudit(model.AuditEntry{Actor: a.auditActor(r), Action: action, Target: target, Result: result, Metadata: metadata}); err != nil && a.log != nil {
+		a.log.Printf("audit append failed action=%s target=%s error=%v", action, target, err)
 	}
 }
 
@@ -137,6 +161,7 @@ func (a *App) setupCreateOwner(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "owner setup failed"})
 		return
 	}
+	a.recordAudit(r, "admin.setup.create_owner", "admin", "success", map[string]string{"username_fp": security.Fingerprint(a.cfg.InstanceKey, username)[:20]})
 	a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "recovery_codes": recovery, "warning": "Recovery codes are shown once. Store them offline.", "security_note": "MFA and bootstrap verification are disabled by this deployment configuration."})
 }
 
@@ -169,7 +194,8 @@ func (a *App) adminLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	id, _ := security.RandomToken(24)
 	a.setAdminSession(id, AdminSession{ID: id, Username: admin.OwnerUsername, CreatedAt: time.Now().UTC(), LastSeen: time.Now().UTC()})
-	http.SetCookie(w, &http.Cookie{Name: "hp_admin", Value: id, Path: a.cfg.AdminPath, HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: os.Getenv("HP_COOKIE_SECURE") == "1", MaxAge: 8 * 3600})
+	a.recordAudit(r, "admin.login", "admin", "success", nil)
+	http.SetCookie(w, &http.Cookie{Name: "hp_admin", Value: id, Path: a.cfg.AdminPath, HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: a.adminCookieSecure(r), MaxAge: 8 * 3600})
 	a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "username": admin.OwnerUsername})
 }
 
@@ -276,6 +302,7 @@ func (a *App) adminRecoveryReset(w http.ResponseWriter, r *http.Request) {
 		delete(a.adminSessions, id)
 	}
 	a.mu.Unlock()
+	a.recordAudit(r, "admin.recovery.reset", "admin", "success", nil)
 	a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "password reset"})
 }
 
@@ -287,7 +314,7 @@ func (a *App) adminLogout(w http.ResponseWriter, r *http.Request) {
 	if cookie, err := r.Cookie("hp_admin"); err == nil {
 		a.deleteAdminSession(cookie.Value)
 	}
-	http.SetCookie(w, &http.Cookie{Name: "hp_admin", Value: "", Path: a.cfg.AdminPath, MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: os.Getenv("HP_COOKIE_SECURE") == "1"})
+	http.SetCookie(w, &http.Cookie{Name: "hp_admin", Value: "", Path: a.cfg.AdminPath, MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: a.adminCookieSecure(r)})
 	a.writeJSON(w, http.StatusOK, map[string]bool{"success": true})
 }
 
@@ -324,6 +351,10 @@ func (a *App) handleAdminAPI(w http.ResponseWriter, r *http.Request, path string
 		a.setupStatus(w)
 		return
 	}
+	if path == "health" && r.Method == http.MethodGet {
+		a.adminHealth(w)
+		return
+	}
 	if _, ok := a.adminSession(r); !ok {
 		a.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "admin authentication required"})
 		return
@@ -334,20 +365,58 @@ func (a *App) handleAdminAPI(w http.ResponseWriter, r *http.Request, path string
 	switch {
 	case path == "dashboard":
 		a.adminDashboard(w)
+	case path == "import-sources" || strings.HasPrefix(path, "import-sources/"):
+		a.adminImportSourceRoute(w, r, path)
+	case path == "exports" && r.Method == http.MethodPost:
+		a.adminExportCreate(w, r)
+	case strings.HasPrefix(path, "exports/") && r.Method == http.MethodGet:
+		a.adminExportRoute(w, r, path)
 	case path == "events":
 		a.adminEvents(w, r)
+	case strings.HasPrefix(path, "events/") && r.Method == http.MethodGet:
+		a.adminEventDetail(w, r, strings.TrimPrefix(path, "events/"))
+	case path == "sessions" && r.Method == http.MethodGet:
+		a.adminSessionsList(w, r)
+	case strings.HasPrefix(path, "sessions/") && r.Method == http.MethodGet:
+		a.adminSessionDetail(w, r, strings.TrimPrefix(path, "sessions/"))
 	case path == "invocations":
 		a.adminInvocations(w, r)
+	case strings.HasPrefix(path, "invocations/") && r.Method == http.MethodGet:
+		a.adminInvocationDetail(w, r, strings.TrimPrefix(path, "invocations/"))
 	case path == "interaction-chains":
 		a.adminInteractionChains(w, r)
+	case strings.HasPrefix(path, "interaction-chains/") && r.Method == http.MethodGet:
+		a.adminInteractionChainDetail(w, r, strings.TrimPrefix(path, "interaction-chains/"))
+	case strings.HasPrefix(path, "actors/") && r.Method == http.MethodGet:
+		a.adminActorDetail(w, r, strings.TrimPrefix(path, "actors/"))
 	case path == "indicators" || path == "indicators/ips":
 		a.adminIndicators(w, r)
-	case path == "instances":
+	case strings.HasPrefix(path, "indicators/") && r.Method == http.MethodPost:
+		a.adminIndicatorAction(w, r, strings.TrimPrefix(path, "indicators/"))
+	case path == "identity-indicators" && r.Method == http.MethodGet:
+		a.adminIdentityIndicators(w, r)
+	case strings.HasPrefix(path, "identity-indicators/") && r.Method == http.MethodPost:
+		a.adminIdentityIndicatorAction(w, r, strings.TrimPrefix(path, "identity-indicators/"))
+	case strings.HasPrefix(path, "identity-policies/") && r.Method == http.MethodPost:
+		a.adminIdentityPolicyAction(w, r, strings.TrimPrefix(path, "identity-policies/"))
+	case path == "instances" && r.Method == http.MethodGet:
 		a.adminInstances(w)
+	case path == "instances" && r.Method == http.MethodPost:
+		a.adminInstanceCreate(w, r)
+	case path == "instances":
+		a.writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	case path == "packs":
 		a.adminPacks(w)
+	case path == "audit":
+		a.adminAudit(w, r)
 	case path == "identity-policies":
 		a.writeJSON(w, http.StatusOK, map[string]any{"providers": []map[string]string{{"provider": "github", "mode": "local_only", "cross_site": "disabled_by_default"}, {"provider": "discord", "mode": "local_only", "cross_site": "blocked"}, {"provider": "linuxdo", "mode": "local_only", "cross_site": "pending_approval"}}})
+	case path == "identities" && r.Method == http.MethodGet:
+		a.adminIdentities(w)
+	case strings.HasPrefix(path, "identities/"):
+		a.adminIdentityAction(w, r, strings.TrimPrefix(path, "identities/"))
+	case strings.HasPrefix(path, "instances/") && (r.Method == http.MethodGet || r.Method == http.MethodPatch):
+		a.adminInstanceRoute(w, r, strings.TrimPrefix(path, "instances/"))
 	case path == "auth/change-password" && r.Method == http.MethodPost:
 		a.adminChangePassword(w, r)
 	case path == "admin-entry:rotate" && r.Method == http.MethodPost:
@@ -355,12 +424,134 @@ func (a *App) handleAdminAPI(w http.ResponseWriter, r *http.Request, path string
 			a.writeJSON(w, http.StatusForbidden, map[string]string{"error": "cross-site request rejected"})
 			return
 		}
-		a.rotateAdminEntry(w)
+		a.rotateAdminEntry(w, r)
 	case strings.HasPrefix(path, "instances/") && r.Method == http.MethodPost:
 		a.adminInstanceAction(w, r, path)
 	default:
 		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "admin route not found"})
 	}
+}
+
+func (a *App) adminHealth(w http.ResponseWriter) {
+	a.serverMu.RLock()
+	adminReady := a.adminServer != nil
+	listeners := make(map[string]map[string]any, len(a.cfg.EnabledProfiles))
+	allReady := adminReady
+	for _, name := range a.cfg.EnabledProfiles {
+		listener := a.profilePorts[name]
+		server := a.profileServers[name]
+		actualPort := a.actualProfilePortLocked(name)
+		expectedPort := a.cfg.ProfilePorts[name]
+		ready := listener != nil && server != nil && actualPort == expectedPort && expectedPort > 0
+		state := "running"
+		if !ready {
+			state = "degraded"
+			allReady = false
+		}
+		listeners[name] = map[string]any{"ready": ready, "state": state, "expected_port": expectedPort, "actual_port": actualPort, "revision": a.portRevisionLocked(name, actualPort)}
+	}
+	a.serverMu.RUnlock()
+	status := http.StatusOK
+	if !allReady {
+		status = http.StatusServiceUnavailable
+	}
+	a.writeJSON(w, status, map[string]any{"healthy": allReady, "admin_ready": adminReady, "listeners": listeners, "expected_profiles": a.cfg.EnabledProfiles, "synthetic_only": true})
+}
+
+func (a *App) adminIdentities(w http.ResponseWriter) {
+	items := make([]map[string]any, 0)
+	for _, identity := range a.store.ListHoneyIdentities() {
+		items = append(items, safeIdentityView(identity))
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"identities": items, "count": len(items), "raw_provider_id": false, "email": false, "token": false})
+}
+
+func safeIdentityView(identity model.HoneyIdentity) map[string]any {
+	return map[string]any{
+		"id":            identity.ID,
+		"provider":      identity.Provider,
+		"subject_hmac":  identity.SubjectHMAC,
+		"honey_user_id": identity.HoneyUserID,
+		"scopes":        identity.Scopes,
+		"policy_mode":   identity.PolicyMode,
+		"linked_at":     identity.LinkedAt,
+		"last_seen_at":  identity.LastSeenAt,
+		"revoked_at":    identity.RevokedAt,
+	}
+}
+
+func (a *App) adminAudit(w http.ResponseWriter, r *http.Request) {
+	limit := queryInt(r, "limit", 100)
+	if limit < 1 || limit > 1000 {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "limit must be between 1 and 1000"})
+		return
+	}
+	entries, err := a.store.AuditEntries(limit)
+	if err != nil {
+		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "audit query failed"})
+		return
+	}
+	chainValid := a.store.VerifyAuditChain() == nil
+	a.writeJSON(w, http.StatusOK, map[string]any{"entries": entries, "count": len(entries), "chain_valid": chainValid, "remote_replication": false})
+}
+
+func (a *App) adminIdentityAction(w http.ResponseWriter, r *http.Request, path string) {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) == 0 || parts[0] == "" {
+		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "identity not found"})
+		return
+	}
+	id, err := url.PathUnescape(parts[0])
+	if err != nil || id == "" || strings.Contains(id, "/") {
+		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "identity not found"})
+		return
+	}
+	if len(parts) == 1 && r.Method == http.MethodGet {
+		for _, identity := range a.store.ListHoneyIdentities() {
+			if identity.ID != id {
+				continue
+			}
+			a.writeJSON(w, http.StatusOK, map[string]any{"identity": safeIdentityView(identity), "raw_provider_id": false, "email": false, "token": false})
+			return
+		}
+		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "identity not found"})
+		return
+	}
+	if len(parts) == 1 && r.Method == http.MethodDelete {
+		if !sameOriginRequest(r) {
+			a.writeJSON(w, http.StatusForbidden, map[string]string{"error": "cross-site request rejected"})
+			return
+		}
+		if !a.allowRate("admin-identity-delete:"+requestSourceIP(r), 30, time.Minute) {
+			rateLimited(w)
+			return
+		}
+		if err := a.store.DeleteHoneyIdentity(id); err != nil {
+			a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "identity not found"})
+			return
+		}
+		a.recordAudit(r, "identity.delete", id, "success", nil)
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "deleted": true, "id": id})
+		return
+	}
+	if len(parts) == 2 && parts[1] == "revoke" && r.Method == http.MethodPost {
+		if !sameOriginRequest(r) {
+			a.writeJSON(w, http.StatusForbidden, map[string]string{"error": "cross-site request rejected"})
+			return
+		}
+		if !a.allowRate("admin-identity-revoke:"+requestSourceIP(r), 30, time.Minute) {
+			rateLimited(w)
+			return
+		}
+		if err := a.store.RevokeHoneyIdentity(id); err != nil {
+			a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "identity not found"})
+			return
+		}
+		a.recordAudit(r, "identity.revoke", id, "success", nil)
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "revoked": true, "id": id})
+		return
+	}
+	a.writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 }
 
 func (a *App) adminChangePassword(w http.ResponseWriter, r *http.Request) {
@@ -413,6 +604,7 @@ func (a *App) adminChangePassword(w http.ResponseWriter, r *http.Request) {
 		delete(a.adminSessions, id)
 	}
 	a.mu.Unlock()
+	a.recordAudit(r, "admin.password.change", "admin", "success", nil)
 	a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "password changed; sign in again"})
 }
 
@@ -422,13 +614,28 @@ func (a *App) adminInstanceAction(w http.ResponseWriter, r *http.Request, path s
 		return
 	}
 	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) != 3 || parts[0] != "instances" {
+	if len(parts) < 2 || len(parts) > 3 || parts[0] != "instances" {
 		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "instance route not found"})
 		return
 	}
-	name, action := parts[1], parts[2]
+	name, action := parts[1], ""
+	if len(parts) == 3 {
+		action = parts[2]
+	} else {
+		var ok bool
+		name, action, ok = strings.Cut(parts[1], ":")
+		if !ok {
+			a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "instance route not found"})
+			return
+		}
+	}
+	name = strings.TrimPrefix(name, "inst_")
 	if _, ok := a.profiles[name]; !ok {
 		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "profile not found"})
+		return
+	}
+	if action == "move-port" || action == "dry-run" {
+		a.adminMovePort(w, r, name, action == "dry-run")
 		return
 	}
 	if action != "start" && action != "stop" && action != "restart" {
@@ -460,7 +667,40 @@ func (a *App) adminInstanceAction(w http.ResponseWriter, r *http.Request, path s
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "instance configuration save failed"})
 		return
 	}
+	a.recordAudit(r, "instance."+action, "inst_"+name, "success", map[string]string{"profile": name})
 	a.adminInstances(w)
+}
+
+func (a *App) adminMovePort(w http.ResponseWriter, r *http.Request, profile string, dryRun bool) {
+	if !a.allowRate("admin-instance-port:"+profile, 20, time.Minute) {
+		rateLimited(w)
+		return
+	}
+	body, tooLarge := readBoundedBody(r, 8*1024)
+	if tooLarge {
+		a.writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "request body too large"})
+		return
+	}
+	var request portMoveRequest
+	if err := decodeStrictValue(body, &request); err != nil {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid port change request"})
+		return
+	}
+	result, err := a.moveProfilePort(profile, request, dryRun)
+	if err != nil {
+		status := http.StatusConflict
+		if strings.Contains(err.Error(), "must be") || strings.Contains(err.Error(), "outside") || strings.Contains(err.Error(), "not found") {
+			status = http.StatusUnprocessableEntity
+		}
+		a.writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	if !dryRun && result.Applied {
+		a.recordAudit(r, "instance.move_port", "inst_"+profile, "success", map[string]string{
+			"from_port": strconv.Itoa(result.CurrentPort), "to_port": strconv.Itoa(result.DesiredPort), "revision": result.DesiredRevision,
+		})
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"plan": result, "dry_run": dryRun, "safe": true})
 }
 
 func (a *App) persistProfileSelection(name string, enabled bool) error {
@@ -694,33 +934,45 @@ func invocationRank(level model.InvocationLevel) int {
 }
 
 func (a *App) adminIndicators(w http.ResponseWriter, r *http.Request) {
-	format := r.URL.Query().Get("format")
-	if format == "csv" || format == "plain" || format == "txt" {
-		content, checksum, err := a.store.Export(format, queryInt(r, "min_score", 0))
-		if err != nil {
-			a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "export failed"})
+	items, decisions, err := a.filteredIndicators(r)
+	if err != nil {
+		status := http.StatusInternalServerError
+		var validationErr *indicatorQueryError
+		if errors.As(err, &validationErr) {
+			status = http.StatusBadRequest
+		}
+		a.writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
+	if format != "" {
+		if format == "nftables" && r.URL.Query().Get("status") != "approved" {
+			a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nftables export requires status=approved"})
 			return
 		}
-		w.Header().Set("Content-Type", map[string]string{"csv": "text/csv; charset=utf-8", "plain": "text/plain; charset=utf-8", "txt": "text/plain; charset=utf-8"}[format])
-		w.Header().Set("Content-Disposition", "attachment; filename=indicators."+format)
+		content, contentType, err := renderIndicatorExport(items, decisions, format, a.cfg.InstanceKey)
+		if err != nil {
+			status := http.StatusInternalServerError
+			if strings.Contains(err.Error(), "unsupported") {
+				status = http.StatusBadRequest
+			}
+			a.writeJSON(w, status, map[string]string{"error": err.Error()})
+			return
+		}
+		checksum := security.Fingerprint(a.cfg.InstanceKey, content)
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Content-Disposition", "attachment; filename=indicators."+indicatorExportExtension(format))
 		w.Header().Set("X-Content-SHA256", checksum)
+		a.recordAudit(r, "indicator.export", "indicators", "success", map[string]string{"format": format, "min_score": strconv.Itoa(queryInt(r, "min_score", 0)), "status": r.URL.Query().Get("status")})
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(content))
 		return
 	}
-	items, err := a.store.Indicators()
-	if err != nil {
-		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "indicator query failed"})
-		return
-	}
-	minScore := queryInt(r, "min_score", 0)
-	filtered := items[:0]
+	views := make([]map[string]any, 0, len(items))
 	for _, item := range items {
-		if item.Score >= minScore {
-			filtered = append(filtered, item)
-		}
+		views = append(views, indicatorView(item, decisions[item.IP], a.cfg.InstanceKey))
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"items": filtered, "approved_only": false, "note": "MVP exposes observations; production feeds must require manual approval and TTL."})
+	a.writeJSON(w, http.StatusOK, map[string]any{"items": views, "count": len(views), "approved_only": r.URL.Query().Get("status") == "approved", "note": "Standalone decisions require manual approval and always carry a TTL; no permanent block is emitted."})
 }
 
 func (a *App) adminInstances(w http.ResponseWriter) {
@@ -730,18 +982,30 @@ func (a *App) adminInstances(w http.ResponseWriter) {
 	}
 	a.serverMu.RLock()
 	running := make(map[string]bool, len(a.profileServers))
+	actualPorts := make(map[string]int, len(a.profileServers))
+	portRevisions := make(map[string]string, len(a.profileServers))
 	for name := range a.profileServers {
 		running[name] = true
+	}
+	for name := range a.profiles {
+		port := a.actualProfilePortLocked(name)
+		actualPorts[name] = port
+		portRevisions[name] = a.portRevisionLocked(name, port)
 	}
 	a.serverMu.RUnlock()
 	instances := make([]map[string]any, 0, len(a.profiles))
 	for _, name := range []string{model.ProductNewAPI, model.ProductVLLM, model.ProductOllama, model.ProductSGLang, model.ProductLocalAI} {
 		profile := a.profiles[name]
+		profile = a.applyRuntimePacks(profile)
 		state := "stopped"
 		if running[name] {
 			state = "running"
 		}
-		instances = append(instances, map[string]any{"id": "inst_" + name, "product": name, "profile_id": profile.ID, "port": profile.DefaultPort, "scenario": profile.Scenario, "state": state, "enabled": configured[name], "endpoint": fmt.Sprintf("%s:%d", a.cfg.PublicBind, profile.DefaultPort), "version": profile.DisplayVersion, "synthetic_only": true})
+		port := actualPorts[name]
+		if port == 0 {
+			port = profile.DefaultPort
+		}
+		instances = append(instances, map[string]any{"id": "inst_" + name, "product": name, "profile_id": profile.ID, "port": port, "port_pool": a.cfg.PortPools[name], "port_revision": portRevisions[name], "scenario": profile.Scenario, "effect_scope": profile.EffectScope, "effect_ttl_seconds": int(profile.EffectTTL / time.Second), "state": state, "enabled": configured[name], "endpoint": fmt.Sprintf("%s:%d", a.cfg.PublicBind, port), "version": profile.DisplayVersion, "synthetic_only": true})
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"instances": instances})
 }
@@ -754,10 +1018,18 @@ func (a *App) adminPacks(w http.ResponseWriter) {
 		}
 	}
 	bindings := a.store.PackBindings()
-	a.writeJSON(w, http.StatusOK, map[string]any{"fingerprint_revision": "builtin-v1", "model_catalog_revision": "seed-2026q3", "scenario_revision": "builtin-safe-v1", "detector_revision": "builtin-rules-v1", "lifecycle": []string{model.PackDraft, model.PackValidated, model.PackUnitTest, model.PackReplay, model.PackShadow, model.PackCanary, model.PackActive, model.PackRollback}, "items": items, "bindings": bindings, "data_only": true})
+	boundRevisions := make(map[string]string)
+	for _, name := range []string{model.ProductNewAPI, model.ProductVLLM, model.ProductOllama, model.ProductSGLang, model.ProductLocalAI} {
+		for _, kind := range []string{model.PackKindFingerprint, model.PackKindModel, model.PackKindScenario, model.PackKindDetector} {
+			if pack, ok := a.store.BoundPack(kind, "inst_"+name); ok {
+				boundRevisions[name+"/"+kind] = pack.Revision
+			}
+		}
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"fingerprint_revision": "builtin-v1", "model_catalog_revision": "seed-2026q3", "scenario_revision": "builtin-safe-v1", "detector_revision": "builtin-rules-v1", "lifecycle": []string{model.PackDraft, model.PackValidated, model.PackUnitTest, model.PackReplay, model.PackShadow, model.PackCanary, model.PackActive, model.PackRollback}, "items": items, "bindings": bindings, "bound_revisions": boundRevisions, "data_only": true})
 }
 
-func (a *App) rotateAdminEntry(w http.ResponseWriter) {
+func (a *App) rotateAdminEntry(w http.ResponseWriter, r *http.Request) {
 	token, err := security.RandomToken(18)
 	if err != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "rotation failed"})
@@ -777,6 +1049,7 @@ func (a *App) rotateAdminEntry(w http.ResponseWriter) {
 		delete(a.adminSessions, id)
 	}
 	a.mu.Unlock()
+	a.recordAudit(r, "admin.entry.rotate", "admin", "success", map[string]string{"path_fp": security.Fingerprint(a.cfg.InstanceKey, a.cfg.AdminPath)[:20]})
 	a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "entry path rotated; restart the admin listener if the port also changes", "new_path": a.cfg.AdminPath, "port": a.cfg.AdminPort})
 }
 
@@ -819,6 +1092,67 @@ func requestSourceIP(r *http.Request) string {
 		return host
 	}
 	return r.RemoteAddr
+}
+
+func (a *App) adminCookieSecure(r *http.Request) bool {
+	return r.TLS != nil || a.cfg.RequireAdminTLS || os.Getenv("HP_COOKIE_SECURE") == "1"
+}
+
+func (a *App) adminHostAllowed(value string) bool {
+	host, port, hasPort, ok := parseAdminHost(value)
+	if !ok {
+		return false
+	}
+	if len(a.cfg.AdminHostAllowlist) == 0 {
+		return true
+	}
+	for _, allowed := range a.cfg.AdminHostAllowlist {
+		allowedHost, allowedPort, allowedHasPort, allowedOK := parseAdminHost(allowed)
+		if !allowedOK {
+			continue
+		}
+		if strings.EqualFold(host, allowedHost) && (!allowedHasPort || hasPort && port == allowedPort) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseAdminHost(value string) (host, port string, hasPort, ok bool) {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.ContainsAny(value, "\r\n,/\\?# \t") {
+		return "", "", false, false
+	}
+	if strings.HasPrefix(value, "[") {
+		if parsedHost, parsedPort, err := net.SplitHostPort(value); err == nil {
+			if parsedHost == "" || !validHostPort(parsedPort) {
+				return "", "", false, false
+			}
+			return parsedHost, parsedPort, true, true
+		}
+		if strings.HasSuffix(value, "]") {
+			host = strings.TrimSuffix(strings.TrimPrefix(value, "["), "]")
+			return host, "", false, host != "" && net.ParseIP(host) != nil
+		}
+		return "", "", false, false
+	}
+	if strings.Count(value, ":") == 1 {
+		parsedHost, parsedPort, err := net.SplitHostPort(value)
+		if err != nil || parsedHost == "" || !validHostPort(parsedPort) {
+			return "", "", false, false
+		}
+		return parsedHost, parsedPort, true, true
+	}
+	if strings.Contains(value, ":") {
+		// Host headers must bracket IPv6 literals when a port is absent too.
+		return "", "", false, false
+	}
+	return value, "", false, true
+}
+
+func validHostPort(value string) bool {
+	port, err := strconv.Atoi(value)
+	return err == nil && port >= 1 && port <= 65535
 }
 
 func rateLimited(w http.ResponseWriter) {

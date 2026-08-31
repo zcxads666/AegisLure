@@ -107,22 +107,43 @@ func loadConfig(fs *flag.FlagSet) *config.Config {
 	return cfg
 }
 
+func storeOptions(cfg *config.Config) store.Options {
+	return store.Options{
+		MaxEvents:      cfg.EventMaxEntries,
+		EventRetention: time.Duration(cfg.EventRetentionDays) * 24 * time.Hour,
+	}
+}
+
 func statusCommand(args []string) {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	fs.String("config", "./config.json", "runtime config path")
 	_ = fs.Parse(args)
 	cfg := loadConfig(fs)
-	st, err := store.Open(cfg.DataDir, cfg.InstanceKey)
+	st, err := store.OpenWithOptions(cfg.DataDir, cfg.InstanceKey, storeOptions(cfg))
 	if err != nil {
 		fatal(err)
 	}
-	result := map[string]any{"instance_id": cfg.InstanceID, "admin_port": cfg.AdminPort, "admin_path_configured": cfg.AdminPath != "", "enabled_profiles": cfg.EnabledProfiles, "admin_initialized": st.Admin().Initialized, "data_dir": cfg.DataDir}
+	scheme := "http"
+	certPath := strings.TrimSpace(os.Getenv("HP_TLS_CERT"))
+	keyPath := strings.TrimSpace(os.Getenv("HP_TLS_KEY"))
+	if certPath == "" {
+		certPath = filepath.Join(filepath.Dir(fs.Lookup("config").Value.String()), "secrets", "admin.crt")
+	}
+	if keyPath == "" {
+		keyPath = filepath.Join(filepath.Dir(fs.Lookup("config").Value.String()), "secrets", "admin.key")
+	}
+	if cfg.RequireAdminTLS || fileExists(certPath) && fileExists(keyPath) {
+		scheme = "https"
+	}
+	result := map[string]any{"instance_id": cfg.InstanceID, "admin_port": cfg.AdminPort, "admin_path_configured": cfg.AdminPath != "", "admin_url": fmt.Sprintf("%s://127.0.0.1:%d%s", scheme, cfg.AdminPort, cfg.AdminPath), "require_admin_tls": cfg.RequireAdminTLS, "enabled_profiles": cfg.EnabledProfiles, "admin_initialized": st.Admin().Initialized, "data_dir": cfg.DataDir, "database_path": st.DatabasePath(), "sqlite_wal": true}
+	_ = st.Close()
 	printJSON(result)
 }
 
 func healthCommand(args []string) {
 	fs := flag.NewFlagSet("health", flag.ExitOnError)
 	fs.String("config", "./config.json", "runtime config path")
+	host := fs.String("host", "", "Host header allowed by the admin listener; defaults to the first configured allowlist entry or 127.0.0.1")
 	_ = fs.Parse(args)
 	cfg := loadConfig(fs)
 	scheme := "http"
@@ -134,16 +155,28 @@ func healthCommand(args []string) {
 	if keyPath == "" {
 		keyPath = filepath.Join(filepath.Dir(fs.Lookup("config").Value.String()), "secrets", "admin.key")
 	}
-	if fileExists(certPath) && fileExists(keyPath) {
+	if cfg.RequireAdminTLS || fileExists(certPath) && fileExists(keyPath) {
 		scheme = "https"
 	}
 	transport := &http.Transport{Proxy: nil}
 	if scheme == "https" {
 		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true} // local self-signed install certificate
 	}
-	client := &http.Client{Timeout: 3 * time.Second, Transport: transport}
-	endpoint := fmt.Sprintf("%s://127.0.0.1:%d%ssetup/status", scheme, cfg.AdminPort, cfg.AdminPath)
-	response, err := client.Get(endpoint)
+	client := &http.Client{Timeout: 3 * time.Second, Transport: transport, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	endpoint := fmt.Sprintf("%s://127.0.0.1:%d%sadmin/api/v1/health", scheme, cfg.AdminPort, cfg.AdminPath)
+	request, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		fatal(fmt.Errorf("health request failed: %w", err))
+	}
+	request.Host = strings.TrimSpace(*host)
+	if request.Host == "" {
+		if len(cfg.AdminHostAllowlist) > 0 {
+			request.Host = cfg.AdminHostAllowlist[0]
+		} else {
+			request.Host = "127.0.0.1"
+		}
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		fatal(fmt.Errorf("health check failed: %w", err))
 	}
@@ -278,7 +311,7 @@ func adminCommand(args []string) {
 
 func adminEntryRotate(args []string) {
 	fs := flag.NewFlagSet("admin entry rotate", flag.ExitOnError)
-	fs.String("config", "./config.json", "runtime config path")
+	configPath := fs.String("config", "./config.json", "runtime config path")
 	_ = fs.Parse(args)
 	cfg := loadConfig(fs)
 	token, err := security.RandomToken(18)
@@ -286,8 +319,10 @@ func adminEntryRotate(args []string) {
 		fatal(err)
 	}
 	cfg.AdminPath = "/" + token + "/"
-	path := fs.Lookup("config").Value.String()
-	if err := config.Save(path, cfg); err != nil {
+	if err := config.Save(*configPath, cfg); err != nil {
+		fatal(err)
+	}
+	if err := appendCLIAudit(cfg, "admin.entry.rotate", "admin", "success", map[string]string{"path_fp": security.Fingerprint(cfg.InstanceKey, cfg.AdminPath)[:20]}); err != nil {
 		fatal(err)
 	}
 	fmt.Printf("admin_path=%s\nadmin_port=%d\nrestart the service before using the new entry path\n", cfg.AdminPath, cfg.AdminPort)
@@ -295,17 +330,18 @@ func adminEntryRotate(args []string) {
 
 func adminResetIssue(args []string) {
 	fs := flag.NewFlagSet("admin reset issue", flag.ExitOnError)
-	configPath := fs.String("config", "./config.json", "runtime config path")
+	fs.String("config", "./config.json", "runtime config path")
 	username := fs.String("user", "", "owner username")
 	_ = fs.Parse(args)
 	if strings.TrimSpace(*username) == "" {
 		fatal(errors.New("--user is required"))
 	}
 	cfg := loadConfig(fs)
-	st, err := store.Open(cfg.DataDir, cfg.InstanceKey)
+	st, err := store.OpenWithOptions(cfg.DataDir, cfg.InstanceKey, storeOptions(cfg))
 	if err != nil {
 		fatal(err)
 	}
+	defer st.Close()
 	admin := st.Admin()
 	if !admin.Initialized || admin.OwnerUsername != *username {
 		fatal(errors.New("owner not found"))
@@ -325,9 +361,23 @@ func adminResetIssue(args []string) {
 	}); err != nil {
 		fatal(err)
 	}
+	if err := st.AppendAudit(model.AuditEntry{Actor: "local_cli", Action: "admin.recovery.issue", Target: "admin", Result: "success", Metadata: map[string]string{"username_fp": security.Fingerprint(cfg.InstanceKey, *username)[:20]}}); err != nil {
+		fatal(err)
+	}
 	fmt.Printf("recovery_code=%s\nexpires_in=600\n", code)
 	fmt.Println("Use this code once with auth/recovery-code/reset to replace the owner password.")
-	_ = configPath
+}
+
+func appendCLIAudit(cfg *config.Config, action, target, result string, metadata map[string]string) error {
+	if cfg == nil || cfg.DataDir == "" || cfg.InstanceKey == "" {
+		return errors.New("audit requires a complete runtime config")
+	}
+	st, err := store.OpenWithOptions(cfg.DataDir, cfg.InstanceKey, storeOptions(cfg))
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	return st.AppendAudit(model.AuditEntry{Actor: "local_cli", Action: action, Target: target, Result: result, Metadata: metadata})
 }
 
 func backupCommand(args []string) {
@@ -339,7 +389,26 @@ func backupCommand(args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	files := []string{*configPath, filepath.Join(cfg.DataDir, "state.json"), filepath.Join(cfg.DataDir, "events.jsonl")}
+	st, err := store.OpenWithOptions(cfg.DataDir, cfg.InstanceKey, storeOptions(cfg))
+	if err != nil {
+		fatal(err)
+	}
+	defer st.Close()
+	stage, err := os.MkdirTemp(cfg.DataDir, ".aegislure-backup-")
+	if err != nil {
+		fatal(err)
+	}
+	defer os.RemoveAll(stage)
+	databaseSnapshot := filepath.Join(stage, "aegislure.sqlite")
+	if err := st.BackupTo(databaseSnapshot); err != nil {
+		fatal(err)
+	}
+	files := []string{*configPath, databaseSnapshot, filepath.Join(cfg.DataDir, "state.json"), filepath.Join(cfg.DataDir, "events.jsonl")}
+	for _, inputPath := range []string{*configPath, filepath.Join(cfg.DataDir, "state.json"), filepath.Join(cfg.DataDir, "events.jsonl")} {
+		if sameFilePath(*output, inputPath) {
+			fatal(errors.New("backup output must differ from runtime files"))
+		}
+	}
 	archive, err := os.OpenFile(*output, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
 	if err != nil {
 		fatal(err)
@@ -352,6 +421,9 @@ func backupCommand(args []string) {
 		}
 	}
 	if err := zw.Close(); err != nil {
+		fatal(err)
+	}
+	if err := archive.Sync(); err != nil {
 		fatal(err)
 	}
 	fmt.Printf("backup=%s\n", *output)
@@ -379,13 +451,18 @@ func restoreCommand(args []string) {
 		fatal(err)
 	}
 	defer os.RemoveAll(stage)
-	allowed := map[string]bool{"config.json": true, "state.json": true, "events.jsonl": true}
+	allowed := map[string]bool{"config.json": true, "aegislure.sqlite": true, "state.json": true, "events.jsonl": true}
+	seenEntries := make(map[string]bool, len(allowed))
 	var total int64
 	for _, file := range archive.File {
 		name := filepath.ToSlash(file.Name)
 		if filepath.Base(name) != name || !allowed[name] || file.FileInfo().IsDir() {
 			fatal(fmt.Errorf("unsafe or unsupported backup entry %q", file.Name))
 		}
+		if seenEntries[name] {
+			fatal(fmt.Errorf("duplicate backup entry %q", file.Name))
+		}
+		seenEntries[name] = true
 		if file.UncompressedSize64 > 64*1024*1024 || total+int64(file.UncompressedSize64) > 128*1024*1024 {
 			fatal(errors.New("backup exceeds restore size limits"))
 		}
@@ -414,6 +491,49 @@ func restoreCommand(args []string) {
 	if cfg.InstanceKey == "" || cfg.InstanceID == "" || cfg.AdminPath == "" {
 		fatal(errors.New("backup config is incomplete"))
 	}
+	stagedDatabase := filepath.Join(stage, "aegislure.sqlite")
+	databasePresent := false
+	statePresent := false
+	eventsPresent := false
+	for _, name := range []string{"state.json", "events.jsonl"} {
+		if _, statErr := os.Stat(filepath.Join(stage, name)); statErr == nil {
+			if name == "state.json" {
+				statePresent = true
+			} else {
+				eventsPresent = true
+			}
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			fatal(fmt.Errorf("inspect staged backup entry %s: %w", name, statErr))
+		}
+	}
+	if _, statErr := os.Stat(stagedDatabase); statErr == nil {
+		databasePresent = true
+		verificationDir, verifyErr := os.MkdirTemp(stage, ".db-verify-")
+		if verifyErr != nil {
+			fatal(verifyErr)
+		}
+		if err := copyFileAtomic(stagedDatabase, filepath.Join(verificationDir, "aegislure.sqlite"), 0600); err != nil {
+			_ = os.RemoveAll(verificationDir)
+			fatal(fmt.Errorf("invalid backup sqlite database: %w", err))
+		}
+		verifiedStore, verifyErr := store.OpenWithOptions(verificationDir, cfg.InstanceKey, storeOptions(cfg))
+		if verifyErr != nil {
+			_ = os.RemoveAll(verificationDir)
+			fatal(fmt.Errorf("invalid backup sqlite database: %w", verifyErr))
+		}
+		if closeErr := verifiedStore.Close(); closeErr != nil {
+			_ = os.RemoveAll(verificationDir)
+			fatal(fmt.Errorf("close backup sqlite verification: %w", closeErr))
+		}
+		if err := os.RemoveAll(verificationDir); err != nil {
+			fatal(fmt.Errorf("remove sqlite verification files: %w", err))
+		}
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		fatal(fmt.Errorf("inspect backup sqlite database: %w", statErr))
+	}
+	if !databasePresent && !statePresent && !eventsPresent {
+		fatal(errors.New("backup contains neither sqlite database nor legacy state/event data"))
+	}
 	if err := os.MkdirAll(*dataDir, 0700); err != nil {
 		fatal(err)
 	}
@@ -428,6 +548,18 @@ func restoreCommand(args []string) {
 		}
 	}
 	cfg.DataDir = *dataDir
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		if !databasePresent || suffix != "" {
+			if err := os.Remove(filepath.Join(*dataDir, "aegislure.sqlite"+suffix)); err != nil && !errors.Is(err, os.ErrNotExist) {
+				fatal(fmt.Errorf("remove old sqlite file: %w", err))
+			}
+		}
+	}
+	if databasePresent {
+		if err := copyFileAtomic(stagedDatabase, filepath.Join(*dataDir, "aegislure.sqlite"), 0600); err != nil {
+			fatal(err)
+		}
+	}
 	if err := config.Save(*configPath, cfg); err != nil {
 		fatal(err)
 	}
@@ -518,17 +650,30 @@ func importCommand(args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	st, err := store.Open(cfg.DataDir, cfg.InstanceKey)
+	st, err := store.OpenWithOptions(cfg.DataDir, cfg.InstanceKey, storeOptions(cfg))
 	if err != nil {
 		fatal(err)
 	}
 	defer st.Close()
+	if source, exists := st.GetImportSource(*sourceID); exists {
+		if err := validateRegisteredImportSource(source, *product, *schemaVersion); err != nil {
+			fatal(fmt.Errorf("import source %q: %w", *sourceID, err))
+		}
+	}
 	identity := *fileID
 	if strings.TrimSpace(identity) == "" {
 		identity = filepath.Base(*input)
 	}
 	stats, err := importer.ImportJSONL(file, importer.Source{ID: *sourceID, FileID: identity, Product: *product, SchemaVersion: *schemaVersion}, st)
 	if err != nil {
+		fatal(err)
+	}
+	if _, exists := st.GetImportSource(*sourceID); exists {
+		if err := st.RecordImportSourceStats(*sourceID, stats.Read, stats.Imported, stats.Duplicates, stats.Rejected); err != nil {
+			fatal(err)
+		}
+	}
+	if err := st.AppendAudit(model.AuditEntry{Actor: "local_cli", Action: "import.run", Target: *sourceID, Result: "success", Metadata: map[string]string{"product": *product, "file_id_fp": security.Fingerprint(cfg.InstanceKey, identity)[:20], "imported": fmt.Sprintf("%d", stats.Imported), "duplicates": fmt.Sprintf("%d", stats.Duplicates), "rejected": fmt.Sprintf("%d", stats.Rejected)}}); err != nil {
 		fatal(err)
 	}
 	printJSON(stats)
@@ -544,6 +689,9 @@ func addFile(zw *zip.Writer, path string) error {
 	if err != nil {
 		return err
 	}
+	if info.Size() < 0 || info.Size() > 64*1024*1024 {
+		return errors.New("backup input file exceeds the 64 MiB limit")
+	}
 	name := filepath.ToSlash(filepath.Base(path))
 	w, err := zw.Create(name)
 	if err != nil {
@@ -551,6 +699,20 @@ func addFile(zw *zip.Writer, path string) error {
 	}
 	_, err = io.Copy(w, io.LimitReader(f, info.Size()))
 	return err
+}
+
+func sameFilePath(left, right string) bool {
+	leftAbs, leftErr := filepath.Abs(filepath.Clean(left))
+	rightAbs, rightErr := filepath.Abs(filepath.Clean(right))
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	if leftAbs == rightAbs {
+		return true
+	}
+	leftInfo, leftStatErr := os.Stat(leftAbs)
+	rightInfo, rightStatErr := os.Stat(rightAbs)
+	return leftStatErr == nil && rightStatErr == nil && os.SameFile(leftInfo, rightInfo)
 }
 
 func portsCommand(args []string) {
@@ -635,9 +797,6 @@ func portsApplyCommand(args []string) {
 		cfg.ProfilePorts = make(map[string]int)
 	}
 	cfg.ProfilePorts[plan.Profile] = plan.DesiredPort
-	if err := config.Save(*configPath, cfg); err != nil {
-		fatal(err)
-	}
 	if *projectDir == "" {
 		*projectDir = filepath.Dir(filepath.Dir(*configPath))
 		if filepath.Base(filepath.Dir(*configPath)) != "runtime" {
@@ -645,7 +804,21 @@ func portsApplyCommand(args []string) {
 		}
 	}
 	key := map[string]string{"new-api": "NEW_API", "vllm": "VLLM", "ollama": "OLLAMA", "sglang": "SGLANG", "localai": "LOCALAI"}[plan.Profile]
+	envPath := filepath.Join(*projectDir, ".env")
+	previousEnv, envExisted, err := readOptionalFile(envPath)
+	if err != nil {
+		fatal(fmt.Errorf("read Compose environment: %w", err))
+	}
 	if err := updateEnvPort(*projectDir, key, plan.DesiredPort); err != nil {
+		fatal(err)
+	}
+	if err := config.Save(*configPath, cfg); err != nil {
+		if restoreErr := restoreOptionalFile(envPath, previousEnv, envExisted); restoreErr != nil {
+			fatal(fmt.Errorf("save config: %v; restore Compose environment: %w", err, restoreErr))
+		}
+		fatal(err)
+	}
+	if err := appendCLIAudit(cfg, "instance.move_port.plan_apply", "inst_"+plan.Profile, "success", map[string]string{"from_port": fmt.Sprintf("%d", plan.CurrentPort), "to_port": fmt.Sprintf("%d", plan.DesiredPort), "plan_expires_at": plan.ExpiresAt.UTC().Format(time.RFC3339)}); err != nil {
 		fatal(err)
 	}
 	fmt.Printf("applied_profile=%s\nport=%d\nrestart_required=true\n", plan.Profile, plan.DesiredPort)
@@ -664,6 +837,13 @@ func updateEnvPort(projectDir, key string, port int) error {
 	}
 	values := strings.Split(string(data), "\n")
 	updates := map[string]string{key + "_PORT": fmt.Sprintf("%d", port), key + "_TARGET_PORT": fmt.Sprintf("%d", port)}
+	if base, ok := composePortPoolBase(key); ok && port > base && port-base < 8 {
+		// Compose exposes the base listener plus seven fixed target-port
+		// candidates. A candidate move must select its published slot instead of
+		// rewriting the base mapping, otherwise both entries publish the same
+		// host port and Docker rejects the project.
+		updates = map[string]string{fmt.Sprintf("%s_PORT_%d", key, port-base): fmt.Sprintf("%d", port)}
+	}
 	seen := make(map[string]bool)
 	for i, line := range values {
 		for name, value := range updates {
@@ -683,7 +863,67 @@ func updateEnvPort(projectDir, key string, port int) error {
 	if err := os.WriteFile(tmp, []byte(updated), 0600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+func composePortPoolBase(key string) (int, bool) {
+	switch key {
+	case "NEW_API":
+		return 3000, true
+	case "VLLM":
+		return 8000, true
+	case "OLLAMA":
+		return 11434, true
+	case "SGLANG":
+		return 30000, true
+	case "LOCALAI":
+		return 8080, true
+	default:
+		return 0, false
+	}
+}
+
+func validateRegisteredImportSource(source model.ImportSource, product, schemaVersion string) error {
+	if source.Product != product || source.SchemaVersion != schemaVersion {
+		return fmt.Errorf("registered for product %q and schema %q", source.Product, source.SchemaVersion)
+	}
+	if !source.Enabled || source.Lifecycle != "Enabled" {
+		return errors.New("is not enabled")
+	}
+	return nil
+}
+
+func readOptionalFile(path string) ([]byte, bool, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return data, true, nil
+}
+
+func restoreOptionalFile(path string, data []byte, existed bool) error {
+	if !existed {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	tmp := path + ".restore.tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func signPortPlan(cfg *config.Config, plan portChangePlan) string {

@@ -2,6 +2,7 @@ package app
 
 import (
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/zcxads666/AegisLure/internal/model"
@@ -143,53 +144,60 @@ func (a *App) vllmRuntimeSnapshot(modelName string) (VLLMRuntimeState, personaMo
 	return state.VLLM, state.Models[modelName]
 }
 
-func (a *App) markPersonaModel(product, _ string, modelName string, ttl time.Duration) {
+func personaModelKey(ownerKey, modelName string) string {
+	return ownerKey + "\x00" + modelName
+}
+
+func (a *App) markPersonaModel(product, ownerKey string, modelName string, ttl time.Duration) {
 	a.personaMu.Lock()
 	defer a.personaMu.Unlock()
 	state := a.personaStateLocked(product)
+	key := personaModelKey(ownerKey, modelName)
 	now := time.Now().UTC()
 	if ttl <= 0 {
-		delete(state.Ollama.ActiveModels, modelName)
-		delete(state.Ollama.ExpiresAt, modelName)
+		delete(state.Ollama.ActiveModels, key)
+		delete(state.Ollama.ExpiresAt, key)
 		return
 	}
 	expiresAt := now.Add(ttl)
-	state.Ollama.ActiveModels[modelName] = OllamaActiveModel{Name: modelName, LastUsedAt: now, ExpiresAt: expiresAt}
-	state.Ollama.LastUsedAt[modelName] = now
-	state.Ollama.ExpiresAt[modelName] = expiresAt
+	state.Ollama.ActiveModels[key] = OllamaActiveModel{Name: modelName, LastUsedAt: now, ExpiresAt: expiresAt}
+	state.Ollama.LastUsedAt[key] = now
+	state.Ollama.ExpiresAt[key] = expiresAt
 }
 
-func (a *App) unmarkPersonaModel(product, _ string, modelName string) {
+func (a *App) unmarkPersonaModel(product, ownerKey string, modelName string) {
 	a.personaMu.Lock()
 	defer a.personaMu.Unlock()
 	state := a.personaRuntime[product]
 	if state == nil {
 		return
 	}
-	delete(state.Ollama.ActiveModels, modelName)
-	delete(state.Ollama.ExpiresAt, modelName)
+	key := personaModelKey(ownerKey, modelName)
+	delete(state.Ollama.ActiveModels, key)
+	delete(state.Ollama.ExpiresAt, key)
 }
 
-func (a *App) personaModelIsActive(product, _ string, modelName string) bool {
+func (a *App) personaModelIsActive(product, ownerKey string, modelName string) bool {
 	a.personaMu.Lock()
 	defer a.personaMu.Unlock()
 	state := a.personaRuntime[product]
 	if state == nil {
 		return false
 	}
-	active, ok := state.Ollama.ActiveModels[modelName]
+	key := personaModelKey(ownerKey, modelName)
+	active, ok := state.Ollama.ActiveModels[key]
 	if !ok {
 		return false
 	}
 	if time.Now().UTC().After(active.ExpiresAt) {
-		delete(state.Ollama.ActiveModels, modelName)
-		delete(state.Ollama.ExpiresAt, modelName)
+		delete(state.Ollama.ActiveModels, key)
+		delete(state.Ollama.ExpiresAt, key)
 		return false
 	}
 	return true
 }
 
-func (a *App) activePersonaModels(product, _ string) []OllamaActiveModel {
+func (a *App) activePersonaModels(product, ownerKey string) []OllamaActiveModel {
 	a.personaMu.Lock()
 	defer a.personaMu.Unlock()
 	state := a.personaRuntime[product]
@@ -198,10 +206,14 @@ func (a *App) activePersonaModels(product, _ string) []OllamaActiveModel {
 	}
 	now := time.Now().UTC()
 	result := make([]OllamaActiveModel, 0, len(state.Ollama.ActiveModels))
-	for name, active := range state.Ollama.ActiveModels {
+	prefix := ownerKey + "\x00"
+	for key, active := range state.Ollama.ActiveModels {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
 		if now.After(active.ExpiresAt) {
-			delete(state.Ollama.ActiveModels, name)
-			delete(state.Ollama.ExpiresAt, name)
+			delete(state.Ollama.ActiveModels, key)
+			delete(state.Ollama.ExpiresAt, key)
 			continue
 		}
 		result = append(result, active)

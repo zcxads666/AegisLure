@@ -2,6 +2,7 @@ package store
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/csv"
 	"encoding/json"
@@ -21,14 +22,30 @@ import (
 )
 
 type Store struct {
-	mu       sync.RWMutex
-	dir      string
-	key      string
-	db       *sql.DB
-	dbPath   string
-	state    model.State
-	eventSeq uint64
+	mu             sync.RWMutex
+	dir            string
+	key            string
+	db             *sql.DB
+	dbPath         string
+	state          model.State
+	eventSeq       uint64
+	maxEvents      int
+	eventRetention time.Duration
+	mirrorMaxBytes int64
 }
+
+type Options struct {
+	MaxEvents      int
+	EventRetention time.Duration
+	MirrorMaxBytes int64
+}
+
+const (
+	defaultMaxEvents      = 100000
+	defaultRetention      = 30 * 24 * time.Hour
+	defaultMirrorMaxBytes = 32 * 1024 * 1024
+	maxQuotaLedgerEntries = 100000
+)
 
 // Close releases the SQLite handle. The on-disk database remains the
 // authoritative standalone store and can be reopened after a clean or
@@ -50,28 +67,231 @@ func (s *Store) DatabasePath() string {
 	return s.dbPath
 }
 
+type auditDigestInput struct {
+	Actor     string            `json:"actor"`
+	Action    string            `json:"action"`
+	Target    string            `json:"target"`
+	Result    string            `json:"result"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
+	PrevHash  string            `json:"prev_hash,omitempty"`
+	CreatedAt time.Time         `json:"created_at"`
+}
+
+func auditEntryHash(entry model.AuditEntry) string {
+	data, _ := json.Marshal(auditDigestInput{Actor: entry.Actor, Action: entry.Action, Target: entry.Target, Result: entry.Result, Metadata: entry.Metadata, PrevHash: entry.PrevHash, CreatedAt: entry.CreatedAt})
+	digest := sha256.Sum256(data)
+	return fmt.Sprintf("%x", digest[:])
+}
+
+// AppendAudit appends one local hash-chain entry. It is intentionally separate
+// from the event stream so operator actions remain available even when event
+// retention removes old request observations.
+func (s *Store) AppendAudit(entry model.AuditEntry) error {
+	if strings.TrimSpace(entry.Action) == "" || strings.TrimSpace(entry.Target) == "" {
+		return errors.New("audit action and target are required")
+	}
+	if len(entry.Actor) > 128 || len(entry.Action) > 128 || len(entry.Target) > 256 || len(entry.Result) > 128 {
+		return errors.New("audit field is too long")
+	}
+	if strings.ContainsAny(entry.Actor+entry.Action+entry.Target+entry.Result, "\r\n") {
+		return errors.New("audit field contains a newline")
+	}
+	if entry.Actor == "" {
+		entry.Actor = "system"
+	}
+	if entry.Result == "" {
+		entry.Result = "success"
+	}
+	if len(entry.Metadata) > 32 {
+		return errors.New("audit metadata has too many fields")
+	}
+	metadata := make(map[string]string, len(entry.Metadata))
+	for key, value := range entry.Metadata {
+		if key == "" || len(key) > 64 || len(value) > 256 || strings.ContainsAny(key+value, "\r\n") {
+			return errors.New("audit metadata is invalid")
+		}
+		metadata[key] = value
+	}
+	if len(metadata) > 0 {
+		entry.Metadata = metadata
+	}
+	if entry.CreatedAt.IsZero() {
+		entry.CreatedAt = time.Now().UTC()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db == nil {
+		return errors.New("store is closed")
+	}
+	var previous sql.NullString
+	if err := s.db.QueryRow(`SELECT entry_hash FROM audit_log ORDER BY sequence DESC LIMIT 1`).Scan(&previous); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("read audit chain head: %w", err)
+	}
+	entry.PrevHash = previous.String
+	if entry.ID == "" {
+		entry.ID = "audit_" + config.KeyedHash(s.key, fmt.Sprintf("%d:%s:%s", entry.CreatedAt.UnixNano(), entry.Action, entry.Target))[:24]
+	}
+	entry.EntryHash = auditEntryHash(entry)
+	metadataJSON := ""
+	if len(entry.Metadata) > 0 {
+		encoded, err := json.Marshal(entry.Metadata)
+		if err != nil {
+			return err
+		}
+		metadataJSON = string(encoded)
+	}
+	_, err := s.db.Exec(`INSERT INTO audit_log(id,actor,action,target,result,metadata_json,prev_hash,entry_hash,created_at) VALUES(?,?,?,?,?,?,?,?,?)`, entry.ID, entry.Actor, entry.Action, entry.Target, entry.Result, metadataJSON, entry.PrevHash, entry.EntryHash, entry.CreatedAt.Format(time.RFC3339Nano))
+	if err != nil {
+		return fmt.Errorf("append audit entry: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) AuditEntries(limit int) ([]model.AuditEntry, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.db == nil {
+		return nil, errors.New("store is closed")
+	}
+	rows, err := s.db.Query(`SELECT id,actor,action,target,result,metadata_json,prev_hash,entry_hash,created_at FROM audit_log ORDER BY sequence DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query audit entries: %w", err)
+	}
+	defer rows.Close()
+	result := make([]model.AuditEntry, 0, limit)
+	for rows.Next() {
+		var entry model.AuditEntry
+		var metadataJSON, prevHash, createdAt string
+		if err := rows.Scan(&entry.ID, &entry.Actor, &entry.Action, &entry.Target, &entry.Result, &metadataJSON, &prevHash, &entry.EntryHash, &createdAt); err != nil {
+			return nil, err
+		}
+		entry.PrevHash = prevHash
+		if metadataJSON != "" && json.Unmarshal([]byte(metadataJSON), &entry.Metadata) != nil {
+			return nil, errors.New("stored audit metadata is invalid")
+		}
+		parsed, err := time.Parse(time.RFC3339Nano, createdAt)
+		if err != nil {
+			return nil, fmt.Errorf("stored audit timestamp is invalid: %w", err)
+		}
+		entry.CreatedAt = parsed
+		result = append(result, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// VerifyAuditChain checks every local entry in chronological order. This is a
+// release/backup verification primitive; it does not claim remote WORM
+// replication, which belongs to the excluded distributed design.
+func (s *Store) VerifyAuditChain() error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.db == nil {
+		return errors.New("store is closed")
+	}
+	rows, err := s.db.Query(`SELECT id,actor,action,target,result,metadata_json,prev_hash,entry_hash,created_at FROM audit_log ORDER BY sequence ASC`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	previous := ""
+	for rows.Next() {
+		var entry model.AuditEntry
+		var metadataJSON, createdAt string
+		if err := rows.Scan(&entry.ID, &entry.Actor, &entry.Action, &entry.Target, &entry.Result, &metadataJSON, &entry.PrevHash, &entry.EntryHash, &createdAt); err != nil {
+			return err
+		}
+		if metadataJSON != "" {
+			if err := json.Unmarshal([]byte(metadataJSON), &entry.Metadata); err != nil {
+				return err
+			}
+		}
+		entry.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+		if err != nil {
+			return err
+		}
+		if entry.PrevHash != previous || entry.EntryHash != auditEntryHash(entry) {
+			return errors.New("audit hash chain verification failed")
+		}
+		previous = entry.EntryHash
+	}
+	return rows.Err()
+}
+
+// BackupTo creates a consistent SQLite snapshot without copying a live WAL or
+// SHM sidecar. The destination must be a new file and is intended for the
+// hpctl backup staging directory.
+func (s *Store) BackupTo(destination string) error {
+	destination = filepath.Clean(strings.TrimSpace(destination))
+	if destination == "." || destination == "" {
+		return errors.New("backup destination is required")
+	}
+	if filepath.Clean(destination) == filepath.Clean(s.dbPath) {
+		return errors.New("backup destination must differ from the live database")
+	}
+	if _, err := os.Lstat(destination); err == nil {
+		return errors.New("backup destination already exists")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
+		return err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.db == nil {
+		return errors.New("store is closed")
+	}
+	quoted := strings.ReplaceAll(destination, "'", "''")
+	if _, err := s.db.Exec("VACUUM INTO '" + quoted + "'"); err != nil {
+		return fmt.Errorf("snapshot sqlite database: %w", err)
+	}
+	return nil
+}
+
 func Open(dir, key string) (*Store, error) {
+	return OpenWithOptions(dir, key, Options{})
+}
+
+func OpenWithOptions(dir, key string, options Options) (*Store, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
+	}
+	if options.MaxEvents < 1000 || options.MaxEvents > 1000000 {
+		options.MaxEvents = defaultMaxEvents
+	}
+	if options.EventRetention <= 0 || options.EventRetention > 10*365*24*time.Hour {
+		options.EventRetention = defaultRetention
+	}
+	if options.MirrorMaxBytes < 1<<20 || options.MirrorMaxBytes > 256<<20 {
+		options.MirrorMaxBytes = defaultMirrorMaxBytes
 	}
 	dbPath := filepath.Join(dir, "aegislure.sqlite")
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite store: %w", err)
 	}
-	s := &Store{dir: dir, key: key, db: db, dbPath: dbPath}
+	s := &Store{dir: dir, key: key, db: db, dbPath: dbPath, maxEvents: options.MaxEvents, eventRetention: options.EventRetention, mirrorMaxBytes: options.MirrorMaxBytes}
 	if err := configureSQLite(db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	s.state = model.State{
-		HoneyUsers:   make(map[string]model.HoneyUser),
-		HoneyTokens:  make(map[string]model.HoneyToken),
-		Identities:   make(map[string]model.HoneyIdentity),
-		Effects:      make(map[string]model.VirtualEffect),
-		Quotas:       make(map[string]int64),
-		Packs:        make(map[string]model.ConfigPack),
-		PackBindings: make(map[string]string),
+		HoneyUsers:                 make(map[string]model.HoneyUser),
+		HoneyTokens:                make(map[string]model.HoneyToken),
+		Identities:                 make(map[string]model.HoneyIdentity),
+		Effects:                    make(map[string]model.VirtualEffect),
+		Quotas:                     make(map[string]int64),
+		Packs:                      make(map[string]model.ConfigPack),
+		PackBindings:               make(map[string]string),
+		ImportSources:              make(map[string]model.ImportSource),
+		IndicatorDecisions:         make(map[string]model.IndicatorDecision),
+		IdentityIndicatorDecisions: make(map[string]model.IdentityIndicatorDecision),
 	}
 	stateLoaded, err := s.loadStateFromSQLite()
 	if err != nil {
@@ -98,6 +318,17 @@ func Open(dir, key string) (*Store, error) {
 	if err := s.loadEventSequence(); err != nil {
 		_ = db.Close()
 		return nil, err
+	}
+	if _, err := s.pruneEventsLocked(time.Now().UTC()); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	// SQLite is authoritative. Rebuild the compatibility mirror on every
+	// open so retention, interrupted appends and legacy migrations cannot leave
+	// stale or missing rows in events.jsonl.
+	if err := s.rewriteEventMirrorLocked(filepath.Join(dir, "events.jsonl")); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("rebuild event mirror: %w", err)
 	}
 	if !stateLoaded {
 		if err := s.saveLocked(); err != nil {
@@ -145,6 +376,19 @@ CREATE TABLE IF NOT EXISTS external_event_refs (
 	event_sequence INTEGER NOT NULL,
 	PRIMARY KEY(source_id, source_file_id, source_offset, source_event_hash)
 );
+CREATE TABLE IF NOT EXISTS audit_log (
+	sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+	id TEXT NOT NULL UNIQUE,
+	actor TEXT NOT NULL,
+	action TEXT NOT NULL,
+	target TEXT NOT NULL,
+	result TEXT NOT NULL,
+	metadata_json TEXT,
+	prev_hash TEXT,
+	entry_hash TEXT NOT NULL,
+	created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS audit_created_at_idx ON audit_log(created_at);
 `)
 	if err != nil {
 		return fmt.Errorf("create sqlite schema: %w", err)
@@ -281,6 +525,158 @@ func (s *Store) ensureMaps() {
 	if s.state.PackBindings == nil {
 		s.state.PackBindings = make(map[string]string)
 	}
+	if s.state.ImportSources == nil {
+		s.state.ImportSources = make(map[string]model.ImportSource)
+	}
+	if s.state.IndicatorDecisions == nil {
+		s.state.IndicatorDecisions = make(map[string]model.IndicatorDecision)
+	}
+	if s.state.IdentityIndicatorDecisions == nil {
+		s.state.IdentityIndicatorDecisions = make(map[string]model.IdentityIndicatorDecision)
+	}
+}
+
+func (s *Store) ListImportSources() []model.ImportSource {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]model.ImportSource, 0, len(s.state.ImportSources))
+	for _, source := range s.state.ImportSources {
+		result = append(result, source)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].UpdatedAt.Equal(result[j].UpdatedAt) {
+			return result[i].ID < result[j].ID
+		}
+		return result[i].UpdatedAt.After(result[j].UpdatedAt)
+	})
+	return result
+}
+
+func (s *Store) GetImportSource(id string) (model.ImportSource, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	source, ok := s.state.ImportSources[id]
+	return source, ok
+}
+
+func (s *Store) CreateImportSource(source model.ImportSource) error {
+	if strings.TrimSpace(source.ID) == "" {
+		return errors.New("import source id is required")
+	}
+	return s.Update(func(state *model.State) error {
+		if _, exists := state.ImportSources[source.ID]; exists {
+			return errors.New("import source already exists")
+		}
+		now := time.Now().UTC()
+		if source.CreatedAt.IsZero() {
+			source.CreatedAt = now
+		}
+		source.UpdatedAt = now
+		if source.Lifecycle == "" {
+			source.Lifecycle = "Draft"
+		}
+		source.ReadOnly = true
+		state.ImportSources[source.ID] = source
+		return nil
+	})
+}
+
+func (s *Store) UpdateImportSource(id string, update func(*model.ImportSource)) error {
+	if strings.TrimSpace(id) == "" || update == nil {
+		return errors.New("import source update is incomplete")
+	}
+	return s.Update(func(state *model.State) error {
+		source, ok := state.ImportSources[id]
+		if !ok {
+			return errors.New("import source not found")
+		}
+		update(&source)
+		source.ReadOnly = true
+		source.UpdatedAt = time.Now().UTC()
+		state.ImportSources[id] = source
+		return nil
+	})
+}
+
+func (s *Store) RecordImportSourceStats(id string, read, imported, duplicates, rejected int) error {
+	if read < 0 || imported < 0 || duplicates < 0 || rejected < 0 {
+		return errors.New("import source statistics must not be negative")
+	}
+	return s.UpdateImportSource(id, func(source *model.ImportSource) {
+		source.ReadCount += read
+		source.ImportedCount += imported
+		source.DuplicateCount += duplicates
+		source.RejectedCount += rejected
+		source.LastImportedAt = time.Now().UTC()
+	})
+}
+
+func (s *Store) GetIndicatorDecision(ip string) (model.IndicatorDecision, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	decision, ok := s.state.IndicatorDecisions[ip]
+	return decision, ok
+}
+
+func (s *Store) ListIndicatorDecisions() []model.IndicatorDecision {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]model.IndicatorDecision, 0, len(s.state.IndicatorDecisions))
+	for _, decision := range s.state.IndicatorDecisions {
+		result = append(result, decision)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].UpdatedAt.Equal(result[j].UpdatedAt) {
+			return result[i].IP < result[j].IP
+		}
+		return result[i].UpdatedAt.After(result[j].UpdatedAt)
+	})
+	return result
+}
+
+func (s *Store) SetIndicatorDecision(decision model.IndicatorDecision) error {
+	if strings.TrimSpace(decision.IP) == "" || strings.TrimSpace(decision.Status) == "" {
+		return errors.New("indicator decision is incomplete")
+	}
+	return s.Update(func(state *model.State) error {
+		decision.UpdatedAt = time.Now().UTC()
+		state.IndicatorDecisions[decision.IP] = decision
+		return nil
+	})
+}
+
+func (s *Store) GetIdentityIndicatorDecision(identityID string) (model.IdentityIndicatorDecision, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	decision, ok := s.state.IdentityIndicatorDecisions[identityID]
+	return decision, ok
+}
+
+func (s *Store) ListIdentityIndicatorDecisions() []model.IdentityIndicatorDecision {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]model.IdentityIndicatorDecision, 0, len(s.state.IdentityIndicatorDecisions))
+	for _, decision := range s.state.IdentityIndicatorDecisions {
+		result = append(result, decision)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].UpdatedAt.Equal(result[j].UpdatedAt) {
+			return result[i].IdentityID < result[j].IdentityID
+		}
+		return result[i].UpdatedAt.After(result[j].UpdatedAt)
+	})
+	return result
+}
+
+func (s *Store) SetIdentityIndicatorDecision(decision model.IdentityIndicatorDecision) error {
+	if strings.TrimSpace(decision.IdentityID) == "" || strings.TrimSpace(decision.Status) == "" {
+		return errors.New("identity indicator decision is incomplete")
+	}
+	return s.Update(func(state *model.State) error {
+		decision.UpdatedAt = time.Now().UTC()
+		state.IdentityIndicatorDecisions[decision.IdentityID] = decision
+		return nil
+	})
 }
 
 func (s *Store) Save() error {
@@ -381,6 +777,25 @@ func (s *Store) GetPackRevision(kind, id, revision string) (model.ConfigPack, bo
 	defer s.mu.RUnlock()
 	pack, ok := s.state.Packs[packKey(kind, id, revision)]
 	return pack, ok
+}
+
+// FindPackRevision resolves a pinned revision without assuming the current
+// binding or a particular pack ID. It lets an in-memory standalone session
+// continue using the exact catalog it observed before a later activation.
+func (s *Store) FindPackRevision(kind, revision string) (model.ConfigPack, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result model.ConfigPack
+	found := false
+	for _, pack := range s.state.Packs {
+		if pack.Kind != kind || pack.Revision != revision {
+			continue
+		}
+		if !found || pack.UpdatedAt.After(result.UpdatedAt) {
+			result, found = pack, true
+		}
+	}
+	return result, found
 }
 
 // UpsertPack stores a complete revision. Existing revisions are immutable in
@@ -484,6 +899,30 @@ func (s *Store) PackBindings() map[string]string {
 	return result
 }
 
+// BoundPack resolves the active revision selected for one local instance. A
+// draft revision with the same pack ID never displaces the active revision;
+// this keeps hot edits last-known-good until an explicit activation.
+func (s *Store) BoundPack(kind, target string) (model.ConfigPack, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	packID := s.state.PackBindings[kind+"\x00"+target]
+	if packID == "" {
+		return model.ConfigPack{}, false
+	}
+	var result model.ConfigPack
+	found := false
+	for _, pack := range s.state.Packs {
+		if pack.Kind != kind || pack.ID != packID || pack.Lifecycle != model.PackActive {
+			continue
+		}
+		if !found || pack.UpdatedAt.After(result.UpdatedAt) || (pack.UpdatedAt.Equal(result.UpdatedAt) && pack.Revision > result.Revision) {
+			result = pack
+			found = true
+		}
+	}
+	return result, found
+}
+
 func latestPack(packs map[string]model.ConfigPack, kind, id string) (model.ConfigPack, bool) {
 	var result model.ConfigPack
 	found := false
@@ -566,6 +1005,7 @@ func (s *Store) ListTokens(userID string) []model.HoneyToken {
 	result := make([]model.HoneyToken, 0)
 	for _, token := range s.state.HoneyTokens {
 		if userID == "" || token.HoneyUserID == userID {
+			token.ModelAllowlist = append([]string(nil), token.ModelAllowlist...)
 			result = append(result, token)
 		}
 	}
@@ -657,6 +1097,10 @@ func (s *Store) BindHoneyIdentity(identity model.HoneyIdentity, user model.Honey
 	if identity.Provider == "" || identity.SubjectHMAC == "" || user.ID == "" {
 		return model.HoneyIdentity{}, errors.New("honey identity is incomplete")
 	}
+	if identity.HoneyUserID != "" && identity.HoneyUserID != user.ID {
+		return model.HoneyIdentity{}, errors.New("honey identity user mismatch")
+	}
+	identity.HoneyUserID = user.ID
 	returned := model.HoneyIdentity{}
 	err := s.Update(func(state *model.State) error {
 		for id, existing := range state.Identities {
@@ -665,6 +1109,9 @@ func (s *Store) BindHoneyIdentity(identity model.HoneyIdentity, user model.Honey
 			}
 			now := time.Now().UTC()
 			existing.LastSeenAt = now
+			if existing.HoneyUserID == "" {
+				existing.HoneyUserID = user.ID
+			}
 			existing.Scopes = append([]string(nil), identity.Scopes...)
 			state.Identities[id] = existing
 			returned = existing
@@ -676,6 +1123,9 @@ func (s *Store) BindHoneyIdentity(identity model.HoneyIdentity, user model.Honey
 		}
 		if identity.ID == "" {
 			identity.ID = "hi_" + identity.SubjectHMAC[:minStringLength(len(identity.SubjectHMAC), 24)]
+			if _, exists := state.Identities[identity.ID]; exists {
+				identity.ID = fmt.Sprintf("%s_%d", identity.ID, time.Now().UnixNano())
+			}
 		}
 		if identity.LinkedAt.IsZero() {
 			identity.LinkedAt = time.Now().UTC()
@@ -699,6 +1149,43 @@ func (s *Store) RevokeHoneyIdentity(id string) error {
 		}
 		identity.RevokedAt = time.Now().UTC()
 		state.Identities[id] = identity
+		return nil
+	})
+}
+
+// DeleteHoneyIdentity removes the provider association without requiring a
+// provider token. If no other identity references the same honey user, the
+// associated local account, tokens, quota and quota ledger entries are removed
+// as well; event records remain subject to the normal retention policy.
+func (s *Store) DeleteHoneyIdentity(id string) error {
+	return s.Update(func(state *model.State) error {
+		identity, ok := state.Identities[id]
+		if !ok {
+			return errors.New("honey identity not found")
+		}
+		delete(state.Identities, id)
+		if identity.HoneyUserID == "" {
+			return nil
+		}
+		for _, other := range state.Identities {
+			if other.HoneyUserID == identity.HoneyUserID {
+				return nil
+			}
+		}
+		delete(state.HoneyUsers, identity.HoneyUserID)
+		delete(state.Quotas, identity.HoneyUserID)
+		for tokenID, token := range state.HoneyTokens {
+			if token.HoneyUserID == identity.HoneyUserID {
+				delete(state.HoneyTokens, tokenID)
+			}
+		}
+		ledger := state.QuotaLedger[:0]
+		for _, entry := range state.QuotaLedger {
+			if entry.HoneyUserID != identity.HoneyUserID {
+				ledger = append(ledger, entry)
+			}
+		}
+		state.QuotaLedger = ledger
 		return nil
 	})
 }
@@ -741,6 +1228,9 @@ func (s *Store) applyQuota(userID, entryType, tokenID, invocationID string, amou
 		state.Quotas[userID] = user.VirtualQuota
 		balance = user.VirtualQuota
 		state.QuotaLedger = append(state.QuotaLedger, model.QuotaEntry{ID: fmt.Sprintf("ql_%d", len(state.QuotaLedger)+1), HoneyUserID: userID, TokenID: tokenID, InvocationID: invocationID, EntryType: entryType, Amount: amount, BalanceAfter: balance, CreatedAt: time.Now().UTC()})
+		if len(state.QuotaLedger) > maxQuotaLedgerEntries {
+			state.QuotaLedger = state.QuotaLedger[len(state.QuotaLedger)-maxQuotaLedgerEntries:]
+		}
 		return nil
 	})
 	return balance, err
@@ -819,17 +1309,31 @@ func (s *Store) AppendEvent(event model.Event) error {
 		if _, err := s.db.Exec(`INSERT INTO events(sequence,event_id,observed_at,product,source_ip,route_template,event_json) VALUES(?,?,?,?,?,?,?)`, event.Sequence, event.EventID, event.ObservedAt.Format(time.RFC3339Nano), event.Product, event.SourceIP, event.RouteTemplate, string(encoded)); err != nil {
 			return fmt.Errorf("append sqlite event: %w", err)
 		}
+		pruned, err := s.pruneEventsLocked(time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		if pruned {
+			return s.rewriteEventMirrorLocked(filepath.Join(s.dir, "events.jsonl"))
+		}
 	}
 	path := filepath.Join(s.dir, "events.jsonl")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 	if _, err := f.Write(append(encoded, '\n')); err != nil {
+		_ = f.Close()
 		return err
 	}
-	return f.Sync()
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return s.maybeRewriteEventMirrorLocked(path)
 }
 
 // AppendImportedEvent writes a third-party observation only after its
@@ -877,6 +1381,16 @@ func (s *Store) AppendImportedEvent(event model.Event, sourceID, sourceFileID st
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("commit imported event: %w", err)
 	}
+	pruned, err := s.pruneEventsLocked(time.Now().UTC())
+	if err != nil {
+		return false, err
+	}
+	if pruned {
+		if err := s.rewriteEventMirrorLocked(filepath.Join(s.dir, "events.jsonl")); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
 	f, err := os.OpenFile(filepath.Join(s.dir, "events.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		return false, err
@@ -892,7 +1406,95 @@ func (s *Store) AppendImportedEvent(event model.Event, sourceID, sourceFileID st
 	if err := f.Close(); err != nil {
 		return false, err
 	}
+	if err := s.maybeRewriteEventMirrorLocked(filepath.Join(s.dir, "events.jsonl")); err != nil {
+		return false, err
+	}
 	return true, nil
+}
+
+func (s *Store) pruneEventsLocked(now time.Time) (bool, error) {
+	if s.db == nil {
+		return false, nil
+	}
+	changed := false
+	cutoff := now.Add(-s.eventRetention).Format(time.RFC3339Nano)
+	if result, err := s.db.Exec(`DELETE FROM events WHERE observed_at < ?`, cutoff); err != nil {
+		return false, fmt.Errorf("prune expired sqlite events: %w", err)
+	} else if affected, rowsErr := result.RowsAffected(); rowsErr == nil && affected > 0 {
+		changed = true
+	}
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&count); err != nil {
+		return false, fmt.Errorf("count retained sqlite events: %w", err)
+	}
+	if count > s.maxEvents {
+		if result, err := s.db.Exec(`DELETE FROM events WHERE sequence IN (SELECT sequence FROM events ORDER BY sequence ASC LIMIT ?)`, count-s.maxEvents); err != nil {
+			return false, fmt.Errorf("prune sqlite event count: %w", err)
+		} else if affected, rowsErr := result.RowsAffected(); rowsErr == nil && affected > 0 {
+			changed = true
+		}
+	}
+	// Provenance is useful only while its corresponding event is retained;
+	// keeping the same bound prevents an import source from growing state
+	// independently of the event retention policy.
+	if _, err := s.db.Exec(`DELETE FROM external_event_refs WHERE event_sequence NOT IN (SELECT sequence FROM events)`); err != nil {
+		return false, fmt.Errorf("prune imported event provenance: %w", err)
+	}
+	return changed, nil
+}
+
+func (s *Store) maybeRewriteEventMirrorLocked(path string) error {
+	info, err := os.Stat(path)
+	if err == nil && info.Size() <= s.mirrorMaxBytes {
+		return nil
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if s.db == nil {
+		return nil
+	}
+	return s.rewriteEventMirrorLocked(path)
+}
+
+func (s *Store) rewriteEventMirrorLocked(path string) error {
+	tmp := path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	rows, err := s.db.Query(`SELECT event_json FROM events ORDER BY sequence ASC`)
+	if err != nil {
+		_ = f.Close()
+		return fmt.Errorf("query event mirror: %w", err)
+	}
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			_ = rows.Close()
+			_ = f.Close()
+			return err
+		}
+		if _, err := f.WriteString(raw + "\n"); err != nil {
+			_ = rows.Close()
+			_ = f.Close()
+			return err
+		}
+	}
+	rowsErr := rows.Err()
+	_ = rows.Close()
+	if rowsErr != nil {
+		_ = f.Close()
+		return rowsErr
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func minInt(left, right int) int {
@@ -1004,6 +1606,8 @@ func (s *Store) Indicators() ([]model.Indicator, error) {
 		if event.ObservedAt.After(a.item.LastSeen) {
 			a.item.LastSeen = event.ObservedAt
 		}
+		a.item.SensorCount = 1
+		a.item.SiteCount = 1
 		if event.Score > a.item.Score {
 			a.item.Score = event.Score
 		}

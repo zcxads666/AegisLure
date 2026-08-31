@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -176,6 +178,41 @@ func TestBrokerPolicyGuardKeepsDiscordAndLinuxDOLocalOnly(t *testing.T) {
 	}
 	if broker.PolicyMode(Discord) != "local_only" || broker.PolicyMode(LinuxDO) != "pending_approval" {
 		t.Fatal("provider policy mode was not preserved")
+	}
+}
+
+func TestLoadFileKeepsFixedProviderEndpointsAndRejectsLooseSecrets(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "oauth.json")
+	data := `{"providers":{"github":{"enabled":true,"client_id":"client-id","client_secret":"client-secret","redirect_url":"https://bait.example.test/api/oauth/github/callback","policy_mode":"local_only"}}}`
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	broker, err := LoadFile(path, "file-broker-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorization, err := broker.Begin(GitHub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(authorization.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Scheme != "https" || parsed.Host != "github.com" || parsed.Path != "/login/oauth/authorize" || parsed.Query().Get("client_secret") != "" {
+		t.Fatalf("file config changed the fixed authorization endpoint: %s", authorization.URL)
+	}
+	if err := os.Chmod(path, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFile(path, "file-broker-key"); err == nil {
+		t.Fatal("broker accepted a group/world-readable secret file")
+	}
+	if err := os.WriteFile(path, []byte(`{"providers":{"github":{"enabled":true,"client_id":"id","client_secret":"secret","redirect_url":"https://bait.example.test/callback","authorization_url":"https://evil.example"}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFile(path, "file-broker-key"); err == nil {
+		t.Fatal("broker accepted a user-defined provider endpoint")
 	}
 }
 

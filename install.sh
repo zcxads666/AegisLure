@@ -52,4 +52,8 @@ fi
 
 docker compose up -d
 echo "AegisLure is running. Open the hidden admin path to create the first owner."
+docker compose run --rm --no-deps --entrypoint /usr/local/bin/hpctl aegislure \
+  status --config /var/lib/aegislure/config.json
+echo "Admin TLS certificate fingerprint (SHA-256):"
+openssl x509 -in runtime/secrets/admin.crt -noout -fingerprint -sha256
 echo "Use: ./hpctl status"

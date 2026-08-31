@@ -209,6 +209,24 @@ func TestNewAPIOAuthBindsHoneyIdentityWithoutRiskOrOutboundByDefault(t *testing.
 	if len(identities) != 1 || identities[0].SubjectHMAC == "provider-stable-id" || identities[0].Provider != "github" {
 		t.Fatalf("OAuth identity was not safely persisted: %#v", identities)
 	}
+	admin := &inProcessClient{handler: a.adminHandler(), cookies: map[string]string{}}
+	resp, _ = doJSON(t, admin, http.MethodPost, cfg.AdminPath+"admin/api/v1/auth/login", map[string]string{"username": "owner", "password": "correct horse battery staple"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin login for identity controls failed: %d", resp.StatusCode)
+	}
+	resp, body = doRawJSON(t, admin, http.MethodGet, cfg.AdminPath+"admin/api/v1/identities", nil, nil)
+	if resp.StatusCode != http.StatusOK || strings.Contains(string(body), "provider-stable-id") {
+		t.Fatalf("identity admin list leaked provider identity: %d %s", resp.StatusCode, body)
+	}
+	identityID := identities[0].ID
+	resp, _ = doRawJSON(t, admin, http.MethodPost, cfg.AdminPath+"admin/api/v1/identities/"+url.PathEscape(identityID)+"/revoke", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("identity revoke failed: %d", resp.StatusCode)
+	}
+	resp, _ = doRawJSON(t, admin, http.MethodDelete, cfg.AdminPath+"admin/api/v1/identities/"+url.PathEscape(identityID), nil, nil)
+	if resp.StatusCode != http.StatusOK || len(st.ListHoneyIdentities()) != 0 {
+		t.Fatalf("identity deletion failed: %d %#v", resp.StatusCode, st.ListHoneyIdentities())
+	}
 	events, err := st.Events(-1, model.ProductNewAPI, "")
 	if err != nil {
 		t.Fatal(err)

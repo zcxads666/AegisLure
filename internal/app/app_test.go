@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -138,6 +139,64 @@ func doJSON(t *testing.T, client *inProcessClient, method, endpoint string, valu
 		t.Fatal(err)
 	}
 	return resp, decoded
+}
+
+func TestAdminPortDryRunAndStoppedMove(t *testing.T) {
+	a, cfg, st := newTestApp(t, true)
+	defer st.Close()
+	oldPort, desiredPort := 11434, 11435
+	cfg.ProfilePorts[model.ProductOllama] = oldPort
+	cfg.PortPools = map[string][]int{model.ProductOllama: {oldPort, desiredPort}}
+	profile := a.profiles[model.ProductOllama]
+	profile.DefaultPort = oldPort
+	a.profiles[model.ProductOllama] = profile
+	admin := &inProcessClient{handler: a.adminHandler(), cookies: map[string]string{}}
+	if resp, _ := doJSON(t, admin, http.MethodPost, cfg.AdminPath+"admin/api/v1/auth/login", map[string]string{"username": "owner", "password": "correct horse battery staple"}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin login status = %d", resp.StatusCode)
+	}
+	endpoint := cfg.AdminPath + "admin/api/v1/instances/inst_ollama:dry-run"
+	resp, dryRun := doJSON(t, admin, http.MethodPost, endpoint, map[string]any{"port": desiredPort, "protocol": "http", "drain_seconds": 30})
+	if resp.StatusCode != http.StatusOK || dryRun["dry_run"] != true {
+		t.Fatalf("port dry-run = %d %#v", resp.StatusCode, dryRun)
+	}
+	plan := dryRun["plan"].(map[string]any)
+	if plan["current_port"] != float64(oldPort) || plan["desired_port"] != float64(desiredPort) || plan["applied"] != false {
+		t.Fatalf("unexpected dry-run plan: %#v", plan)
+	}
+	resp, applied := doJSON(t, admin, http.MethodPost, cfg.AdminPath+"admin/api/v1/instances/inst_ollama:move-port", map[string]any{"port": desiredPort, "protocol": "http", "drain_seconds": 30, "expected_revision": plan["revision"]})
+	if resp.StatusCode != http.StatusOK || applied["dry_run"] != false {
+		t.Fatalf("port move = %d %#v", resp.StatusCode, applied)
+	}
+	a.serverMu.RLock()
+	actual := a.actualProfilePortLocked(model.ProductOllama)
+	a.serverMu.RUnlock()
+	if actual != desiredPort || cfg.ProfilePorts[model.ProductOllama] != desiredPort {
+		t.Fatalf("port move did not update active/configured port: actual=%d cfg=%d", actual, cfg.ProfilePorts[model.ProductOllama])
+	}
+	resp, instances := doJSON(t, admin, http.MethodGet, cfg.AdminPath+"admin/api/v1/instances", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("instances status = %d", resp.StatusCode)
+	}
+	items := instances["instances"].([]any)
+	var found bool
+	for _, raw := range items {
+		item := raw.(map[string]any)
+		if item["product"] == model.ProductOllama {
+			found = item["port"] == float64(desiredPort) && item["port_revision"] != ""
+		}
+	}
+	if !found {
+		t.Fatalf("instances did not expose the active port revision: %#v", instances)
+	}
+}
+
+func TestStartRejectsAdminAndProfilePortCollisionBeforeBinding(t *testing.T) {
+	a, cfg, st := newTestApp(t, true)
+	defer st.Close()
+	cfg.AdminPort = cfg.ProfilePorts[model.ProductOllama]
+	if err := a.Start(); err == nil || !strings.Contains(err.Error(), "assigned") {
+		t.Fatalf("expected preflight port collision, got %v", err)
+	}
 }
 
 func TestAdminPageUsesNonceAndCompletesOwnerSetupLogin(t *testing.T) {
@@ -279,6 +338,18 @@ func TestOllamaCompatibilityAndVirtualEffectVerification(t *testing.T) {
 	}
 	if loaded, ok := ps["models"].([]any); !ok || len(loaded) != 1 {
 		t.Fatalf("virtual model was not visible in ps: %#v", ps)
+	}
+	other := &inProcessClient{handler: a.publicHandler(profile), cookies: map[string]string{}}
+	resp, otherPS := doRawJSON(t, other, http.MethodGet, "/api/ps", nil, map[string]string{"User-Agent": "different-client"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("other session ps status = %d", resp.StatusCode)
+	}
+	var otherValue map[string]any
+	if err := json.Unmarshal(otherPS, &otherValue); err != nil {
+		t.Fatal(err)
+	}
+	if loaded, ok := otherValue["models"].([]any); !ok || len(loaded) != 0 {
+		t.Fatalf("virtual model leaked across sessions: %s", otherPS)
 	}
 	resp, completion := doJSON(t, client, http.MethodPost, "/v1/completions", map[string]any{"model": "qwen3.6:35b-a3b", "prompt": "reply with ok"})
 	if resp.StatusCode != http.StatusOK || completion["object"] != "text_completion" {
@@ -488,6 +559,37 @@ func TestAdminRejectsCrossOriginMutationAndEnforcesSetupPolicy(t *testing.T) {
 	resp, _ = doRawJSON(t, client, http.MethodPost, base+"setup/create-owner", map[string]string{"username": "other", "password": "another8"}, nil)
 	if resp.StatusCode != http.StatusGone {
 		t.Fatalf("second owner setup status = %d", resp.StatusCode)
+	}
+}
+
+func TestAdminHostAllowlistAndRequiredTLS(t *testing.T) {
+	a, cfg, st := newTestApp(t, false)
+	defer st.Close()
+	cfg.AdminHostAllowlist = []string{"admin.test", "127.0.0.1:56865"}
+	for _, test := range []struct {
+		value string
+		want  bool
+	}{
+		{value: "admin.test", want: true},
+		{value: "ADMIN.TEST:443", want: true},
+		{value: "127.0.0.1:56865", want: true},
+		{value: "127.0.0.1:56864", want: false},
+		{value: "evil.test", want: false},
+		{value: "admin.test/path", want: false},
+		{value: "admin.test:bad", want: false},
+		{value: "admin.test\r\nX-Injected: yes", want: false},
+	} {
+		if got := a.adminHostAllowed(test.value); got != test.want {
+			t.Fatalf("adminHostAllowed(%q) = %v, want %v", test.value, got, test.want)
+		}
+	}
+
+	cfg.RequireAdminTLS = true
+	t.Setenv("HP_TLS_CERT", "")
+	t.Setenv("HP_TLS_KEY", "")
+	if err := a.Start(); err == nil {
+		_ = a.Shutdown(context.Background())
+		t.Fatal("service started without required administrator TLS")
 	}
 }
 

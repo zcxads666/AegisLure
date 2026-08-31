@@ -27,11 +27,12 @@ import (
 )
 
 type Session struct {
-	ID        string
-	Product   string
-	UserID    string
-	CreatedAt time.Time
-	LastSeen  time.Time
+	ID               string
+	Product          string
+	UserID           string
+	CatalogRevisions map[string]string
+	CreatedAt        time.Time
+	LastSeen         time.Time
 }
 
 type Observation struct {
@@ -79,6 +80,8 @@ type App struct {
 	profileServers map[string]*http.Server
 	profilePorts   map[string]net.Listener
 	adminServer    *http.Server
+	exportMu       sync.Mutex
+	exports        map[string]localExportJob
 }
 
 type rateBucket struct {
@@ -88,7 +91,7 @@ type rateBucket struct {
 
 func New(cfg *config.Config, st *store.Store) *App {
 	a := &App{
-		cfg: cfg, store: st, profiles: profiles.Build(cfg), log: log.New(os.Stdout, "aegislure ", log.LstdFlags|log.LUTC), sessions: make(map[string]Session), anonymous: make(map[string]string), adminSessions: make(map[string]AdminSession), rateBuckets: make(map[string]rateBucket), publicSem: make(chan struct{}, 64), personaRuntime: make(map[string]*personaRuntimeState), profileServers: make(map[string]*http.Server), profilePorts: make(map[string]net.Listener),
+		cfg: cfg, store: st, profiles: profiles.Build(cfg), log: log.New(os.Stdout, "aegislure ", log.LstdFlags|log.LUTC), sessions: make(map[string]Session), anonymous: make(map[string]string), adminSessions: make(map[string]AdminSession), rateBuckets: make(map[string]rateBucket), publicSem: make(chan struct{}, 64), personaRuntime: make(map[string]*personaRuntimeState), profileServers: make(map[string]*http.Server), profilePorts: make(map[string]net.Listener), exports: make(map[string]localExportJob),
 	}
 	a.ruleEngine = detect.NewRuleEngine()
 	seedBuiltinPacks(a)
@@ -117,6 +120,24 @@ func (a *App) Start() error {
 	if a.adminServer != nil {
 		return errors.New("service already started")
 	}
+	certFile, keyFile := strings.TrimSpace(os.Getenv("HP_TLS_CERT")), strings.TrimSpace(os.Getenv("HP_TLS_KEY"))
+	if (certFile == "") != (keyFile == "") {
+		return errors.New("HP_TLS_CERT and HP_TLS_KEY must be configured together")
+	}
+	if a.cfg.RequireAdminTLS {
+		if certFile == "" || keyFile == "" {
+			return errors.New("administrator TLS is required but certificate paths are not configured")
+		}
+		if _, err := os.Stat(certFile); err != nil {
+			return fmt.Errorf("administrator TLS certificate is unavailable: %w", err)
+		}
+		if _, err := os.Stat(keyFile); err != nil {
+			return fmt.Errorf("administrator TLS key is unavailable: %w", err)
+		}
+	}
+	if err := a.validateConfiguredPortsLocked(); err != nil {
+		return err
+	}
 	started := make([]string, 0, len(a.cfg.EnabledProfiles))
 	for _, name := range a.cfg.EnabledProfiles {
 		if err := a.startProfileLocked(name); err != nil {
@@ -143,7 +164,7 @@ func (a *App) Start() error {
 		}
 		return fmt.Errorf("bind admin %s: %w", adminAddr, err)
 	}
-	if certFile, keyFile := os.Getenv("HP_TLS_CERT"), os.Getenv("HP_TLS_KEY"); certFile != "" && keyFile != "" {
+	if certFile != "" && keyFile != "" {
 		cert, certErr := tls.LoadX509KeyPair(certFile, keyFile)
 		if certErr != nil {
 			_ = adminListener.Close()
@@ -169,11 +190,18 @@ func (a *App) startProfileLocked(name string) error {
 	if !ok {
 		return fmt.Errorf("unknown profile %q", name)
 	}
+	if configuredPort := a.cfg.ProfilePorts[name]; configuredPort > 0 {
+		profile.DefaultPort = configuredPort
+		a.profiles[name] = profile
+	}
 	if profile.DefaultPort == 0 {
 		return fmt.Errorf("profile %q has no configured port", name)
 	}
 	if _, running := a.profileServers[name]; running {
 		return nil
+	}
+	if err := a.validateProfilePortLocked(name, profile.DefaultPort); err != nil {
+		return err
 	}
 	addr := fmt.Sprintf("%s:%d", a.cfg.PublicBind, profile.DefaultPort)
 	listener, err := net.Listen("tcp", addr)
@@ -184,6 +212,51 @@ func (a *App) startProfileLocked(name string) error {
 	a.profileServers[name] = server
 	a.profilePorts[name] = listener
 	go a.serve(server, listener, false)
+	return nil
+}
+
+func (a *App) validateConfiguredPortsLocked() error {
+	if a.cfg.AdminPort < 1 || a.cfg.AdminPort > 65535 {
+		return fmt.Errorf("admin port %d is invalid", a.cfg.AdminPort)
+	}
+	seen := map[int]string{a.cfg.AdminPort: "admin"}
+	for _, name := range a.cfg.EnabledProfiles {
+		profile, ok := a.profiles[name]
+		if !ok {
+			return fmt.Errorf("unknown profile %q", name)
+		}
+		port := profile.DefaultPort
+		if configuredPort := a.cfg.ProfilePorts[name]; configuredPort > 0 {
+			port = configuredPort
+		}
+		if port < 1 || port > 65535 {
+			return fmt.Errorf("profile %q has invalid port %d", name, port)
+		}
+		if owner, exists := seen[port]; exists {
+			return fmt.Errorf("port %d is assigned to both %s and %s", port, owner, name)
+		}
+		seen[port] = name
+	}
+	return nil
+}
+
+func (a *App) validateProfilePortLocked(name string, port int) error {
+	if port == a.cfg.AdminPort {
+		return fmt.Errorf("profile %q conflicts with the admin port %d", name, port)
+	}
+	for other, configuredPort := range a.cfg.ProfilePorts {
+		if other != name && configuredPort == port && containsString(a.cfg.EnabledProfiles, other) {
+			return fmt.Errorf("profile %q conflicts with enabled profile %q on port %d", name, other, port)
+		}
+	}
+	for other, listener := range a.profilePorts {
+		if other == name || listener == nil {
+			continue
+		}
+		if address, ok := listener.Addr().(*net.TCPAddr); ok && address.Port == port {
+			return fmt.Errorf("profile %q conflicts with active profile %q on port %d", name, other, port)
+		}
+	}
 	return nil
 }
 
@@ -242,6 +315,8 @@ func (a *App) Shutdown(ctx context.Context) error {
 
 func (a *App) publicHandler(profile profiles.Profile) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		session := a.sessionFor(r, profile.Product)
+		profile = a.applyRuntimePacksForSession(profile, session)
 		setPublicPersonaHeaders(w, profile.Product)
 		select {
 		case a.publicSem <- struct{}{}:
@@ -253,7 +328,6 @@ func (a *App) publicHandler(profile profiles.Profile) http.Handler {
 		start := time.Now()
 		body, tooLarge := readBoundedBody(r, 1<<20)
 		cw := &captureWriter{ResponseWriter: w, personaProduct: profile.Product}
-		session := a.sessionFor(r, profile.Product)
 		route := profiles.Route(profile.Product, r.Method, r.URL.Path)
 		obs := &Observation{RouteTemplate: route, ResponseObserved: true, Metadata: map[string]string{"event_type": "http.request.classified", "scenario": profile.Scenario}}
 		if r.ContentLength >= 0 {
@@ -296,6 +370,12 @@ func (a *App) sessionFor(r *http.Request, product string) Session {
 	anonymousKey := security.Fingerprint(a.cfg.InstanceKey, sourceIP+"\x00"+product+"\x00"+r.UserAgent())
 	if existingID := a.anonymous[anonymousKey]; existingID != "" {
 		if existing, ok := a.sessions[existingID]; ok && time.Since(existing.LastSeen) <= 30*time.Minute {
+			if existing.CatalogRevisions == nil {
+				existing.CatalogRevisions = make(map[string]string)
+			}
+			if _, pinned := existing.CatalogRevisions[product]; !pinned {
+				existing.CatalogRevisions[product] = a.currentCatalogRevision(product)
+			}
 			existing.LastSeen = time.Now().UTC()
 			a.sessions[existingID] = existing
 			return existing
@@ -307,7 +387,7 @@ func (a *App) sessionFor(r *http.Request, product string) Session {
 		id = fmt.Sprintf("session-%d", time.Now().UnixNano())
 	}
 	now := time.Now().UTC()
-	session := Session{ID: id, Product: product, CreatedAt: now, LastSeen: now}
+	session := Session{ID: id, Product: product, CatalogRevisions: map[string]string{product: a.currentCatalogRevision(product)}, CreatedAt: now, LastSeen: now}
 	a.sessions[id] = session
 	a.anonymous[anonymousKey] = id
 	if len(a.anonymous) > 4096 {
@@ -327,6 +407,16 @@ func (a *App) setSessionUser(sessionID, userID string) {
 	session.UserID = userID
 	session.LastSeen = time.Now().UTC()
 	a.sessions[sessionID] = session
+}
+
+func (a *App) currentCatalogRevision(product string) string {
+	if a.store == nil {
+		return compiledCatalogRevision
+	}
+	if pack, ok := a.store.BoundPack(model.PackKindModel, "inst_"+product); ok {
+		return pack.Revision
+	}
+	return compiledCatalogRevision
 }
 
 func (a *App) currentSession(id string) (Session, bool) {
@@ -519,7 +609,7 @@ func (a *App) record(profile profiles.Profile, r *http.Request, body []byte, cw 
 		event.Confidence = "high"
 	}
 	if a.ruleEngine != nil {
-		custom := a.ruleEngine.Evaluate(event)
+		custom := a.ruleEngine.EvaluateFor("inst_"+profile.Product, event)
 		event.MatchedRuleIDs = uniqueStrings(append(event.MatchedRuleIDs, custom.MatchedRuleIDs...))
 		event.ReasonCodes = uniqueStrings(append(event.ReasonCodes, custom.Reasons...))
 		event.Score += custom.Score

@@ -73,6 +73,14 @@ else
   export HP_COOKIE_SECURE
 fi
 
+if [[ -z "${HP_REQUIRE_TLS:-}" ]]; then
+  if [[ -n "${HP_TLS_CERT:-}" && -n "${HP_TLS_KEY:-}" ]]; then
+    export HP_REQUIRE_TLS=1
+  else
+    export HP_REQUIRE_TLS=0
+  fi
+fi
+
 nohup "$ROOT_DIR/bin/aegislure" -config "$CONFIG_PATH" >"$LOG_FILE" 2>&1 &
 pid=$!
 echo "$pid" >"$PID_FILE"
