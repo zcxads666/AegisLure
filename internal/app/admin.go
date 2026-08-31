@@ -328,6 +328,9 @@ func (a *App) handleAdminAPI(w http.ResponseWriter, r *http.Request, path string
 		a.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "admin authentication required"})
 		return
 	}
+	if a.handleAdminPackAPI(w, r, path) {
+		return
+	}
 	switch {
 	case path == "dashboard":
 		a.adminDashboard(w)
@@ -744,7 +747,14 @@ func (a *App) adminInstances(w http.ResponseWriter) {
 }
 
 func (a *App) adminPacks(w http.ResponseWriter) {
-	a.writeJSON(w, http.StatusOK, map[string]any{"fingerprint_revision": "builtin-v1", "model_catalog_revision": "seed-2026q3", "scenario_revision": "builtin-safe-v1", "detector_revision": "builtin-rules-v1", "lifecycle": []string{"Draft", "Validate", "UnitTest", "Replay", "Shadow", "Canary", "Active", "Rollback"}})
+	items := make([]map[string]any, 0)
+	for _, kind := range []string{model.PackKindFingerprint, model.PackKindModel, model.PackKindScenario, model.PackKindDetector} {
+		for _, pack := range a.store.ListPacks(kind) {
+			items = append(items, packSummary(pack))
+		}
+	}
+	bindings := a.store.PackBindings()
+	a.writeJSON(w, http.StatusOK, map[string]any{"fingerprint_revision": "builtin-v1", "model_catalog_revision": "seed-2026q3", "scenario_revision": "builtin-safe-v1", "detector_revision": "builtin-rules-v1", "lifecycle": []string{model.PackDraft, model.PackValidated, model.PackUnitTest, model.PackReplay, model.PackShadow, model.PackCanary, model.PackActive, model.PackRollback}, "items": items, "bindings": bindings, "data_only": true})
 }
 
 func (a *App) rotateAdminEntry(w http.ResponseWriter) {

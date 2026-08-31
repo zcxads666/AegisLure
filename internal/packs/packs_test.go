@@ -60,3 +60,20 @@ func TestDetectorRuleValidationBoundsComplexity(t *testing.T) {
 		t.Fatal("expected time window validation failure")
 	}
 }
+
+func TestDetectorWhereValidationRejectsUnsafeOrUnboundedExpressions(t *testing.T) {
+	valid := DetectorRulePack{SchemaVersion: 1, Revision: "x", Rules: []DetectorRule{{ID: "x", Type: "atomic", ReasonCode: "x", Score: 50, Where: []byte(`{"field":"body_preview","op":"regex","value":"(?i)metadata"}`)}}}
+	if err := ValidateDetectorRulePack(valid); err != nil {
+		t.Fatalf("valid bounded RE2 condition rejected: %v", err)
+	}
+	unknownField := valid
+	unknownField.Rules = []DetectorRule{{ID: "x", Type: "atomic", ReasonCode: "x", Score: 50, Where: []byte(`{"field":"command","op":"eq","value":"id"}`)}}
+	if err := ValidateDetectorRulePack(unknownField); err == nil {
+		t.Fatal("unknown event field was accepted")
+	}
+	badRegex := valid
+	badRegex.Rules = []DetectorRule{{ID: "x", Type: "atomic", ReasonCode: "x", Score: 50, Where: []byte(`{"field":"body_preview","op":"regex","value":"["}`)}}
+	if err := ValidateDetectorRulePack(badRegex); err == nil {
+		t.Fatal("invalid RE2 expression was accepted")
+	}
+}

@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 const (
 	ProductNewAPI  = "new-api"
@@ -137,12 +140,46 @@ type AdminRecoveryCode struct {
 }
 
 type State struct {
-	Admin       AdminState               `json:"admin"`
-	HoneyUsers  map[string]HoneyUser     `json:"honey_users"`
-	HoneyTokens map[string]HoneyToken    `json:"honey_tokens"`
-	Effects     map[string]VirtualEffect `json:"effects"`
-	Quotas      map[string]int64         `json:"quotas"`
-	QuotaLedger []QuotaEntry             `json:"quota_ledger,omitempty"`
+	Admin        AdminState               `json:"admin"`
+	HoneyUsers   map[string]HoneyUser     `json:"honey_users"`
+	HoneyTokens  map[string]HoneyToken    `json:"honey_tokens"`
+	Effects      map[string]VirtualEffect `json:"effects"`
+	Quotas       map[string]int64         `json:"quotas"`
+	QuotaLedger  []QuotaEntry             `json:"quota_ledger,omitempty"`
+	Packs        map[string]ConfigPack    `json:"packs,omitempty"`
+	PackBindings map[string]string        `json:"pack_bindings,omitempty"`
+}
+
+const (
+	PackKindFingerprint = "fingerprint"
+	PackKindModel       = "model_catalog"
+	PackKindScenario    = "scenario"
+	PackKindDetector    = "detector"
+
+	PackDraft     = "Draft"
+	PackValidated = "Validate"
+	PackUnitTest  = "UnitTest"
+	PackReplay    = "Replay"
+	PackShadow    = "Shadow"
+	PackCanary    = "Canary"
+	PackActive    = "Active"
+	PackRollback  = "Rollback"
+)
+
+// ConfigPack is one immutable-by-revision, data-only configuration artifact.
+// Definition is retained for local replay and rollback, but never returned
+// wholesale by the admin list endpoint.
+type ConfigPack struct {
+	ID               string          `json:"id"`
+	Kind             string          `json:"kind"`
+	Revision         string          `json:"revision"`
+	PreviousRevision string          `json:"previous_revision,omitempty"`
+	Lifecycle        string          `json:"lifecycle"`
+	Target           string          `json:"target,omitempty"`
+	Definition       json.RawMessage `json:"definition"`
+	Signature        string          `json:"signature,omitempty"`
+	CreatedAt        time.Time       `json:"created_at"`
+	UpdatedAt        time.Time       `json:"updated_at"`
 }
 
 type Indicator struct {

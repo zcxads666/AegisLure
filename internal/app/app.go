@@ -71,6 +71,7 @@ type App struct {
 	publicSem      chan struct{}
 	personaMu      sync.Mutex
 	personaRuntime map[string]*personaRuntimeState
+	ruleEngine     *detect.RuleEngine
 	serverMu       sync.RWMutex
 	profileServers map[string]*http.Server
 	profilePorts   map[string]net.Listener
@@ -83,9 +84,13 @@ type rateBucket struct {
 }
 
 func New(cfg *config.Config, st *store.Store) *App {
-	return &App{
+	a := &App{
 		cfg: cfg, store: st, profiles: profiles.Build(cfg), log: log.New(os.Stdout, "aegislure ", log.LstdFlags|log.LUTC), sessions: make(map[string]Session), anonymous: make(map[string]string), adminSessions: make(map[string]AdminSession), rateBuckets: make(map[string]rateBucket), publicSem: make(chan struct{}, 64), personaRuntime: make(map[string]*personaRuntimeState), profileServers: make(map[string]*http.Server), profilePorts: make(map[string]net.Listener),
 	}
+	a.ruleEngine = detect.NewRuleEngine()
+	seedBuiltinPacks(a)
+	loadPersistedRuleEngine(a)
+	return a
 }
 
 func (a *App) Start() error {
@@ -487,6 +492,18 @@ func (a *App) record(profile profiles.Profile, r *http.Request, body []byte, cw 
 	}
 	if event.Score >= 60 {
 		event.Confidence = "high"
+	}
+	if a.ruleEngine != nil {
+		custom := a.ruleEngine.Evaluate(event)
+		event.MatchedRuleIDs = uniqueStrings(append(event.MatchedRuleIDs, custom.MatchedRuleIDs...))
+		event.ReasonCodes = uniqueStrings(append(event.ReasonCodes, custom.Reasons...))
+		event.Score += custom.Score
+		if event.Score > 100 {
+			event.Score = 100
+		}
+		if custom.Confidence == "high" || event.Confidence == "low" {
+			event.Confidence = custom.Confidence
+		}
 	}
 	if err := a.store.AppendEvent(event); err != nil {
 		a.log.Printf("event append failed: %v", err)

@@ -65,10 +65,12 @@ func Open(dir, key string) (*Store, error) {
 		return nil, err
 	}
 	s.state = model.State{
-		HoneyUsers:  make(map[string]model.HoneyUser),
-		HoneyTokens: make(map[string]model.HoneyToken),
-		Effects:     make(map[string]model.VirtualEffect),
-		Quotas:      make(map[string]int64),
+		HoneyUsers:   make(map[string]model.HoneyUser),
+		HoneyTokens:  make(map[string]model.HoneyToken),
+		Effects:      make(map[string]model.VirtualEffect),
+		Quotas:       make(map[string]int64),
+		Packs:        make(map[string]model.ConfigPack),
+		PackBindings: make(map[string]string),
 	}
 	stateLoaded, err := s.loadStateFromSQLite()
 	if err != nil {
@@ -269,6 +271,12 @@ func (s *Store) ensureMaps() {
 	if s.state.QuotaLedger == nil {
 		s.state.QuotaLedger = []model.QuotaEntry{}
 	}
+	if s.state.Packs == nil {
+		s.state.Packs = make(map[string]model.ConfigPack)
+	}
+	if s.state.PackBindings == nil {
+		s.state.PackBindings = make(map[string]string)
+	}
 }
 
 func (s *Store) Save() error {
@@ -316,6 +324,174 @@ func (s *Store) Admin() model.AdminState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.state.Admin
+}
+
+func packKey(kind, id, revision string) string {
+	return kind + "\x00" + id + "\x00" + revision
+}
+
+func (s *Store) ListPacks(kind string) []model.ConfigPack {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	latest := make(map[string]model.ConfigPack)
+	for _, pack := range s.state.Packs {
+		if kind != "" && pack.Kind != kind {
+			continue
+		}
+		current, ok := latest[pack.Kind+"\x00"+pack.ID]
+		if !ok || pack.UpdatedAt.After(current.UpdatedAt) || (pack.UpdatedAt.Equal(current.UpdatedAt) && pack.Revision > current.Revision) {
+			latest[pack.Kind+"\x00"+pack.ID] = pack
+		}
+	}
+	result := make([]model.ConfigPack, 0, len(latest))
+	for _, pack := range latest {
+		result = append(result, pack)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Kind != result[j].Kind {
+			return result[i].Kind < result[j].Kind
+		}
+		return result[i].ID < result[j].ID
+	})
+	return result
+}
+
+func (s *Store) GetPack(kind, id string) (model.ConfigPack, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result model.ConfigPack
+	found := false
+	for _, pack := range s.state.Packs {
+		if pack.Kind != kind || pack.ID != id {
+			continue
+		}
+		if !found || pack.UpdatedAt.After(result.UpdatedAt) || (pack.UpdatedAt.Equal(result.UpdatedAt) && pack.Revision > result.Revision) {
+			result, found = pack, true
+		}
+	}
+	return result, found
+}
+
+func (s *Store) GetPackRevision(kind, id, revision string) (model.ConfigPack, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	pack, ok := s.state.Packs[packKey(kind, id, revision)]
+	return pack, ok
+}
+
+// UpsertPack stores a complete revision. Existing revisions are immutable in
+// definition; only lifecycle metadata can be refreshed for the same key.
+func (s *Store) UpsertPack(pack model.ConfigPack) error {
+	if strings.TrimSpace(pack.Kind) == "" || strings.TrimSpace(pack.ID) == "" || strings.TrimSpace(pack.Revision) == "" || len(pack.Definition) == 0 {
+		return errors.New("pack identity or definition is incomplete")
+	}
+	return s.Update(func(state *model.State) error {
+		key := packKey(pack.Kind, pack.ID, pack.Revision)
+		if existing, ok := state.Packs[key]; ok {
+			if string(existing.Definition) != string(pack.Definition) {
+				return errors.New("pack revision is immutable")
+			}
+			if pack.CreatedAt.IsZero() {
+				pack.CreatedAt = existing.CreatedAt
+			}
+			if pack.PreviousRevision == "" {
+				pack.PreviousRevision = existing.PreviousRevision
+			}
+		} else {
+			if previous, ok := latestPack(state.Packs, pack.Kind, pack.ID); ok && pack.PreviousRevision == "" && previous.Revision != pack.Revision {
+				pack.PreviousRevision = previous.Revision
+			}
+			if pack.CreatedAt.IsZero() {
+				pack.CreatedAt = time.Now().UTC()
+			}
+		}
+		if pack.Lifecycle == "" {
+			pack.Lifecycle = model.PackDraft
+		}
+		pack.UpdatedAt = time.Now().UTC()
+		state.Packs[key] = pack
+		return nil
+	})
+}
+
+func (s *Store) UpdatePackLifecycle(kind, id, lifecycle string) (model.ConfigPack, error) {
+	var result model.ConfigPack
+	err := s.Update(func(state *model.State) error {
+		pack, ok := latestPack(state.Packs, kind, id)
+		if !ok {
+			return errors.New("pack not found")
+		}
+		pack.Lifecycle = lifecycle
+		pack.UpdatedAt = time.Now().UTC()
+		state.Packs[packKey(pack.Kind, pack.ID, pack.Revision)] = pack
+		result = pack
+		return nil
+	})
+	return result, err
+}
+
+func (s *Store) RollbackPack(kind, id string) (model.ConfigPack, error) {
+	var result model.ConfigPack
+	err := s.Update(func(state *model.State) error {
+		current, ok := latestPack(state.Packs, kind, id)
+		if !ok || current.PreviousRevision == "" {
+			return errors.New("pack has no previous revision")
+		}
+		previous, ok := state.Packs[packKey(kind, id, current.PreviousRevision)]
+		if !ok {
+			return errors.New("previous pack revision not found")
+		}
+		now := time.Now().UTC()
+		current.Lifecycle = model.PackRollback
+		current.UpdatedAt = now
+		previous.Lifecycle = model.PackActive
+		// Make the restored revision the selected latest revision even if its
+		// lexical revision string sorts before the rolled-back revision.
+		previous.UpdatedAt = now.Add(time.Nanosecond)
+		state.Packs[packKey(current.Kind, current.ID, current.Revision)] = current
+		state.Packs[packKey(previous.Kind, previous.ID, previous.Revision)] = previous
+		result = previous
+		return nil
+	})
+	return result, err
+}
+
+func (s *Store) BindPack(kind, target, packID string) error {
+	if strings.TrimSpace(kind) == "" || strings.TrimSpace(target) == "" || strings.TrimSpace(packID) == "" {
+		return errors.New("pack binding is incomplete")
+	}
+	return s.Update(func(state *model.State) error {
+		pack, ok := latestPack(state.Packs, kind, packID)
+		if !ok || pack.Lifecycle != model.PackActive {
+			return errors.New("only an active pack can be assigned")
+		}
+		state.PackBindings[kind+"\x00"+target] = pack.ID
+		return nil
+	})
+}
+
+func (s *Store) PackBindings() map[string]string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make(map[string]string, len(s.state.PackBindings))
+	for key, value := range s.state.PackBindings {
+		result[key] = value
+	}
+	return result
+}
+
+func latestPack(packs map[string]model.ConfigPack, kind, id string) (model.ConfigPack, bool) {
+	var result model.ConfigPack
+	found := false
+	for _, pack := range packs {
+		if pack.Kind != kind || pack.ID != id {
+			continue
+		}
+		if !found || pack.UpdatedAt.After(result.UpdatedAt) || (pack.UpdatedAt.Equal(result.UpdatedAt) && pack.Revision > result.Revision) {
+			result, found = pack, true
+		}
+	}
+	return result, found
 }
 
 func (s *Store) CreateHoneyUser(user model.HoneyUser) error {
