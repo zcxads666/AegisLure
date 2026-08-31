@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zcxads666/AegisLure/internal/config"
 	"github.com/zcxads666/AegisLure/internal/model"
@@ -395,6 +396,42 @@ func TestAdminRecoveryCodeResetsPassword(t *testing.T) {
 	resp, _ = doJSON(t, client, http.MethodPost, cfg.AdminPath+"admin/api/v1/auth/recovery-code/reset", map[string]string{"username": "owner", "recovery_code": code, "new_password": "another-new-password"})
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("reused recovery code status = %d", resp.StatusCode)
+	}
+}
+
+func TestAdminRescueCodeExpiresAndIsSingleUse(t *testing.T) {
+	a, cfg, st := newTestApp(t, true)
+	expiredCode := "expired-rescue-code"
+	validCode := "valid-rescue-code"
+	now := time.Now().UTC()
+	if err := st.Update(func(state *model.State) error {
+		state.Admin.RescueCodes = []model.AdminRecoveryCode{
+			{Hash: security.Fingerprint(cfg.InstanceKey, expiredCode), IssuedAt: now.Add(-11 * time.Minute), ExpiresAt: now.Add(-1 * time.Minute)},
+			{Hash: security.Fingerprint(cfg.InstanceKey, validCode), IssuedAt: now, ExpiresAt: now.Add(10 * time.Minute)},
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	client := &inProcessClient{handler: a.adminHandler(), cookies: map[string]string{}}
+	resp, _ := doJSON(t, client, http.MethodPost, cfg.AdminPath+"admin/api/v1/auth/recovery-code/reset", map[string]string{"username": "owner", "recovery_code": expiredCode, "new_password": "expired-code-must-fail"})
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expired rescue code status = %d", resp.StatusCode)
+	}
+	state := st.Admin()
+	if len(state.RescueCodes) != 1 || state.RescueCodes[0].Hash != security.Fingerprint(cfg.InstanceKey, validCode) {
+		t.Fatalf("expired rescue code was not pruned: %#v", state.RescueCodes)
+	}
+	resp, result := doJSON(t, client, http.MethodPost, cfg.AdminPath+"admin/api/v1/auth/recovery-code/reset", map[string]string{"username": "owner", "recovery_code": validCode, "new_password": "valid-code-replaces-password"})
+	if resp.StatusCode != http.StatusOK || result["success"] != true {
+		t.Fatalf("valid rescue code status = %d %#v", resp.StatusCode, result)
+	}
+	if len(st.Admin().RescueCodes) != 0 {
+		t.Fatalf("used rescue code was not consumed: %#v", st.Admin().RescueCodes)
+	}
+	resp, _ = doJSON(t, client, http.MethodPost, cfg.AdminPath+"admin/api/v1/auth/recovery-code/reset", map[string]string{"username": "owner", "recovery_code": validCode, "new_password": "replay-must-fail"})
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("replayed rescue code status = %d", resp.StatusCode)
 	}
 }
 

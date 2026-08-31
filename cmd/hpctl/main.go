@@ -311,7 +311,12 @@ func adminResetIssue(args []string) {
 		fatal(err)
 	}
 	if err := st.Update(func(state *model.State) error {
-		state.Admin.RescueHashes = append(state.Admin.RescueHashes, config.KeyedHash(cfg.InstanceKey, code))
+		now := time.Now().UTC()
+		state.Admin.RescueCodes = append(state.Admin.RescueCodes, model.AdminRecoveryCode{
+			Hash:      config.KeyedHash(cfg.InstanceKey, code),
+			IssuedAt:  now,
+			ExpiresAt: now.Add(10 * time.Minute),
+		})
 		return nil
 	}); err != nil {
 		fatal(err)

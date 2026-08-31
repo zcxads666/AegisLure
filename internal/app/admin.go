@@ -217,6 +217,7 @@ func (a *App) adminRecoveryReset(w http.ResponseWriter, r *http.Request) {
 	}
 	codeHash := security.Fingerprint(a.cfg.InstanceKey, code)
 	reset := false
+	now := time.Now().UTC()
 	err = a.store.Update(func(state *model.State) error {
 		if !state.Admin.Initialized || state.Admin.OwnerUsername != username {
 			return nil
@@ -232,9 +233,30 @@ func (a *App) adminRecoveryReset(w http.ResponseWriter, r *http.Request) {
 		if values, ok := remove(state.Admin.RecoveryHashes); ok {
 			state.Admin.RecoveryHashes = values
 			reset = true
-		} else if values, ok := remove(state.Admin.RescueHashes); ok {
-			state.Admin.RescueHashes = values
-			reset = true
+		} else {
+			// Expired rescue codes are pruned while checking, so a replayed or
+			// stale CLI code cannot remain valid after its deadline.
+			valid := state.Admin.RescueCodes[:0]
+			for _, candidate := range state.Admin.RescueCodes {
+				if candidate.ExpiresAt.IsZero() || !candidate.ExpiresAt.After(now) {
+					continue
+				}
+				if candidate.Hash == codeHash {
+					reset = true
+					continue
+				}
+				valid = append(valid, candidate)
+			}
+			state.Admin.RescueCodes = valid
+			// Older state files used RescueHashes without an expiry. Keep the
+			// migration path readable for existing local installations, but all
+			// newly issued rescue codes use the expiring representation above.
+			if !reset {
+				if values, ok := remove(state.Admin.RescueHashes); ok {
+					state.Admin.RescueHashes = values
+					reset = true
+				}
+			}
 		}
 		if reset {
 			state.Admin.PasswordHash = hash

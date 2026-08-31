@@ -110,12 +110,24 @@ type QuotaEntry struct {
 }
 
 type AdminState struct {
-	Initialized    bool      `json:"initialized"`
-	OwnerUsername  string    `json:"owner_username,omitempty"`
-	PasswordHash   string    `json:"password_hash,omitempty"`
-	RecoveryHashes []string  `json:"recovery_hashes,omitempty"`
-	RescueHashes   []string  `json:"rescue_hashes,omitempty"`
-	CreatedAt      time.Time `json:"created_at,omitempty"`
+	Initialized    bool     `json:"initialized"`
+	OwnerUsername  string   `json:"owner_username,omitempty"`
+	PasswordHash   string   `json:"password_hash,omitempty"`
+	RecoveryHashes []string `json:"recovery_hashes,omitempty"`
+	// RescueCodes supersedes RescueHashes. Each rescue code has an explicit
+	// expiry so the CLI's 600-second promise is enforced by the state model,
+	// not just printed as an operator hint.
+	RescueCodes []AdminRecoveryCode `json:"rescue_codes,omitempty"`
+	// RescueHashes is retained for one-way compatibility with pre-expiry
+	// standalone state files. New codes must never be written here.
+	RescueHashes []string  `json:"rescue_hashes,omitempty"`
+	CreatedAt    time.Time `json:"created_at,omitempty"`
+}
+
+type AdminRecoveryCode struct {
+	Hash      string    `json:"hash"`
+	IssuedAt  time.Time `json:"issued_at"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 type State struct {

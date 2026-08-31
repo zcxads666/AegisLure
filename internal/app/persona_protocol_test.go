@@ -174,7 +174,7 @@ func TestVLLMDocsDisabledByDefaultAndValidWhenEnabled(t *testing.T) {
 		t.Fatalf("enabled vLLM OpenAPI is incomplete: %#v", schema)
 	}
 	resp, body = doRawJSON(t, client, http.MethodGet, "/docs", nil, nil)
-	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "/openapi.json") || !strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "/openapi.json") || strings.Contains(string(body), "cdn.jsdelivr.net") || !strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
 		t.Fatalf("enabled vLLM docs mismatch: %d %#v %s", resp.StatusCode, resp.Header, body)
 	}
 }

@@ -11,14 +11,14 @@ const vllmDocsHTML = `<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>vLLM OpenAI-Compatible Server</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+  <style>body{font-family:system-ui,sans-serif;max-width:960px;margin:2rem auto;padding:0 1rem}pre{white-space:pre-wrap;background:#f5f5f5;padding:1rem;border-radius:.5rem}a{color:#06c}</style>
 </head>
 <body>
-  <div id="swagger-ui"></div>
-  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
-  <script>
-    window.ui = SwaggerUIBundle({url: '/openapi.json', dom_id: '#swagger-ui', deepLinking: true, persistAuthorization: false});
-  </script>
+  <h1>vLLM OpenAI-Compatible Server</h1>
+  <p>OpenAPI schema: <a href="/openapi.json">/openapi.json</a></p>
+  <p>This documentation page is intentionally self-contained and does not load third-party assets.</p>
+  <pre id="schema">Loading schema…</pre>
+  <script>fetch('/openapi.json',{credentials:'omit'}).then(function(r){return r.json()}).then(function(value){document.getElementById('schema').textContent=JSON.stringify(value,null,2)}).catch(function(){document.getElementById('schema').textContent='Open /openapi.json to inspect the schema.'})</script>
 </body>
 </html>`
 
@@ -31,6 +31,12 @@ func vllmOpenAPISchema(profile profiles.Profile) map[string]any {
 		},
 		"servers": []any{map[string]string{"url": "/"}},
 		"paths": map[string]any{
+			"/": map[string]any{
+				"get": map[string]any{
+					"operationId": "root",
+					"responses":   map[string]any{"404": responseWithSchema("Not found", refSchema("#/components/schemas/ErrorResponse"), "application/json")},
+				},
+			},
 			"/health": map[string]any{
 				"get": map[string]any{
 					"operationId": "health",
@@ -66,6 +72,8 @@ func vllmOpenAPISchema(profile profiles.Profile) map[string]any {
 			"/v1/embeddings":       openAPIJSONOperation("createEmbedding", "#/components/schemas/EmbeddingRequest", "#/components/schemas/EmbeddingResponse"),
 			"/v1/responses":        openAPIJSONOperation("createResponse", "#/components/schemas/ResponseRequest", "#/components/schemas/ResponseResponse"),
 			"/invocations":         openAPIJSONOperation("invoke", "#/components/schemas/InvocationRequest", "#/components/schemas/ChatCompletionResponse"),
+			"/tokenize":            openAPIJSONOperation("tokenize", "#/components/schemas/TokenizeRequest", "#/components/schemas/TokenizeResponse"),
+			"/detokenize":          openAPIJSONOperation("detokenize", "#/components/schemas/DetokenizeRequest", "#/components/schemas/DetokenizeResponse"),
 		},
 		"components": map[string]any{
 			"schemas": map[string]any{
@@ -79,6 +87,10 @@ func vllmOpenAPISchema(profile profiles.Profile) map[string]any {
 				"EmbeddingRequest":       map[string]any{"type": "object", "required": []string{"model", "input"}, "properties": map[string]any{"model": stringSchema(), "input": stringOrStringArraySchema()}},
 				"ResponseRequest":        map[string]any{"type": "object", "required": []string{"model", "input"}, "properties": map[string]any{"model": stringSchema(), "input": stringOrResponseInputArraySchema(), "stream": boolSchema()}},
 				"InvocationRequest":      map[string]any{"type": "object", "required": []string{"model"}, "properties": map[string]any{"model": stringSchema(), "prompt": stringOrStringArraySchema(), "stream": boolSchema()}},
+				"TokenizeRequest":        map[string]any{"type": "object", "required": []string{"model", "prompt"}, "properties": map[string]any{"model": stringSchema(), "prompt": stringSchema()}},
+				"TokenizeResponse":       map[string]any{"type": "object", "required": []string{"tokens", "count"}, "properties": map[string]any{"tokens": map[string]any{"type": "array", "items": integerSchema(0)}, "count": integerSchema(0)}},
+				"DetokenizeRequest":      map[string]any{"type": "object", "required": []string{"model", "tokens"}, "properties": map[string]any{"model": stringSchema(), "tokens": map[string]any{"type": "array", "items": integerSchema(0)}}},
+				"DetokenizeResponse":     map[string]any{"type": "object", "required": []string{"prompt"}, "properties": map[string]any{"prompt": stringSchema()}},
 				"ChatCompletionResponse": map[string]any{"type": "object", "required": []string{"id", "object", "created", "model", "choices", "usage"}, "properties": map[string]any{"id": stringSchema(), "object": stringSchema(), "created": int64Schema(), "model": stringSchema(), "system_fingerprint": stringSchema(), "choices": map[string]any{"type": "array", "items": refSchema("#/components/schemas/Choice")}, "usage": refSchema("#/components/schemas/Usage")}},
 				"Choice":                 map[string]any{"type": "object", "properties": map[string]any{"index": integerSchema(0), "message": refSchema("#/components/schemas/ChatMessage"), "delta": refSchema("#/components/schemas/ChatMessage"), "text": stringSchema(), "finish_reason": nullableStringSchema()}},
 				"Usage":                  map[string]any{"type": "object", "required": []string{"prompt_tokens", "completion_tokens", "total_tokens"}, "properties": map[string]any{"prompt_tokens": integerSchema(0), "completion_tokens": integerSchema(0), "total_tokens": integerSchema(0)}},
