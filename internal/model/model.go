@@ -91,15 +91,22 @@ type HoneyUser struct {
 }
 
 type HoneyToken struct {
-	ID             string    `json:"id"`
-	HoneyUserID    string    `json:"honey_user_id"`
-	Hash           string    `json:"hash"`
-	PrefixHint     string    `json:"prefix_hint"`
-	Name           string    `json:"name,omitempty"`
-	ModelAllowlist []string  `json:"model_allowlist,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
-	DisabledAt     time.Time `json:"disabled_at,omitempty"`
-	LastUsedAt     time.Time `json:"last_used_at,omitempty"`
+	ID              string    `json:"id"`
+	HoneyUserID     string    `json:"honey_user_id"`
+	Hash            string    `json:"hash"`
+	PrefixHint      string    `json:"prefix_hint"`
+	Name            string    `json:"name,omitempty"`
+	ModelAllowlist  []string  `json:"model_allowlist,omitempty"`
+	RemainQuota     int64     `json:"remain_quota,omitempty"`
+	UnlimitedQuota  bool      `json:"unlimited_quota,omitempty"`
+	ExpiredAt       time.Time `json:"expired_at,omitempty"`
+	AllowIPs        string    `json:"allow_ips,omitempty"`
+	Group           string    `json:"group,omitempty"`
+	AutoGroups      []string  `json:"auto_groups,omitempty"`
+	CrossGroupRetry bool      `json:"cross_group_retry,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	DisabledAt      time.Time `json:"disabled_at,omitempty"`
+	LastUsedAt      time.Time `json:"last_used_at,omitempty"`
 }
 
 type HoneyIdentity struct {

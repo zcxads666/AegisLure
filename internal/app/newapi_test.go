@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -29,34 +30,122 @@ func TestNewAPIPublicPagesAndStatusContract(t *testing.T) {
 	profile := profiles.Build(cfg)[model.ProductNewAPI]
 	client := &inProcessClient{handler: a.publicHandler(profile), cookies: map[string]string{}}
 
-	pages := []string{"/", "/login", "/register", "/forgot-password", "/dashboard", "/pricing", "/models", "/docs", "/keys", "/usage", "/profile"}
+	pages := []string{"/", "/login", "/register", "/sign-in", "/sign-up", "/forgot-password", "/dashboard", "/dashboard/overview", "/dashboard/models", "/pricing", "/rankings", "/docs", "/about", "/keys", "/usage", "/usage-logs/common", "/profile"}
 	for _, path := range pages {
 		resp, body := doRawJSON(t, client, http.MethodGet, path, nil, nil)
 		if resp.StatusCode != http.StatusOK || !strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
 			t.Fatalf("New API page %s failed: %d content-type=%q", path, resp.StatusCode, resp.Header.Get("Content-Type"))
 		}
-		if len(resp.Cookies()) != 0 || !strings.Contains(resp.Header.Get("Content-Security-Policy"), "script-src 'nonce-") {
+		if len(resp.Cookies()) != 0 || !strings.Contains(resp.Header.Get("Content-Security-Policy"), "script-src 'self'") {
 			t.Fatalf("New API page %s security headers/cookies failed: headers=%#v", path, resp.Header)
 		}
-		if !strings.Contains(string(body), "New API") || !strings.Contains(string(body), "Frontend design and development by New API contributors.") || !strings.Contains(string(body), "QuantumNous/new-api") || !strings.Contains(string(body), "zcxads666/AegisLure") {
+		if !strings.Contains(string(body), "New API") || !strings.Contains(string(body), "/static/") {
 			t.Fatalf("New API page %s is missing shell attribution: %s", path, body)
 		}
 		assertPublicResponseClean(t, resp, body)
 	}
 
 	resp, body := doRawJSON(t, client, http.MethodGet, "/api/status", nil, nil)
-	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"protocol":"openai-compatible"`) || !strings.Contains(string(body), `"upstream_enabled":false`) {
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"protocol":"openai-compatible"`) || !strings.Contains(string(body), `"upstream_enabled":false`) || !strings.Contains(string(body), `"email_verification":false`) || !strings.Contains(string(body), `"footer_html"`) {
 		t.Fatalf("public New API status failed: %d %s", resp.StatusCode, body)
 	}
 	if len(resp.Cookies()) != 0 {
 		t.Fatalf("public New API status set a cookie: %#v", resp.Cookies())
 	}
 
-	for _, path := range []string{"/admin", "/billing", "/payment", "/channels", "/webhook"} {
+	for _, path := range []string{"/admin", "/billing", "/payment", "/wallet", "/channels", "/models", "/users", "/redemption-codes", "/subscriptions", "/system-info", "/system-settings", "/playground", "/setup", "/oauth", "/webhook"} {
 		resp, body := doRawJSON(t, client, http.MethodGet, path, nil, nil)
 		if resp.StatusCode != http.StatusNotFound {
 			t.Fatalf("unsafe New API surface %s was exposed: %d %s", path, resp.StatusCode, body)
 		}
+	}
+}
+
+func TestNewAPINativeBrowserContractUsesSafeNumericIDs(t *testing.T) {
+	a, cfg, st := newTestApp(t, true)
+	cfg.ProfilePorts[model.ProductNewAPI] = 3000
+	profile := profiles.Build(cfg)[model.ProductNewAPI]
+	client := &inProcessClient{handler: a.publicHandler(profile), cookies: map[string]string{}}
+
+	password := "Password123!"
+	resp, body := doJSON(t, client, http.MethodPost, "/api/user/register", map[string]string{
+		"username": "native-browser-user",
+		"password": password,
+	})
+	if resp.StatusCode != http.StatusOK || body["success"] != true {
+		t.Fatalf("native registration failed: %d %#v", resp.StatusCode, body)
+	}
+	registeredUserID := body["data"].(map[string]any)["id"].(string)
+
+	resp, body = doJSON(t, client, http.MethodPost, "/api/user/login", map[string]string{
+		"username": "native-browser-user",
+		"password": password,
+	})
+	if resp.StatusCode != http.StatusOK || body["success"] != true {
+		t.Fatalf("native login failed: %d %#v", resp.StatusCode, body)
+	}
+	auth := body["data"].(map[string]any)
+	userView := auth["user"].(map[string]any)
+	if id, ok := userView["id"].(float64); !ok || id <= 0 || id > 1<<53-1 {
+		t.Fatalf("user id is not browser-safe: %#v", userView["id"])
+	}
+	if sessionView := auth["session"].(map[string]any); sessionView["sid"] == "" {
+		t.Fatalf("login session is missing: %#v", sessionView)
+	}
+
+	resp, _ = doJSON(t, client, http.MethodPost, "/api/user/checkin", map[string]any{})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("native check-in failed: %d", resp.StatusCode)
+	}
+	resp, createdBody := doJSON(t, client, http.MethodPost, "/api/token/", map[string]any{"name": "native-browser"})
+	if resp.StatusCode != http.StatusOK || createdBody["success"] != true {
+		t.Fatalf("native token creation failed: %d %#v", resp.StatusCode, createdBody)
+	}
+	created := createdBody["data"].(map[string]any)
+	tokenID, ok := created["id"].(float64)
+	if !ok || tokenID <= 0 || tokenID > 1<<53-1 {
+		t.Fatalf("token id is not browser-safe: %#v", created["id"])
+	}
+	tokenPath := "/api/token/" + strconv.FormatInt(int64(tokenID), 10)
+
+	resp, listBody := doJSON(t, client, http.MethodGet, "/api/token/?p=1&size=10", nil)
+	if resp.StatusCode != http.StatusOK || listBody["success"] != true {
+		t.Fatalf("native token list failed: %d %#v", resp.StatusCode, listBody)
+	}
+	listData := listBody["data"].(map[string]any)
+	if listData["total"].(float64) != 1 {
+		t.Fatalf("native token list total = %#v", listData["total"])
+	}
+
+	resp, keyBody := doJSON(t, client, http.MethodPost, tokenPath+"/key", nil)
+	if resp.StatusCode != http.StatusOK || keyBody["success"] != true {
+		t.Fatalf("native key reveal failed after numeric URL round-trip: %d %#v", resp.StatusCode, keyBody)
+	}
+	suffix := keyBody["data"].(map[string]any)["key"].(string)
+	if !strings.HasPrefix(suffix, "proj-") || len(suffix) < 12 {
+		t.Fatalf("native key reveal returned an invalid suffix: %q", suffix)
+	}
+	rawKey := "sk-" + suffix
+
+	resp, invocationBody := doRawJSON(t, client, http.MethodPost, "/v1/chat/completions", map[string]any{
+		"model":    "gpt-5.6-sol",
+		"messages": []any{map[string]string{"role": "user", "content": "hello"}},
+	}, map[string]string{"Authorization": "Bearer " + rawKey})
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(invocationBody), `"choices"`) {
+		t.Fatalf("native invocation failed: %d %s", resp.StatusCode, invocationBody)
+	}
+
+	resp, logsBody := doJSON(t, client, http.MethodGet, "/api/log/self?p=1&page_size=20", nil)
+	if resp.StatusCode != http.StatusOK || logsBody["success"] != true {
+		t.Fatalf("native usage log request failed: %d %#v", resp.StatusCode, logsBody)
+	}
+	logsData := logsBody["data"].(map[string]any)
+	if logsData["total"].(float64) < 1 {
+		t.Fatalf("native invocation did not create a usage log: %#v", logsData)
+	}
+	user, ok := st.GetHoneyUser(registeredUserID)
+	if !ok || user.VirtualQuota >= 1000 {
+		t.Fatalf("native invocation did not consume virtual quota: %#v", user)
 	}
 }
 
@@ -75,7 +164,7 @@ func TestNewAPILogoutClearsServerAssociatedUser(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("registration for logout test failed: %d", resp.StatusCode)
 	}
-	resp, _ = doRawJSON(t, client, http.MethodPost, "/api/user/logout", map[string]any{}, nil)
+	resp, _ = doRawJSON(t, client, http.MethodPost, "/api/user/auth/logout", map[string]any{}, nil)
 	if resp.StatusCode != http.StatusOK || len(resp.Cookies()) != 0 {
 		t.Fatalf("logout failed: %d cookies=%#v", resp.StatusCode, resp.Cookies())
 	}

@@ -30,6 +30,8 @@ type Session struct {
 	ID               string
 	Product          string
 	UserID           string
+	SourceIP         string
+	UserAgent        string
 	CatalogRevisions map[string]string
 	CreatedAt        time.Time
 	LastSeen         time.Time
@@ -67,6 +69,7 @@ type App struct {
 	mu             sync.Mutex
 	sessions       map[string]Session
 	anonymous      map[string]string
+	newAPIRawKeys  map[string]string
 	adminSessions  map[string]AdminSession
 	setupMu        sync.Mutex
 	rateMu         sync.Mutex
@@ -91,7 +94,7 @@ type rateBucket struct {
 
 func New(cfg *config.Config, st *store.Store) *App {
 	a := &App{
-		cfg: cfg, store: st, profiles: profiles.Build(cfg), log: log.New(os.Stdout, "aegislure ", log.LstdFlags|log.LUTC), sessions: make(map[string]Session), anonymous: make(map[string]string), adminSessions: make(map[string]AdminSession), rateBuckets: make(map[string]rateBucket), publicSem: make(chan struct{}, 64), personaRuntime: make(map[string]*personaRuntimeState), profileServers: make(map[string]*http.Server), profilePorts: make(map[string]net.Listener), exports: make(map[string]localExportJob),
+		cfg: cfg, store: st, profiles: profiles.Build(cfg), log: log.New(os.Stdout, "aegislure ", log.LstdFlags|log.LUTC), sessions: make(map[string]Session), anonymous: make(map[string]string), newAPIRawKeys: make(map[string]string), adminSessions: make(map[string]AdminSession), rateBuckets: make(map[string]rateBucket), publicSem: make(chan struct{}, 64), personaRuntime: make(map[string]*personaRuntimeState), profileServers: make(map[string]*http.Server), profilePorts: make(map[string]net.Listener), exports: make(map[string]localExportJob),
 	}
 	a.ruleEngine = detect.NewRuleEngine()
 	seedBuiltinPacks(a)
@@ -387,7 +390,7 @@ func (a *App) sessionFor(r *http.Request, product string) Session {
 		id = fmt.Sprintf("session-%d", time.Now().UnixNano())
 	}
 	now := time.Now().UTC()
-	session := Session{ID: id, Product: product, CatalogRevisions: map[string]string{product: a.currentCatalogRevision(product)}, CreatedAt: now, LastSeen: now}
+	session := Session{ID: id, Product: product, SourceIP: sourceIP, UserAgent: r.UserAgent(), CatalogRevisions: map[string]string{product: a.currentCatalogRevision(product)}, CreatedAt: now, LastSeen: now}
 	a.sessions[id] = session
 	a.anonymous[anonymousKey] = id
 	if len(a.anonymous) > 4096 {
@@ -473,7 +476,7 @@ func headerBytes(r *http.Request) int {
 
 func requiredMethod(route string) string {
 	switch route {
-	case "newapi.user.register", "newapi.user.login", "newapi.user.logout", "newapi.user.forgot", "newapi.checkin", "newapi.token.create", "openai.chat.completions", "openai.completions", "openai.responses", "openai.embeddings", "anthropic.messages", "gemini.generate", "gemini.stream", "ollama.show", "ollama.generate", "ollama.chat", "ollama.embeddings", "ollama.pull", "ollama.push", "ollama.create", "ollama.copy", "vllm.invocations", "vllm.tokenize", "vllm.detokenize", "sglang.generate", "sglang.lora.load", "sglang.weights.update", "sglang.cache.flush", "sglang.weights.get", "localai.models.apply", "localai.models.delete", "localai.audio.transcriptions", "localai.audio.speech", "localai.images.generations":
+	case "newapi.user.register", "newapi.user.login", "newapi.user.logout", "newapi.auth.refresh", "newapi.token.create", "newapi.token.key", "newapi.token.batch", "newapi.token.batch-keys", "openai.chat.completions", "openai.completions", "openai.responses", "openai.embeddings", "anthropic.messages", "gemini.generate", "gemini.stream", "ollama.show", "ollama.generate", "ollama.chat", "ollama.embeddings", "ollama.pull", "ollama.push", "ollama.create", "ollama.copy", "vllm.invocations", "vllm.tokenize", "vllm.detokenize", "sglang.generate", "sglang.lora.load", "sglang.weights.update", "sglang.cache.flush", "sglang.weights.get", "localai.models.apply", "localai.models.delete", "localai.audio.transcriptions", "localai.audio.speech", "localai.images.generations":
 		return http.MethodPost
 	case "ollama.delete":
 		return http.MethodDelete
@@ -492,8 +495,20 @@ func allowedMethods(route string) string {
 		return method
 	}
 	switch route {
-	case "newapi.home", "newapi.login", "newapi.register", "newapi.forgot", "newapi.dashboard", "newapi.pricing", "newapi.models", "newapi.docs", "newapi.keys", "newapi.usage", "newapi.profile", "newapi.status", "newapi.oauth.start", "newapi.oauth.callback", "newapi.token.list", "newapi.user.status", "newapi.usage.logs", "ollama.home", "ollama.version", "ollama.tags", "ollama.ps", "openai.models", "openai.model", "gemini.models", "vllm.root", "vllm.health", "vllm.version", "vllm.metrics", "vllm.docs", "vllm.openapi", "sglang.health", "sglang.metrics", "sglang.docs", "sglang.redoc", "sglang.openapi", "sglang.server_info", "localai.home", "localai.health", "localai.metrics", "localai.docs", "localai.models.available", "localai.models.installed", "localai.models.task":
+	case "newapi.spa", "newapi.asset", "newapi.logo", "newapi.status", "newapi.oauth.start", "newapi.oauth.callback", "newapi.token.list", "newapi.token.get", "newapi.token.auto-groups", "newapi.user.status", "newapi.user.models", "newapi.user.groups", "newapi.usage.logs", "newapi.home-content", "newapi.about-content", "newapi.pricing-data", "newapi.rankings-data", "newapi.setup", "newapi.notice", "newapi.dashboard-data", "newapi.verification", "ollama.home", "ollama.version", "ollama.tags", "ollama.ps", "openai.models", "openai.model", "gemini.models", "vllm.root", "vllm.health", "vllm.version", "vllm.metrics", "vllm.docs", "vllm.openapi", "sglang.health", "sglang.metrics", "sglang.docs", "sglang.redoc", "sglang.openapi", "sglang.server_info", "localai.home", "localai.health", "localai.metrics", "localai.models.available", "localai.models.installed", "localai.models.task":
 		return http.MethodGet
+	case "newapi.user.forgot", "newapi.checkin":
+		return http.MethodGet + ", " + http.MethodPost
+	case "newapi.user.setting":
+		return http.MethodPut
+	case "newapi.user.token":
+		return http.MethodGet
+	case "newapi.user.update":
+		return http.MethodPut + ", " + http.MethodDelete
+	case "newapi.user.sessions":
+		return http.MethodGet + ", " + http.MethodDelete + ", " + http.MethodPost
+	case "newapi.user.oauth-bindings":
+		return http.MethodGet + ", " + http.MethodDelete
 	case "newapi.token.update":
 		return http.MethodPatch + ", " + http.MethodPut
 	default:
@@ -512,7 +527,12 @@ func methodAllowed(route, method string) bool {
 		return method == required
 	}
 	if allowed := allowedMethods(route); allowed != "" {
-		return method == allowed
+		for _, candidate := range strings.Split(allowed, ", ") {
+			if method == candidate {
+				return true
+			}
+		}
+		return false
 	}
 	return true
 }

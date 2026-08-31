@@ -1006,6 +1006,7 @@ func (s *Store) ListTokens(userID string) []model.HoneyToken {
 	for _, token := range s.state.HoneyTokens {
 		if userID == "" || token.HoneyUserID == userID {
 			token.ModelAllowlist = append([]string(nil), token.ModelAllowlist...)
+			token.AutoGroups = append([]string(nil), token.AutoGroups...)
 			result = append(result, token)
 		}
 	}

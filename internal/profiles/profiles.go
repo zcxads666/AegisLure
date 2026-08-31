@@ -199,34 +199,26 @@ func Route(product, method, path string) string {
 
 func newAPIRoute(method, path string) string {
 	switch {
-	case path == "/":
-		return "newapi.home"
-	case path == "/login" || path == "/sign-in":
-		return "newapi.login"
-	case path == "/register" || path == "/sign-up":
-		return "newapi.register"
-	case path == "/forgot-password" || path == "/forgot-password/" || path == "/forget-password" || path == "/forget-password/":
-		return "newapi.forgot"
-	case path == "/dashboard" || path == "/dashboard/":
-		return "newapi.dashboard"
-	case path == "/pricing" || path == "/pricing/":
-		return "newapi.pricing"
-	case path == "/models" || path == "/models/":
-		return "newapi.models"
-	case path == "/docs" || path == "/docs/":
-		return "newapi.docs"
-	case path == "/keys" || path == "/keys/" || path == "/token" || path == "/token/":
-		return "newapi.keys"
-	case path == "/usage" || path == "/usage/" || path == "/usage-logs" || path == "/usage-logs/":
-		return "newapi.usage"
-	case path == "/profile" || path == "/profile/":
-		return "newapi.profile"
+	case path == "/" || path == "/login" || path == "/register" || path == "/sign-in" || path == "/sign-up" || path == "/forgot-password" || path == "/forgot-password/" || path == "/forget-password" || path == "/forget-password/" || path == "/pricing" || path == "/pricing/" || path == "/about" || path == "/about/" || path == "/rankings" || path == "/rankings/" || path == "/docs" || path == "/docs/" || path == "/privacy-policy" || path == "/user-agreement":
+		return "newapi.spa"
+	case strings.HasPrefix(path, "/pricing/") && strings.TrimPrefix(path, "/pricing/") != "":
+		return "newapi.spa"
+	case path == "/dashboard" || path == "/dashboard/" || path == "/dashboard/overview" || path == "/dashboard/models" || path == "/dashboard/flow" || path == "/dashboard/users" || path == "/keys" || path == "/keys/" || path == "/usage" || path == "/usage/" || path == "/usage-logs" || path == "/usage-logs/" || path == "/usage-logs/common" || path == "/usage-logs/drawing" || path == "/usage-logs/task" || path == "/profile" || path == "/profile/":
+		return "newapi.spa"
+	case strings.HasPrefix(path, "/static/"):
+		return "newapi.asset"
+	case path == "/logo.png" || path == "/favicon.ico":
+		return "newapi.logo"
+	case path == "/wallet" || strings.HasPrefix(path, "/wallet/") || path == "/channels" || strings.HasPrefix(path, "/channels/") || path == "/models" || strings.HasPrefix(path, "/models/") || path == "/users" || strings.HasPrefix(path, "/users/") || path == "/redemption-codes" || strings.HasPrefix(path, "/redemption-codes/") || path == "/subscriptions" || strings.HasPrefix(path, "/subscriptions/") || path == "/system-info" || strings.HasPrefix(path, "/system-info/") || path == "/system-settings" || strings.HasPrefix(path, "/system-settings/") || path == "/playground" || strings.HasPrefix(path, "/playground/") || path == "/setup" || strings.HasPrefix(path, "/setup/") || path == "/oauth" || strings.HasPrefix(path, "/oauth/"):
+		return "newapi.blocked"
 	case path == "/api/user/register":
 		return "newapi.user.register"
-	case path == "/api/user/login":
+	case path == "/api/user/login" || path == "/api/user/login/":
 		return "newapi.user.login"
-	case path == "/api/user/logout":
+	case path == "/api/user/logout" || path == "/api/user/auth/logout":
 		return "newapi.user.logout"
+	case path == "/api/user/auth/refresh":
+		return "newapi.auth.refresh"
 	case strings.HasPrefix(path, "/api/oauth/"):
 		if strings.HasSuffix(path, "/callback") {
 			return "newapi.oauth.callback"
@@ -241,7 +233,33 @@ func newAPIRoute(method, path string) string {
 			return "newapi.token.list"
 		}
 		return "newapi.token.create"
+	case path == "/api/token/":
+		if method == "GET" {
+			return "newapi.token.list"
+		}
+		if method == "POST" {
+			return "newapi.token.create"
+		}
+		return "newapi.token.update"
 	case strings.HasPrefix(path, "/api/token/"):
+		if path == "/api/token/search" {
+			return "newapi.token.list"
+		}
+		if path == "/api/token/auto-groups" {
+			return "newapi.token.auto-groups"
+		}
+		if path == "/api/token/batch" {
+			return "newapi.token.batch"
+		}
+		if path == "/api/token/batch/keys" {
+			return "newapi.token.batch-keys"
+		}
+		if strings.HasSuffix(path, "/key") {
+			return "newapi.token.key"
+		}
+		if method == "GET" {
+			return "newapi.token.get"
+		}
 		if method == "PATCH" || method == "PUT" {
 			return "newapi.token.update"
 		}
@@ -252,11 +270,48 @@ func newAPIRoute(method, path string) string {
 	case path == "/api/user/forgot-password" || path == "/api/user/forget-password":
 		return "newapi.user.forgot"
 	case path == "/api/user/self":
-		return "newapi.user.status"
+		if method == "GET" {
+			return "newapi.user.status"
+		}
+		return "newapi.user.update"
+	case path == "/api/user/models":
+		return "newapi.user.models"
+	case path == "/api/user/self/groups":
+		return "newapi.user.groups"
+	case path == "/api/user/setting":
+		return "newapi.user.setting"
+	case path == "/api/user/token":
+		return "newapi.user.token"
+	case path == "/api/user/sessions" || strings.HasPrefix(path, "/api/user/sessions/"):
+		return "newapi.user.sessions"
+	case path == "/api/user/oauth/bindings" || strings.HasPrefix(path, "/api/user/oauth/bindings/"):
+		return "newapi.user.oauth-bindings"
+	case path == "/api/reset_password" || path == "/api/user/forgot-password" || path == "/api/user/forget-password":
+		return "newapi.user.forgot"
+	case path == "/api/user/2fa/status" || path == "/api/user/2fa/setup" || path == "/api/user/2fa/enable" || path == "/api/user/2fa/disable" || path == "/api/user/2fa/backup_codes":
+		return "newapi.blocked"
+	case path == "/api/user/" || path == "/api/user":
+		return "newapi.blocked"
+	case path == "/api/verification":
+		return "newapi.verification"
 	case path == "/api/status":
 		return "newapi.status"
-	case path == "/api/log" || path == "/api/user/logs":
+	case path == "/api/notice":
+		return "newapi.notice"
+	case path == "/api/home_page_content":
+		return "newapi.home-content"
+	case path == "/api/about":
+		return "newapi.about-content"
+	case path == "/api/pricing":
+		return "newapi.pricing-data"
+	case path == "/api/rankings":
+		return "newapi.rankings-data"
+	case path == "/api/setup":
+		return "newapi.setup"
+	case path == "/api/log" || path == "/api/log/self" || path == "/api/log/self/stat" || path == "/api/log/stat" || path == "/api/user/logs" || path == "/api/mj" || path == "/api/mj/self" || path == "/api/task" || path == "/api/task/self":
 		return "newapi.usage.logs"
+	case path == "/api/data" || path == "/api/data/self" || path == "/api/data/flow" || path == "/api/data/flow/self" || path == "/api/uptime/status":
+		return "newapi.dashboard-data"
 	case path == "/v1/models":
 		return "openai.models"
 	case strings.HasPrefix(path, "/v1/models/"):

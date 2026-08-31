@@ -38,8 +38,25 @@ func (a *App) handleProduct(w *captureWriter, r *http.Request, profile profiles.
 
 func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.Profile, session Session, body []byte, obs *Observation) {
 	switch obs.RouteTemplate {
-	case "newapi.home", "newapi.login", "newapi.register", "newapi.forgot", "newapi.dashboard", "newapi.pricing", "newapi.models", "newapi.docs", "newapi.keys", "newapi.usage", "newapi.profile":
-		a.writeNewAPIPage(w, http.StatusOK, obs.RouteTemplate)
+	case "newapi.spa":
+		a.writeNewAPIIndex(w, http.StatusOK)
+	case "newapi.asset":
+		a.writeNewAPIAsset(w, r)
+	case "newapi.logo":
+		a.writeNewAPILogo(w, r)
+	case "newapi.blocked", "newapi.unknown":
+		a.writeNewAPINotFound(w)
+	case "newapi.auth.refresh":
+		if r.Method != http.MethodPost {
+			a.methodNotAllowed(w)
+			return
+		}
+		user, ok := a.requireHoneyUser(w, session)
+		if !ok {
+			return
+		}
+		session.UserID = user.ID
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": newAPIAuthBundle(user, session)})
 	case "newapi.oauth.start":
 		broker := a.currentOAuthBroker()
 		provider, ok := newAPIOAuthProvider(r.URL.Path, false)
@@ -114,7 +131,10 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		if verificationCode == "" {
 			verificationCode = strings.TrimSpace(value["captcha"])
 		}
-		if password == "" || len([]rune(password)) > 1024 || !emailOK || !validHoneyVerificationCode(verificationCode) {
+		// Email verification is disabled for the standalone tenant. Accept the
+		// actual New API form, which omits both fields, while still validating
+		// optional values supplied by legacy clients/tests.
+		if password == "" || len([]rune(password)) > 1024 || (email != "" && !emailOK) || !validHoneyVerificationCode(verificationCode) {
 			obs.ExtraScore += 20
 			obs.ExtraReasons = append(obs.ExtraReasons, "newapi_registration_shape_probe")
 			a.writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid registration request"})
@@ -133,7 +153,12 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 			a.writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid registration request"})
 			return
 		}
-		a.setSessionUser(session.ID, user.ID)
+		if email != "" || verificationCode != "" {
+			// Keep the legacy in-process test flow usable when it supplies the
+			// optional verification fields. The real New API registration form
+			// returns to sign-in and does not get an authenticated session here.
+			a.setSessionUser(session.ID, user.ID)
+		}
 		obs.ExtraScore += 25
 		obs.ExtraReasons = append(obs.ExtraReasons, "newapi_batch_registration_or_account_creation")
 		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{"id": user.ID, "username": username, "quota": user.VirtualQuota}})
@@ -160,7 +185,9 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		}
 		_ = a.store.TouchHoneyUser(user.ID, func(u *model.HoneyUser) { u.LastSeen = time.Now().UTC() })
 		a.setSessionUser(session.ID, user.ID)
-		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{"id": user.ID, "username": user.UsernameHint}})
+		session.UserID = user.ID
+		session.LastSeen = time.Now().UTC()
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "login successful", "data": newAPIAuthBundle(user, session)})
 	case "newapi.user.logout":
 		if r.Method != http.MethodPost {
 			a.methodNotAllowed(w)
@@ -169,7 +196,7 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		a.clearSessionUser(session.ID)
 		a.writeJSON(w, http.StatusOK, map[string]any{"success": true})
 	case "newapi.user.forgot":
-		if r.Method != http.MethodPost {
+		if r.Method != http.MethodPost && r.Method != http.MethodGet {
 			a.methodNotAllowed(w)
 			return
 		}
@@ -178,6 +205,9 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		// target. Rate limiting is still applied to both the source and the
 		// normalized target, but it never becomes an account oracle.
 		target := strings.ToLower(strings.TrimSpace(value["email"]))
+		if r.Method == http.MethodGet && target == "" {
+			target = strings.ToLower(strings.TrimSpace(r.URL.Query().Get("email")))
+		}
 		ipOK := a.allowRate("newapi-forgot-ip:"+requestSourceIP(r), 8, time.Minute)
 		targetOK := target == "" || a.allowRate("newapi-forgot-target:"+security.Fingerprint(a.cfg.InstanceKey, target), 5, time.Minute)
 		if !ipOK || !targetOK {
@@ -188,12 +218,39 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 	case "newapi.status":
 		catalog := a.catalogForSession(model.ProductNewAPI, "guest", session)
 		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{
-			"status":           "ok",
-			"service":          "new-api",
-			"protocol":         "openai-compatible",
-			"models":           len(catalog),
-			"streaming":        true,
-			"upstream_enabled": false,
+			"status":                     true,
+			"service":                    "new-api",
+			"version":                    "0.11.3-standalone",
+			"system_name":                "New API",
+			"logo":                       "/logo.png",
+			"protocol":                   "openai-compatible",
+			"models":                     len(catalog),
+			"streaming":                  true,
+			"upstream_enabled":           false,
+			"password_login_enabled":     true,
+			"password_register_enabled":  true,
+			"register_enabled":           true,
+			"oauth_register_enabled":     false,
+			"email_verification":         false,
+			"turnstile_check":            false,
+			"github_oauth":               false,
+			"discord_oauth":              false,
+			"linuxdo_oauth":              false,
+			"wechat_login":               false,
+			"passkey_login":              false,
+			"checkin_enabled":            true,
+			"display_in_currency":        false,
+			"display_token_stat_enabled": true,
+			"quota_display_type":         "TOKENS",
+			"quota_per_unit":             1,
+			"demo_site_enabled":          false,
+			"user_agreement_enabled":     false,
+			"privacy_policy_enabled":     false,
+			"docs_link":                  "/docs",
+			"HeaderNavModules":           `{"home":true,"console":true,"pricing":{"enabled":true,"requireAuth":false},"rankings":{"enabled":true,"requireAuth":false},"docs":true,"about":true}`,
+			"SidebarModulesAdmin":        `{"chat":{"enabled":false},"console":{"enabled":true,"detail":true,"token":true,"log":true,"midjourney":false,"task":false},"personal":{"enabled":true,"topup":false,"personal":true},"admin":{"enabled":false}}`,
+			"footer_html":                `Frontend design and development by New API contributors. <a href="https://github.com/QuantumNous/new-api" rel="noreferrer">New API source code</a> · <a href="https://github.com/zcxads666/AegisLure" rel="noreferrer">AegisLure source</a>`,
+			"notice":                     "Standalone virtual tenant: responses are synthetic and never reach an upstream model.",
 		}})
 	case "newapi.checkin":
 		user, ok := a.requireHoneyUser(w, session)
@@ -202,8 +259,29 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		}
 		now := time.Now().UTC()
 		day := now.Format("2006-01-02")
+		if r.Method == http.MethodGet {
+			month := strings.TrimSpace(r.URL.Query().Get("month"))
+			if month == "" {
+				month = now.Format("2006-01")
+			}
+			records := make([]map[string]any, 0, 1)
+			if user.CheckinDay != "" && strings.HasPrefix(user.CheckinDay, month) {
+				records = append(records, map[string]any{"checkin_date": user.CheckinDay, "quota_awarded": 1000})
+			}
+			a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{
+				"enabled": true,
+				"stats": map[string]any{
+					"checked_in_today": user.CheckinDay == day,
+					"total_checkins":   len(records),
+					"total_quota":      len(records) * 1000,
+					"checkin_count":    len(records),
+					"records":          records,
+				},
+			}})
+			return
+		}
 		if user.CheckinDay == day {
-			a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "already_checked_in": true, "quota": user.VirtualQuota})
+			a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{"quota_awarded": 0}, "already_checked_in": true, "quota": user.VirtualQuota})
 			return
 		}
 		if err := a.store.TouchHoneyUser(user.ID, func(u *model.HoneyUser) { u.CheckedInAt = now; u.CheckinDay = day }); err != nil {
@@ -217,7 +295,7 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		}
 		obs.ExtraScore += 20
 		obs.ExtraReasons = append(obs.ExtraReasons, "newapi_virtual_checkin")
-		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "quota_added": 1000, "quota": balance})
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{"quota_awarded": 1000}, "quota_added": 1000, "quota": balance})
 	case "newapi.token.create":
 		user, ok := a.requireHoneyUser(w, session)
 		if !ok {
@@ -246,13 +324,38 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		if options.Name != nil {
 			name = *options.Name
 		}
-		token := model.HoneyToken{ID: "ht_" + security.MustRandomToken(8), HoneyUserID: user.ID, Hash: security.Fingerprint(a.cfg.InstanceKey, raw), PrefixHint: raw[:12], Name: name, ModelAllowlist: append([]string(nil), options.ModelAllowlist...), CreatedAt: time.Now().UTC()}
+		actual := r.URL.Path == "/api/token/"
+		unlimited := actual
+		if options.UnlimitedQuota != nil {
+			unlimited = *options.UnlimitedQuota
+		}
+		remainQuota := int64(0)
+		if options.RemainQuota != nil {
+			remainQuota = *options.RemainQuota
+		}
+		group := ""
+		if actual {
+			group = "default"
+		}
+		if options.Group != nil && strings.TrimSpace(*options.Group) != "" {
+			group = strings.TrimSpace(*options.Group)
+		}
+		var expiredAt time.Time
+		if options.ExpiredTime != nil && *options.ExpiredTime > 0 {
+			expiredAt = time.Unix(*options.ExpiredTime, 0).UTC()
+		}
+		token := model.HoneyToken{ID: "ht_" + security.MustRandomToken(8), HoneyUserID: user.ID, Hash: security.Fingerprint(a.cfg.InstanceKey, raw), PrefixHint: raw[:12], Name: name, ModelAllowlist: append([]string(nil), options.ModelAllowlist...), RemainQuota: remainQuota, UnlimitedQuota: unlimited, ExpiredAt: expiredAt, Group: group, AllowIPs: stringPointerValue(options.AllowIPs), AutoGroups: append([]string(nil), options.AutoGroups...), CrossGroupRetry: boolValue(options.CrossGroupRetry), CreatedAt: time.Now().UTC()}
 		if err := a.store.AddToken(token); err != nil {
 			a.writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false})
 			return
 		}
+		a.rememberNewAPIRawKey(token.ID, raw)
 		obs.ExtraScore += 20
 		obs.ExtraReasons = append(obs.ExtraReasons, "newapi_honey_token_created")
+		if actual {
+			a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": newAPIPublicTokenView(token)})
+			return
+		}
 		data := publicTokenView(token)
 		data["key"] = raw
 		data["warning"] = "The key is shown once and is valid only in this service."
@@ -262,7 +365,14 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		if !ok {
 			return
 		}
+		actual := r.URL.Path == "/api/token/" || r.URL.Path == "/api/token/search"
 		search := strings.TrimSpace(r.URL.Query().Get("search"))
+		if search == "" {
+			search = strings.TrimSpace(r.URL.Query().Get("keyword"))
+		}
+		if search == "" {
+			search = strings.TrimSpace(r.URL.Query().Get("token"))
+		}
 		if len([]rune(search)) > 64 {
 			a.writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid token search"})
 			return
@@ -285,9 +395,136 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 			if search != "" && !strings.Contains(strings.ToLower(token.ID), search) && !strings.Contains(strings.ToLower(token.Name), search) && !strings.Contains(strings.ToLower(token.PrefixHint), search) {
 				continue
 			}
-			data = append(data, publicTokenView(token))
+			if actual {
+				data = append(data, newAPIPublicTokenView(token))
+			} else {
+				data = append(data, publicTokenView(token))
+			}
+		}
+		if actual {
+			page := boundedQueryInt(r, "p", 1, 1, 100000)
+			pageSize := boundedQueryInt(r, "size", 10, 1, 100)
+			start := (page - 1) * pageSize
+			if start > len(data) {
+				start = len(data)
+			}
+			end := start + pageSize
+			if end > len(data) {
+				end = len(data)
+			}
+			items := data[start:end]
+			if items == nil {
+				items = []map[string]any{}
+			}
+			a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{"items": items, "total": len(data), "page": page, "page_size": pageSize}})
+			return
 		}
 		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "object": "list", "data": data})
+	case "newapi.token.get":
+		user, ok := a.requireHoneyUser(w, session)
+		if !ok {
+			return
+		}
+		tokenID, ok := newAPITokenIDForUser(a.store.ListTokens(user.ID), strings.TrimPrefix(r.URL.Path, "/api/token/"))
+		if !ok {
+			a.writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "token not found"})
+			return
+		}
+		token, ok := findHoneyToken(a.store.ListTokens(user.ID), tokenID)
+		if !ok {
+			a.writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "token not found"})
+			return
+		}
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": newAPIPublicTokenView(token)})
+	case "newapi.token.auto-groups":
+		if _, ok := a.requireHoneyUser(w, session); !ok {
+			return
+		}
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{"groups": []string{}, "max_count": 5}})
+	case "newapi.token.key":
+		user, ok := a.requireHoneyUser(w, session)
+		if !ok {
+			return
+		}
+		tokens := a.store.ListTokens(user.ID)
+		tokenID, ok := newAPITokenKeyIDForUser(tokens, r.URL.Path)
+		if !ok {
+			a.writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "token not found"})
+			return
+		}
+		token, ok := findHoneyToken(tokens, tokenID)
+		if !ok || !token.DisabledAt.IsZero() {
+			a.writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "token not found"})
+			return
+		}
+		raw := a.newAPIRawKey(tokenID)
+		if raw == "" {
+			a.writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "key is no longer available after restart"})
+			return
+		}
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]string{"key": newAPIKeySuffix(raw)}})
+	case "newapi.token.batch":
+		user, ok := a.requireHoneyUser(w, session)
+		if !ok {
+			return
+		}
+		value, ok := decodeJSONObject(body)
+		if !ok {
+			a.writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid token request"})
+			return
+		}
+		ids, ok := value["ids"].([]any)
+		if !ok || len(ids) > 100 {
+			a.writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid token ids"})
+			return
+		}
+		deleted := 0
+		for _, id := range ids {
+			publicID, valid := newAPIInt64(id)
+			if !valid || publicID <= 0 {
+				continue
+			}
+			tokenID, found := newAPITokenIDForUser(a.store.ListTokens(user.ID), strconv.FormatInt(publicID, 10))
+			if !found {
+				continue
+			}
+			if a.store.DeleteToken(user.ID, tokenID) == nil {
+				a.forgetNewAPIRawKey(tokenID)
+				deleted++
+			}
+		}
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": deleted})
+	case "newapi.token.batch-keys":
+		user, ok := a.requireHoneyUser(w, session)
+		if !ok {
+			return
+		}
+		value, ok := decodeJSONObject(body)
+		if !ok {
+			a.writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid token request"})
+			return
+		}
+		ids, ok := value["ids"].([]any)
+		if !ok || len(ids) > 100 {
+			a.writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid token ids"})
+			return
+		}
+		keys := make(map[int64]string)
+		tokens := a.store.ListTokens(user.ID)
+		for _, id := range ids {
+			publicID, valid := newAPIInt64(id)
+			if !valid || publicID <= 0 {
+				continue
+			}
+			tokenID, found := newAPITokenIDForUser(tokens, strconv.FormatInt(publicID, 10))
+			if !found {
+				continue
+			}
+			if raw := a.newAPIRawKey(tokenID); raw != "" {
+				keys[publicID] = newAPIKeySuffix(raw)
+			}
+		}
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{"keys": keys}})
 	case "newapi.token.update":
 		if r.Method != http.MethodPatch && r.Method != http.MethodPut {
 			a.methodNotAllowed(w)
@@ -297,17 +534,69 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		if !ok {
 			return
 		}
-		tokenID, ok := newAPITokenID(r.URL.Path)
+		options, err := parseNewAPITokenOptions(r, body, true)
+		if err != nil {
+			a.writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid token request"})
+			return
+		}
+		tokens := a.store.ListTokens(user.ID)
+		actual := r.URL.Path == "/api/token/"
+		tokenID := ""
+		if actual {
+			if options.ID == nil {
+				a.writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "token id is required"})
+				return
+			}
+			tokenID, ok = newAPITokenIDForUser(tokens, strconv.FormatInt(*options.ID, 10))
+		} else {
+			tokenID, ok = newAPITokenIDForUser(tokens, strings.TrimPrefix(r.URL.Path, "/api/token/"))
+		}
 		if !ok {
 			a.writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "token not found"})
 			return
 		}
-		options, err := parseNewAPITokenOptions(r, body, true)
-		if err != nil || options.Name == nil && options.Disabled == nil && !options.ModelAllowlistSet {
+		disabled := options.Disabled
+		if options.Status != nil {
+			value := *options.Status != 1
+			disabled = &value
+		}
+		if options.Name == nil && disabled == nil && !options.ModelAllowlistSet && options.RemainQuota == nil && options.ExpiredTime == nil && options.UnlimitedQuota == nil && options.AllowIPs == nil && options.Group == nil && !options.AutoGroupsSet && options.CrossGroupRetry == nil {
 			a.writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid token request"})
 			return
 		}
-		if err := a.store.UpdateToken(user.ID, tokenID, options.Name, options.Disabled, options.ModelAllowlist); err != nil {
+		if err := a.store.UpdateToken(user.ID, tokenID, options.Name, disabled, options.ModelAllowlist); err != nil {
+			a.writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "token not found"})
+			return
+		}
+		if err := a.store.TouchToken(tokenID, func(current *model.HoneyToken) {
+			if options.RemainQuota != nil {
+				current.RemainQuota = *options.RemainQuota
+			}
+			if options.ExpiredTime != nil {
+				current.ExpiredAt = time.Time{}
+				if *options.ExpiredTime > 0 {
+					current.ExpiredAt = time.Unix(*options.ExpiredTime, 0).UTC()
+				}
+			}
+			if options.UnlimitedQuota != nil {
+				current.UnlimitedQuota = *options.UnlimitedQuota
+			}
+			if options.ModelLimitsEnabled != nil && !*options.ModelLimitsEnabled {
+				current.ModelAllowlist = nil
+			}
+			if options.AllowIPs != nil {
+				current.AllowIPs = *options.AllowIPs
+			}
+			if options.Group != nil {
+				current.Group = *options.Group
+			}
+			if options.AutoGroupsSet {
+				current.AutoGroups = append([]string(nil), options.AutoGroups...)
+			}
+			if options.CrossGroupRetry != nil {
+				current.CrossGroupRetry = *options.CrossGroupRetry
+			}
+		}); err != nil {
 			a.writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "token not found"})
 			return
 		}
@@ -318,13 +607,18 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		}
 		obs.ExtraScore += 10
 		obs.ExtraReasons = append(obs.ExtraReasons, "newapi_honey_token_updated")
+		if actual {
+			a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": newAPIPublicTokenView(updated)})
+			return
+		}
 		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": publicTokenView(updated)})
 	case "newapi.token.delete":
 		user, ok := a.requireHoneyUser(w, session)
 		if !ok {
 			return
 		}
-		tokenID, ok := newAPITokenID(r.URL.Path)
+		tokens := a.store.ListTokens(user.ID)
+		tokenID, ok := newAPITokenIDForUser(tokens, strings.TrimPrefix(r.URL.Path, "/api/token/"))
 		if !ok {
 			a.writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "token not found"})
 			return
@@ -333,8 +627,13 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 			a.writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "token not found"})
 			return
 		}
+		a.forgetNewAPIRawKey(tokenID)
 		obs.ExtraScore += 10
 		obs.ExtraReasons = append(obs.ExtraReasons, "newapi_honey_token_deleted")
+		if r.URL.Path != "/api/token/" && !strings.HasPrefix(strings.TrimPrefix(r.URL.Path, "/api/token/"), "ht_") {
+			a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{"id": newAPIPublicID(tokenID)}})
+			return
+		}
 		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]string{"id": tokenID}})
 	case "newapi.user.status":
 		user, ok := a.requireHoneyUser(w, session)
@@ -343,24 +642,176 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		}
 		today := time.Now().UTC().Format("2006-01-02")
 		tokens := a.store.ListTokens(user.ID)
-		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{
-			"id":           user.ID,
-			"username":     user.UsernameHint,
-			"quota":        user.VirtualQuota,
-			"token_count":  len(tokens),
-			"checked_in":   user.CheckinDay == today,
-			"checkin_day":  user.CheckinDay,
-			"virtual_only": true,
-		}})
-	case "newapi.usage.logs":
+		data := newAPIUserView(user)
+		data["token_count"] = len(tokens)
+		data["checked_in"] = user.CheckinDay == today
+		data["checkin_day"] = user.CheckinDay
+		data["virtual_only"] = true
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": data})
+	case "newapi.user.update":
+		user, ok := a.requireHoneyUser(w, session)
+		if !ok {
+			return
+		}
+		if r.Method == http.MethodDelete {
+			a.writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "account deletion is disabled for this standalone tenant"})
+			return
+		}
+		value, valid := decodeJSONObject(body)
+		if !valid {
+			a.writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid profile request"})
+			return
+		}
+		passwordChanged := false
+		if raw, exists := value["password"]; exists {
+			password, ok := raw.(string)
+			if !ok || len([]rune(password)) == 0 || len([]rune(password)) > 1024 {
+				a.writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid password"})
+				return
+			}
+			if original, exists := value["original_password"]; exists {
+				originalPassword, ok := original.(string)
+				if !ok || user.PasswordFP != security.Fingerprint(a.cfg.InstanceKey, originalPassword) {
+					a.writeJSON(w, http.StatusUnauthorized, map[string]any{"success": false, "message": "current password is incorrect"})
+					return
+				}
+			}
+			if err := a.store.TouchHoneyUser(user.ID, func(current *model.HoneyUser) {
+				current.PasswordFP = security.Fingerprint(a.cfg.InstanceKey, password)
+				current.PasswordLengthBucket, current.PasswordClasses, current.PasswordWeakClass = passwordProfile(password)
+			}); err != nil {
+				a.writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false})
+				return
+			}
+			passwordChanged = true
+		}
+		updated, _ := a.store.GetHoneyUser(user.ID)
+		if passwordChanged {
+			session.UserID = updated.ID
+			a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": newAPIAuthBundle(updated, session)})
+			return
+		}
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": newAPIUserView(updated)})
+	case "newapi.user.models":
 		if _, ok := a.requireHoneyUser(w, session); !ok {
+			return
+		}
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": newAPIProfileModelIDs(a.catalogForSession(model.ProductNewAPI, "user", session))})
+	case "newapi.user.groups":
+		if _, ok := a.requireHoneyUser(w, session); !ok {
+			return
+		}
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{"default": map[string]any{"desc": "Standalone virtual group", "ratio": 1}}})
+	case "newapi.user.setting":
+		if _, ok := a.requireHoneyUser(w, session); !ok {
+			return
+		}
+		if r.Method != http.MethodPut {
+			a.methodNotAllowed(w)
+			return
+		}
+		// Settings are accepted for UI compatibility but never trigger a
+		// notification, webhook, billing or other outbound integration.
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{}})
+	case "newapi.user.token":
+		if _, ok := a.requireHoneyUser(w, session); !ok {
+			return
+		}
+		a.writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "system access tokens are disabled for this standalone tenant"})
+	case "newapi.user.sessions":
+		if _, ok := a.requireHoneyUser(w, session); !ok {
+			return
+		}
+		if r.Method == http.MethodGet {
+			a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": []map[string]any{newAPISessionView(session)}})
+			return
+		}
+		if r.Method == http.MethodDelete {
+			value := strings.TrimPrefix(r.URL.Path, "/api/user/sessions/")
+			if value != "" && value != session.ID {
+				a.writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "session not found"})
+				return
+			}
+			a.clearSessionUser(session.ID)
+		}
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true})
+	case "newapi.user.oauth-bindings":
+		if _, ok := a.requireHoneyUser(w, session); !ok {
+			return
+		}
+		if r.Method == http.MethodGet {
+			a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": []any{}})
+			return
+		}
+		a.writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "external account bindings are disabled"})
+	case "newapi.verification":
+		// Deliberately uniform and side-effect free: no email or verification
+		// provider is configured in the single-node bait.
+		a.writeJSON(w, http.StatusAccepted, map[string]any{"success": true, "message": "If applicable, a verification code is available in this standalone simulation."})
+	case "newapi.home-content":
+		// An empty custom-home response makes the real bundled New API home
+		// sections render, while avoiding an iframe or remote content source.
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": ""})
+	case "newapi.about-content":
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "", "data": "A local, single-node New API-compatible honeypot.\n\nAll model responses are synthetic and all account, quota and key data are virtual.\n\nFrontend design and development by New API contributors.\n\nSource: https://github.com/QuantumNous/new-api"})
+	case "newapi.pricing-data":
+		a.writeJSON(w, http.StatusOK, newAPIPricingView(a.catalogForSession(model.ProductNewAPI, "guest", session)))
+	case "newapi.rankings-data":
+		a.writeJSON(w, http.StatusOK, newAPIRankingsView())
+	case "newapi.setup":
+		if r.Method != http.MethodGet {
+			a.writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "setup is disabled for this standalone tenant"})
+			return
+		}
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{"status": true}})
+	case "newapi.notice":
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": "Standalone virtual tenant: responses are synthetic and never reach an upstream model."})
+	case "newapi.dashboard-data":
+		if _, ok := a.requireHoneyUser(w, session); !ok {
+			return
+		}
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": []any{}})
+	case "newapi.usage.logs":
+		user, ok := a.requireHoneyUser(w, session)
+		if !ok {
 			return
 		}
 		obs.EffectOutcome = "verified"
 		obs.ExtraScore += 15
 		obs.ExtraReasons = append(obs.ExtraReasons, "post_call_effect_verification")
-		events, _ := a.store.Events(50, model.ProductNewAPI, "")
-		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": publicUsageEvents(events, session.ID)})
+		events, _ := a.store.Events(200, model.ProductNewAPI, "")
+		if strings.HasSuffix(r.URL.Path, "/stat") {
+			var quota int64
+			for _, event := range events {
+				if event.SessionID == session.ID && event.InvocationID != "" {
+					quota += event.SimulatedCost
+				}
+			}
+			a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{"quota": quota, "rpm": 0, "tpm": 0}})
+			return
+		}
+		logs := make([]map[string]any, 0)
+		for _, event := range events {
+			if event.SessionID != session.ID || event.InvocationID == "" {
+				continue
+			}
+			logs = append(logs, newAPIUsageLog(event, user))
+		}
+		page := boundedQueryInt(r, "p", 1, 1, 100000)
+		pageSize := boundedQueryInt(r, "page_size", 20, 1, 100)
+		start := (page - 1) * pageSize
+		if start > len(logs) {
+			start = len(logs)
+		}
+		end := start + pageSize
+		if end > len(logs) {
+			end = len(logs)
+		}
+		items := logs[start:end]
+		if items == nil {
+			items = []map[string]any{}
+		}
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{"items": items, "total": len(logs), "page": page, "page_size": pageSize}})
 	case "openai.models":
 		audience := "guest"
 		if session.UserID != "" {
@@ -535,10 +986,21 @@ func (a *App) bindHoneyOAuthIdentity(identity oauth.Identity, policyMode string)
 }
 
 type newAPITokenOptions struct {
-	Name              *string
-	Disabled          *bool
-	ModelAllowlist    []string
-	ModelAllowlistSet bool
+	Name               *string
+	Disabled           *bool
+	ModelAllowlist     []string
+	ModelAllowlistSet  bool
+	RemainQuota        *int64
+	ExpiredTime        *int64
+	UnlimitedQuota     *bool
+	ModelLimitsEnabled *bool
+	AllowIPs           *string
+	Group              *string
+	AutoGroups         []string
+	AutoGroupsSet      bool
+	CrossGroupRetry    *bool
+	ID                 *int64
+	Status             *int
 }
 
 func parseNewAPITokenOptions(r *http.Request, body []byte, allowDisabled bool) (newAPITokenOptions, error) {
@@ -583,6 +1045,20 @@ func parseNewAPITokenOptions(r *http.Request, body []byte, allowDisabled bool) (
 			}
 			options.Disabled = &disabled
 		}
+		if raw, ok := values["remain_quota"]; ok && len(raw) == 1 {
+			value, err := strconv.ParseInt(strings.TrimSpace(raw[0]), 10, 64)
+			if err != nil || value < 0 {
+				return options, fmt.Errorf("invalid remain quota")
+			}
+			options.RemainQuota = &value
+		}
+		if raw, ok := values["expired_time"]; ok && len(raw) == 1 {
+			value, err := strconv.ParseInt(strings.TrimSpace(raw[0]), 10, 64)
+			if err != nil {
+				return options, fmt.Errorf("invalid expired time")
+			}
+			options.ExpiredTime = &value
+		}
 		return options, nil
 	}
 	if !jsonContentTypeOK(r) {
@@ -618,7 +1094,185 @@ func parseNewAPITokenOptions(r *http.Request, body []byte, allowDisabled bool) (
 		}
 		options.Disabled = &disabled
 	}
+	if raw, exists := value["remain_quota"]; exists {
+		parsed, ok := newAPIInt64(raw)
+		if !ok || parsed < 0 {
+			return options, fmt.Errorf("invalid remain quota")
+		}
+		options.RemainQuota = &parsed
+	}
+	if raw, exists := value["expired_time"]; exists {
+		parsed, ok := newAPIInt64(raw)
+		if !ok {
+			return options, fmt.Errorf("invalid expired time")
+		}
+		options.ExpiredTime = &parsed
+	}
+	if raw, exists := value["unlimited_quota"]; exists {
+		parsed, ok := newAPIBool(raw)
+		if !ok {
+			return options, fmt.Errorf("invalid unlimited quota")
+		}
+		options.UnlimitedQuota = &parsed
+	}
+	if raw, exists := value["model_limits_enabled"]; exists {
+		parsed, ok := newAPIBool(raw)
+		if !ok {
+			return options, fmt.Errorf("invalid model limits flag")
+		}
+		options.ModelLimitsEnabled = &parsed
+	}
+	if raw, exists := value["model_limits"]; exists {
+		options.ModelAllowlistSet = true
+		canonical, err := canonicalNewAPIModelAllowlist(raw)
+		if err != nil {
+			return options, err
+		}
+		options.ModelAllowlist = canonical
+	}
+	if raw, exists := value["allow_ips"]; exists {
+		parsed, ok := raw.(string)
+		if !ok || len([]rune(parsed)) > 4096 {
+			return options, fmt.Errorf("invalid allow ips")
+		}
+		parsed = strings.TrimSpace(parsed)
+		options.AllowIPs = &parsed
+	}
+	if raw, exists := value["group"]; exists {
+		parsed, ok := raw.(string)
+		if !ok || len([]rune(parsed)) > 128 {
+			return options, fmt.Errorf("invalid group")
+		}
+		parsed = strings.TrimSpace(parsed)
+		options.Group = &parsed
+	}
+	if raw, exists := value["auto_groups"]; exists {
+		options.AutoGroupsSet = true
+		parsed, ok := newAPIStringSlice(raw, 5, 128)
+		if !ok {
+			return options, fmt.Errorf("invalid auto groups")
+		}
+		options.AutoGroups = parsed
+	}
+	if raw, exists := value["cross_group_retry"]; exists {
+		parsed, ok := newAPIBool(raw)
+		if !ok {
+			return options, fmt.Errorf("invalid cross group retry")
+		}
+		options.CrossGroupRetry = &parsed
+	}
+	if raw, exists := value["id"]; exists {
+		parsed, ok := newAPIInt64(raw)
+		if !ok || parsed <= 0 {
+			return options, fmt.Errorf("invalid token id")
+		}
+		options.ID = &parsed
+	}
+	if raw, exists := value["status"]; exists {
+		parsed, ok := newAPIInt64(raw)
+		if !ok || parsed < 1 || parsed > 4 {
+			return options, fmt.Errorf("invalid token status")
+		}
+		status := int(parsed)
+		options.Status = &status
+	}
 	return options, nil
+}
+
+func newAPIInt64(raw any) (int64, bool) {
+	switch value := raw.(type) {
+	case json.Number:
+		parsed, err := value.Int64()
+		return parsed, err == nil
+	case float64:
+		parsed := int64(value)
+		return parsed, float64(parsed) == value
+	case int:
+		return int64(value), true
+	case int64:
+		return value, true
+	default:
+		return 0, false
+	}
+}
+
+func newAPIBool(raw any) (bool, bool) {
+	switch value := raw.(type) {
+	case bool:
+		return value, true
+	case json.Number:
+		parsed, err := value.Int64()
+		return parsed != 0, err == nil && (parsed == 0 || parsed == 1)
+	case float64:
+		return value != 0, value == 0 || value == 1
+	default:
+		return false, false
+	}
+}
+
+func newAPIStringSlice(raw any, limit, itemLimit int) ([]string, bool) {
+	var values []string
+	switch value := raw.(type) {
+	case string:
+		if strings.TrimSpace(value) != "" {
+			values = strings.Split(value, ",")
+		}
+	case []any:
+		for _, item := range value {
+			text, ok := item.(string)
+			if !ok {
+				return nil, false
+			}
+			values = append(values, text)
+		}
+	case []string:
+		values = append(values, value...)
+	default:
+		return nil, false
+	}
+	if len(values) > limit {
+		return nil, false
+	}
+	result := make([]string, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if len([]rune(value)) > itemLimit || seen[value] {
+			if seen[value] {
+				continue
+			}
+			return nil, false
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	return result, true
+}
+
+func stringPointerValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func boolValue(value *bool) bool {
+	return value != nil && *value
+}
+
+func boundedQueryInt(r *http.Request, key string, fallback, minimum, maximum int) int {
+	value := strings.TrimSpace(r.URL.Query().Get(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < minimum || parsed > maximum {
+		return fallback
+	}
+	return parsed
 }
 
 func canonicalNewAPIModelAllowlist(raw any) ([]string, error) {
