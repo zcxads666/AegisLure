@@ -38,7 +38,7 @@ func TestNewAPIPublicPagesAndStatusContract(t *testing.T) {
 		if len(resp.Cookies()) != 0 || !strings.Contains(resp.Header.Get("Content-Security-Policy"), "script-src 'nonce-") {
 			t.Fatalf("New API page %s security headers/cookies failed: headers=%#v", path, resp.Header)
 		}
-		if !strings.Contains(string(body), "New API") || !strings.Contains(string(body), "QuantumNous/new-api") || !strings.Contains(string(body), "zcxads666/AegisLure") {
+		if !strings.Contains(string(body), "New API") || !strings.Contains(string(body), "Frontend design and development by New API contributors.") || !strings.Contains(string(body), "QuantumNous/new-api") || !strings.Contains(string(body), "zcxads666/AegisLure") {
 			t.Fatalf("New API page %s is missing shell attribution: %s", path, body)
 		}
 		assertPublicResponseClean(t, resp, body)
@@ -206,6 +206,105 @@ func TestNewAPITenantTokenLifecycleAndPrivacy(t *testing.T) {
 	resp, _ = doRawJSON(t, client, http.MethodPost, "/api/user/forgot-password", map[string]string{"email": "Alice.Local@example.test"}, nil)
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("forgot-password response differed for known email: %d", resp.StatusCode)
+	}
+}
+
+func TestNewAPINativeClaudeAndGeminiProtocolContracts(t *testing.T) {
+	a, cfg, st := newTestApp(t, true)
+	cfg.ProfilePorts[model.ProductNewAPI] = 3000
+	profile := profiles.Build(cfg)[model.ProductNewAPI]
+	client := &inProcessClient{handler: a.publicHandler(profile), cookies: map[string]string{}}
+
+	resp, _ := doJSON(t, client, http.MethodPost, "/api/user/register", map[string]string{
+		"username":          "native-protocol-user",
+		"email":             "native-protocol@example.test",
+		"password":          "Password123!",
+		"verification_code": "123456",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("native protocol registration failed: %d", resp.StatusCode)
+	}
+	resp, _ = doJSON(t, client, http.MethodPost, "/api/user/checkin", map[string]any{})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("native protocol check-in failed: %d", resp.StatusCode)
+	}
+	resp, tokenBody := doJSON(t, client, http.MethodPost, "/api/token", map[string]any{"name": "native-protocol"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("native protocol token creation failed: %d", resp.StatusCode)
+	}
+	rawKey := tokenBody["data"].(map[string]any)["key"].(string)
+
+	resp, body := doRawJSON(t, client, http.MethodGet, "/v1/models", nil, map[string]string{"x-api-key": rawKey, "anthropic-version": "2023-06-01"})
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"created_at"`) || !strings.Contains(string(body), `"display_name"`) || strings.Contains(string(body), rawKey) {
+		t.Fatalf("Anthropic model list contract failed: %d %s", resp.StatusCode, body)
+	}
+	resp, body = doRawJSON(t, client, http.MethodGet, "/v1beta/models", nil, map[string]string{"x-goog-api-key": rawKey})
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"models"`) || !strings.Contains(string(body), `"supportedGenerationMethods"`) || strings.Contains(string(body), rawKey) {
+		t.Fatalf("Gemini model list contract failed: %d %s", resp.StatusCode, body)
+	}
+	resp, body = doRawJSON(t, client, http.MethodGet, "/v1/models/claude-sonnet-5", nil, map[string]string{"x-api-key": rawKey, "anthropic-version": "2023-06-01"})
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"id":"claude-sonnet-5"`) || !strings.Contains(string(body), `"created_at"`) {
+		t.Fatalf("Anthropic model detail contract failed: %d %s", resp.StatusCode, body)
+	}
+	resp, body = doRawJSON(t, client, http.MethodGet, "/v1beta/openai/models", nil, nil)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"object":"list"`) || !strings.Contains(string(body), `"gpt-5.6-sol"`) {
+		t.Fatalf("Gemini OpenAI-compatible model list alias failed: %d %s", resp.StatusCode, body)
+	}
+	resp, body = doRawJSON(t, client, http.MethodPost, "/v1/messages", map[string]any{
+		"model":      "claude-sonnet-5",
+		"max_tokens": 64,
+		"messages":   []any{map[string]string{"role": "user", "content": "hello"}},
+	}, map[string]string{"x-api-key": rawKey})
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), `"type":"error"`) {
+		t.Fatalf("Claude version header was not required: %d %s", resp.StatusCode, body)
+	}
+
+	resp, body = doRawJSON(t, client, http.MethodPost, "/v1/messages", map[string]any{
+		"model":      "claude-sonnet-5",
+		"max_tokens": 64,
+		"messages":   []any{map[string]string{"role": "user", "content": "reply with ok"}},
+	}, map[string]string{"x-api-key": rawKey, "anthropic-version": "2023-06-01"})
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"type":"message"`) || !strings.Contains(string(body), `"stop_reason":"end_turn"`) || !strings.Contains(string(body), `"input_tokens"`) || strings.Contains(string(body), rawKey) {
+		t.Fatalf("Claude response contract failed: %d %s", resp.StatusCode, body)
+	}
+
+	resp, body = doRawJSON(t, client, http.MethodPost, "/v1beta/models/gemini-3.7-flash:generateContent", map[string]any{
+		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]string{"text": "reply with ok"}}}},
+	}, map[string]string{"x-goog-api-key": rawKey})
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"candidates"`) || !strings.Contains(string(body), `"finishReason":"STOP"`) || !strings.Contains(string(body), `"usageMetadata"`) || strings.Contains(string(body), rawKey) {
+		t.Fatalf("Gemini response contract failed: %d %s", resp.StatusCode, body)
+	}
+
+	streamBody := `{"model":"claude-sonnet-5","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hello"}]}`
+	resp = client.doWithHeaders(t, http.MethodPost, "/v1/messages", strings.NewReader(streamBody), "application/json", map[string]string{"x-api-key": rawKey, "anthropic-version": "2023-06-01"})
+	streamData, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil || resp.StatusCode != http.StatusOK || !strings.Contains(string(streamData), "event: message_start") || !strings.Contains(string(streamData), "event: content_block_delta") || !strings.Contains(string(streamData), "event: message_stop") || strings.Contains(string(streamData), rawKey) {
+		t.Fatalf("Claude SSE contract failed: %d %s", resp.StatusCode, streamData)
+	}
+
+	resp = client.doWithHeaders(t, http.MethodPost, "/v1beta/models/gemini-3.7-flash:streamGenerateContent", strings.NewReader(`{"contents":[{"parts":[{"text":"hello"}]}]}`), "application/json", map[string]string{"x-goog-api-key": rawKey})
+	streamData, err = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil || resp.StatusCode != http.StatusOK || !strings.Contains(string(streamData), "data:") || !strings.Contains(string(streamData), `"finishReason":"STOP"`) || strings.Contains(string(streamData), rawKey) {
+		t.Fatalf("Gemini SSE contract failed: %d %s", resp.StatusCode, streamData)
+	}
+
+	if events, err := st.Events(-1, model.ProductNewAPI, ""); err != nil {
+		t.Fatal(err)
+	} else {
+		foundClaude, foundGemini := false, false
+		for _, event := range events {
+			if event.RouteTemplate == "anthropic.messages" && event.InvocationID != "" && event.SimulatedCost > 0 {
+				foundClaude = true
+			}
+			if (event.RouteTemplate == "gemini.generate" || event.RouteTemplate == "gemini.stream") && event.InvocationID != "" && event.SimulatedCost > 0 {
+				foundGemini = true
+			}
+		}
+		if !foundClaude || !foundGemini {
+			t.Fatalf("native protocol invocations were not recorded: claude=%t gemini=%t", foundClaude, foundGemini)
+		}
 	}
 }
 

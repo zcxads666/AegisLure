@@ -12,7 +12,7 @@ AegisLure 提供五类安全的 clean-room 协议仿真：New API、vLLM、Ollam
 - SQLite WAL 权威存储、JSONL 兼容镜像、虚拟账户/令牌/额度和风险聚合；多机 Hive/传输仍属于后续发布门；
 - `exact/contains/starts_with/ends_with` 探活规则的安全契约；
 - vLLM `secured/legacy-gap/no-key` 语义、Ollama 原生/ OpenAI 兼容接口、SGLang HTTP 管理面和 LocalAI 模型管理面；
-- New API 风格的 guest → 注册 → 签到 → honey key → 合成调用 → 日志链；内置自包含公共前端，覆盖首页、模型、能力说明、文档、登录/注册、虚拟令牌、调用日志和账户页；
+- New API 风格的 guest → 注册 → 签到 → honey key → 合成调用 → 日志链；内置自包含公共前端，覆盖首页、模型、能力说明、文档、登录/注册、虚拟令牌、调用日志和账户页，并保留 OpenAI、Claude Messages、Gemini GenerateContent 的本地协议识别面；
 - 可选、默认关闭的 GitHub/Discord/LinuxDO 官方 OAuth broker：只保存稳定 subject HMAC，支持本地身份解除关联/删除；
 - Argon2id 管理员密码（最低 8 字符）、恢复码、隐藏路径、事件/IP JSON/CSV/plain 导出；
 - 本地只读 PromptPot/T-Pot source registry、幂等 JSONL 导入、IP/身份人工审批和 TTL 导出任务；
@@ -38,7 +38,7 @@ go run ./cmd/aegislure -config ./config.json
 HP_PROFILES=new-api go run ./cmd/aegislure -config ./config.json
 ```
 
-默认配置下可打开 `http://127.0.0.1:3000/`。公共页面包括 `/`、`/models`、`/pricing`、`/docs`、`/login`、`/register` 和 `/forgot-password`；登录后可进入 `/dashboard`、`/keys`、`/usage`、`/profile`。该页面只提供本地虚拟账户、额度、令牌和协议兼容调用，不暴露计费、真实渠道、Webhook、上游转发或 root/system 管理面。
+默认配置下可打开 `http://127.0.0.1:3000/`。公共页面包括 `/`、`/models`、`/pricing`、`/docs`、`/login`、`/register` 和 `/forgot-password`；登录后可进入 `/dashboard`、`/keys`、`/usage`、`/profile`。协议面包括 OpenAI `/v1/*`、Claude `/v1/messages`、Gemini `/v1beta/models` 与 `generateContent`；请求只返回有界本地响应并写入当前 honey tenant 的虚拟日志，不暴露计费、真实渠道、Webhook、上游转发或 root/system 管理面。
 
 默认监听 `ollama:11434` 和 `vllm:8000`。启用全部 profile：
 

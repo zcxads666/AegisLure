@@ -259,6 +259,25 @@ func newAPIRoute(method, path string) string {
 		return "newapi.usage.logs"
 	case path == "/v1/models":
 		return "openai.models"
+	case strings.HasPrefix(path, "/v1/models/"):
+		if modelName := strings.TrimPrefix(path, "/v1/models/"); modelName != "" && !strings.Contains(modelName, "/") {
+			return "openai.model"
+		}
+	case path == "/v1beta/openai/models":
+		return "openai.models"
+	case path == "/v1beta/models":
+		return "gemini.models"
+	case path == "/v1/messages":
+		return "anthropic.messages"
+	case strings.HasPrefix(path, "/v1beta/models/"):
+		if modelName := strings.TrimPrefix(path, "/v1beta/models/"); modelName != "" && !strings.Contains(modelName, "/") {
+			switch {
+			case strings.HasSuffix(modelName, ":generateContent"):
+				return "gemini.generate"
+			case strings.HasSuffix(modelName, ":streamGenerateContent"):
+				return "gemini.stream"
+			}
+		}
 	case strings.HasPrefix(path, "/v1/chat/completions"):
 		return "openai.chat.completions"
 	case strings.HasPrefix(path, "/v1/completions"):

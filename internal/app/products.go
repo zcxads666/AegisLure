@@ -366,8 +366,43 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		if session.UserID != "" {
 			audience = "user"
 		}
-		a.writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": profiles.OpenAIModelCardsForCatalog(a.cfg.InstanceKey, a.catalogForSession(model.ProductNewAPI, audience, session), "new-api")})
-	case "openai.chat.completions", "openai.completions", "openai.responses", "openai.embeddings":
+		catalog := a.catalogForSession(model.ProductNewAPI, audience, session)
+		switch newAPIModelListFormat(r) {
+		case "anthropic":
+			a.writeJSON(w, http.StatusOK, newAPIAnthropicModelList(a.cfg.InstanceKey, catalog))
+		case "gemini":
+			a.writeJSON(w, http.StatusOK, newAPIGeminiModelList(catalog))
+		default:
+			a.writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": profiles.OpenAIModelCardsForCatalog(a.cfg.InstanceKey, catalog, "new-api")})
+		}
+	case "gemini.models":
+		audience := "guest"
+		if session.UserID != "" {
+			audience = "user"
+		}
+		a.writeJSON(w, http.StatusOK, newAPIGeminiModelList(a.catalogForSession(model.ProductNewAPI, audience, session)))
+	case "openai.model":
+		audience := "guest"
+		if session.UserID != "" {
+			audience = "user"
+		}
+		requestedModel, ok := newAPIOpenAIModelFromPath(r.URL.Path)
+		if !ok {
+			a.writeNewAPIProtocolError(w, "openai.models", http.StatusNotFound, "Not found", "invalid_request_error")
+			return
+		}
+		entry, found := a.resolveCatalogModelForAudience(model.ProductNewAPI, requestedModel, audience)
+		if !found {
+			// New API returns a model-not-found error object for this lookup.
+			a.writeJSON(w, http.StatusOK, map[string]any{"error": map[string]string{"message": fmt.Sprintf("The model '%s' does not exist", requestedModel), "type": "invalid_request_error", "param": "model", "code": "model_not_found"}})
+			return
+		}
+		if newAPIModelListFormat(r) == "anthropic" {
+			a.writeJSON(w, http.StatusOK, newAPIAnthropicModelList(a.cfg.InstanceKey, []profiles.CatalogEntry{entry})["data"].([]map[string]any)[0])
+			return
+		}
+		a.writeJSON(w, http.StatusOK, map[string]any{"id": entry.ID, "object": "model", "created": profiles.OpenAIModelCardsForCatalog(a.cfg.InstanceKey, []profiles.CatalogEntry{entry}, "new-api")[0].Created, "owned_by": "new-api"})
+	case "openai.chat.completions", "openai.completions", "openai.responses", "openai.embeddings", "anthropic.messages", "gemini.generate", "gemini.stream":
 		a.newAPIInvoke(w, r, body, session, obs)
 	default:
 		a.writeJSON(w, http.StatusNotFound, map[string]any{"error": map[string]string{"message": "Not found", "type": "invalid_request_error"}})
@@ -375,32 +410,39 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 }
 
 func (a *App) newAPIInvoke(w *captureWriter, r *http.Request, body []byte, session Session, obs *Observation) {
-	token, auth := a.honeyAuth(r)
+	token, auth := a.newAPIHoneyAuth(r, obs.RouteTemplate)
 	if auth == "valid_honey_key" {
 		obs.CredentialFingerprint = token.Hash
 	}
 	if auth != "valid_honey_key" {
 		a.startInvocation(obs, auth, false)
-		a.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": map[string]string{"message": "Incorrect API key provided", "type": "invalid_request_error", "code": "invalid_api_key"}})
+		a.writeNewAPIProtocolError(w, obs.RouteTemplate, http.StatusUnauthorized, "Incorrect API key provided", "invalid_request_error")
 		return
 	}
 	if session.UserID != "" && token.HoneyUserID != session.UserID {
 		obs.AuthOutcome = "invalid"
 		a.startInvocation(obs, "invalid", false)
-		a.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": map[string]string{"message": "API key is not available to this session", "type": "invalid_request_error"}})
+		a.writeNewAPIProtocolError(w, obs.RouteTemplate, http.StatusUnauthorized, "API key is not available to this session", "invalid_request_error")
 		return
 	}
 	_ = a.store.TouchToken(token.ID, func(current *model.HoneyToken) { current.LastUsedAt = time.Now().UTC() })
-	requestedModel := strings.TrimSpace(a.requestModel(body))
+	requestedModel := newAPIRequestedModel(r, body, obs.RouteTemplate)
 	resolvedEntry, modelResolved := a.resolveCatalogModelForSession(model.ProductNewAPI, requestedModel, "user", session)
 	if len(token.ModelAllowlist) > 0 && (!modelResolved || !containsString(token.ModelAllowlist, resolvedEntry.ID)) {
 		obs.ExtraScore += 25
 		obs.ExtraReasons = append(obs.ExtraReasons, "newapi_token_model_restriction_probe")
 		a.startInvocation(obs, auth, false)
-		a.writeJSON(w, http.StatusForbidden, map[string]any{"error": map[string]string{"message": "model is not available for this API key", "type": "invalid_request_error"}})
+		a.writeNewAPIProtocolError(w, obs.RouteTemplate, http.StatusForbidden, "model is not available for this API key", "invalid_request_error")
 		return
 	}
-	if validationErr := validateNewAPIInvocation(r, body, obs.RouteTemplate); validationErr != "" {
+	validationErr := validateNewAPIInvocation(r, body, obs.RouteTemplate)
+	switch obs.RouteTemplate {
+	case "anthropic.messages":
+		validationErr = validateNewAPIAnthropicInvocation(r, body)
+	case "gemini.generate", "gemini.stream":
+		validationErr = validateNewAPIGeminiInvocation(r, body)
+	}
+	if validationErr != "" {
 		a.startInvocation(obs, auth, false)
 		message := "invalid request"
 		if validationErr == "quota_overflow" {
@@ -410,13 +452,18 @@ func (a *App) newAPIInvoke(w *captureWriter, r *http.Request, body []byte, sessi
 			obs.ExtraScore += 10
 			obs.ExtraReasons = append(obs.ExtraReasons, "newapi_invalid_request")
 		}
-		a.writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]string{"message": message, "type": "invalid_request_error"}})
+		a.writeNewAPIProtocolError(w, obs.RouteTemplate, http.StatusBadRequest, message, "invalid_request_error")
 		return
 	}
-	modelName := a.validModelNameForSession(model.ProductNewAPI, a.requestModel(body), session)
+	if modelResolved == false && requestedModel != "" && (obs.RouteTemplate == "anthropic.messages" || obs.RouteTemplate == "gemini.generate" || obs.RouteTemplate == "gemini.stream") {
+		a.startInvocation(obs, auth, false)
+		a.writeNewAPIProtocolError(w, obs.RouteTemplate, http.StatusNotFound, "model not found", "not_found_error")
+		return
+	}
+	modelName := a.validModelNameForSession(model.ProductNewAPI, requestedModel, session)
 	if modelResolved {
 		obs.ModelID, obs.ModelResolved = resolvedEntry.ID, true
-	} else if a.requestModel(body) == "" {
+	} else if requestedModel == "" {
 		obs.ModelID, obs.ModelResolved = modelName, true
 	} else {
 		obs.ModelID = modelName
@@ -428,10 +475,17 @@ func (a *App) newAPIInvoke(w *captureWriter, r *http.Request, body []byte, sessi
 	if _, err := a.store.ConsumeQuota(token.HoneyUserID, token.ID, obs.InvocationID, cost); err != nil {
 		obs.ExecutionOutcome = "rejected_before_dispatch"
 		obs.ExtraReasons = append(obs.ExtraReasons, "newapi_virtual_quota_exhausted")
-		a.writeJSON(w, http.StatusPaymentRequired, map[string]any{"error": map[string]string{"message": "insufficient quota", "type": "insufficient_quota"}})
+		a.writeNewAPIProtocolError(w, obs.RouteTemplate, http.StatusPaymentRequired, "insufficient quota", "insufficient_quota")
 		return
 	}
-	a.writeOpenAIResponseForRoute(w, body, model.ProductNewAPI, obs.RouteTemplate, streamRequested(r, body), obs, modelName)
+	switch obs.RouteTemplate {
+	case "anthropic.messages":
+		a.writeAnthropicResponse(w, body, streamRequested(r, body), obs, modelName)
+	case "gemini.generate", "gemini.stream":
+		a.writeGeminiResponse(w, body, obs.RouteTemplate == "gemini.stream" || streamRequested(r, body), obs, modelName)
+	default:
+		a.writeOpenAIResponseForRoute(w, body, model.ProductNewAPI, obs.RouteTemplate, streamRequested(r, body), obs, modelName)
+	}
 }
 
 func newAPIOAuthProvider(path string, callback bool) (oauth.Provider, bool) {
