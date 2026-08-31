@@ -201,14 +201,32 @@ func newAPIRoute(method, path string) string {
 	switch {
 	case path == "/":
 		return "newapi.home"
-	case path == "/login":
+	case path == "/login" || path == "/sign-in":
 		return "newapi.login"
-	case path == "/register":
+	case path == "/register" || path == "/sign-up":
 		return "newapi.register"
+	case path == "/forgot-password" || path == "/forgot-password/" || path == "/forget-password" || path == "/forget-password/":
+		return "newapi.forgot"
+	case path == "/dashboard" || path == "/dashboard/":
+		return "newapi.dashboard"
+	case path == "/pricing" || path == "/pricing/":
+		return "newapi.pricing"
+	case path == "/models" || path == "/models/":
+		return "newapi.models"
+	case path == "/docs" || path == "/docs/":
+		return "newapi.docs"
+	case path == "/keys" || path == "/keys/" || path == "/token" || path == "/token/":
+		return "newapi.keys"
+	case path == "/usage" || path == "/usage/" || path == "/usage-logs" || path == "/usage-logs/":
+		return "newapi.usage"
+	case path == "/profile" || path == "/profile/":
+		return "newapi.profile"
 	case path == "/api/user/register":
 		return "newapi.user.register"
 	case path == "/api/user/login":
 		return "newapi.user.login"
+	case path == "/api/user/logout":
+		return "newapi.user.logout"
 	case strings.HasPrefix(path, "/api/oauth/"):
 		if strings.HasSuffix(path, "/callback") {
 			return "newapi.oauth.callback"
@@ -233,8 +251,10 @@ func newAPIRoute(method, path string) string {
 		return "newapi.token.update"
 	case path == "/api/user/forgot-password" || path == "/api/user/forget-password":
 		return "newapi.user.forgot"
-	case path == "/api/user/self" || path == "/api/status":
+	case path == "/api/user/self":
 		return "newapi.user.status"
+	case path == "/api/status":
+		return "newapi.status"
 	case path == "/api/log" || path == "/api/user/logs":
 		return "newapi.usage.logs"
 	case path == "/v1/models":

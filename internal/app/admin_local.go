@@ -862,7 +862,7 @@ func (a *App) adminInstanceCompatibility(w http.ResponseWriter, name string) {
 
 func compatibilityRoutes(product string) []string {
 	routes := map[string][]string{
-		model.ProductNewAPI:  {"/", "/login", "/register", "/api/user/login", "/api/user/register", "/api/oauth/{provider}/start", "/api/oauth/{provider}/callback", "/api/user/checkin", "/api/token", "/v1/models", "/v1/chat/completions", "/v1/completions", "/v1/responses", "/v1/embeddings"},
+		model.ProductNewAPI:  {"/", "/login", "/sign-in", "/register", "/sign-up", "/forgot-password", "/forget-password", "/dashboard", "/models", "/pricing", "/docs", "/keys", "/token", "/usage", "/usage-logs", "/profile", "/api/status", "/api/user/login", "/api/user/register", "/api/user/logout", "/api/user/self", "/api/user/forgot-password", "/api/user/forget-password", "/api/user/checkin", "/api/user/logs", "/api/log", "/api/oauth/{provider}/start", "/api/oauth/{provider}/callback", "/api/token", "/api/token/{id}", "/v1/models", "/v1/chat/completions", "/v1/completions", "/v1/responses", "/v1/embeddings"},
 		model.ProductVLLM:    {"/", "/health", "/version", "/metrics", "/v1/models", "/v1/chat/completions", "/v1/completions", "/v1/responses", "/v1/embeddings", "/invocations", "/docs", "/openapi.json"},
 		model.ProductOllama:  {"/", "/api/version", "/api/tags", "/api/ps", "/api/show", "/api/generate", "/api/chat", "/api/embeddings", "/v1/models", "/v1/chat/completions", "/v1/embeddings"},
 		model.ProductSGLang:  {"/health", "/get_model_info", "/metrics", "/docs", "/redoc", "/openapi.json", "/server_info", "/generate", "/load_lora_adapter_from_tensors", "/update_weights_from_disk", "/flush_cache", "/get_weights_by_name", "/v1/models", "/v1/chat/completions"},

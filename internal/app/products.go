@@ -38,12 +38,8 @@ func (a *App) handleProduct(w *captureWriter, r *http.Request, profile profiles.
 
 func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.Profile, session Session, body []byte, obs *Observation) {
 	switch obs.RouteTemplate {
-	case "newapi.home":
-		a.writeHTML(w, http.StatusOK, "AI Gateway", `<h1>AI Gateway</h1><p>Unified AI model access and usage console.</p><p><a href="/login">Log in</a> · <a href="/register">Create an account</a> · <a href="/v1/models">View models</a></p><hr><small>Frontend design and development by New API contributors. Protocol profile modeled on <a href="https://github.com/QuantumNous/new-api">New API</a>. <a href="https://github.com/zcxads666/AegisLure">Source Code</a>.</small>`)
-	case "newapi.login":
-		a.writeHTML(w, http.StatusOK, "Log in", `<h1>Log in</h1><form method="post" action="/api/user/login"><input name="username" placeholder="Username" autocomplete="username"><br><input name="password" type="password" placeholder="Password" autocomplete="current-password"><br><button>Log in</button></form><p><a href="/register">Register</a></p>`)
-	case "newapi.register":
-		a.writeHTML(w, http.StatusOK, "Create account", `<h1>Create account</h1><form method="post" action="/api/user/register"><input name="username" placeholder="Username" autocomplete="username"><br><input name="email" type="email" placeholder="Email" autocomplete="email"><br><input name="password" type="password" placeholder="Password" autocomplete="new-password"><br><button>Create account</button></form><p>OAuth providers, when enabled by the deployment owner, redirect to their official authorization pages.</p>`)
+	case "newapi.home", "newapi.login", "newapi.register", "newapi.forgot", "newapi.dashboard", "newapi.pricing", "newapi.models", "newapi.docs", "newapi.keys", "newapi.usage", "newapi.profile":
+		a.writeNewAPIPage(w, http.StatusOK, obs.RouteTemplate)
 	case "newapi.oauth.start":
 		broker := a.currentOAuthBroker()
 		provider, ok := newAPIOAuthProvider(r.URL.Path, false)
@@ -165,6 +161,13 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		_ = a.store.TouchHoneyUser(user.ID, func(u *model.HoneyUser) { u.LastSeen = time.Now().UTC() })
 		a.setSessionUser(session.ID, user.ID)
 		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{"id": user.ID, "username": user.UsernameHint}})
+	case "newapi.user.logout":
+		if r.Method != http.MethodPost {
+			a.methodNotAllowed(w)
+			return
+		}
+		a.clearSessionUser(session.ID)
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true})
 	case "newapi.user.forgot":
 		if r.Method != http.MethodPost {
 			a.methodNotAllowed(w)
@@ -182,6 +185,16 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 			obs.ExtraReasons = append(obs.ExtraReasons, "newapi_forgot_password_rate_limited")
 		}
 		a.writeJSON(w, http.StatusAccepted, map[string]any{"success": true, "message": "If the account exists, password recovery instructions are available."})
+	case "newapi.status":
+		catalog := a.catalogForSession(model.ProductNewAPI, "guest", session)
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{
+			"status":           "ok",
+			"service":          "new-api",
+			"protocol":         "openai-compatible",
+			"models":           len(catalog),
+			"streaming":        true,
+			"upstream_enabled": false,
+		}})
 	case "newapi.checkin":
 		user, ok := a.requireHoneyUser(w, session)
 		if !ok {
@@ -328,7 +341,17 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		if !ok {
 			return
 		}
-		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{"id": user.ID, "quota": user.VirtualQuota}})
+		today := time.Now().UTC().Format("2006-01-02")
+		tokens := a.store.ListTokens(user.ID)
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{
+			"id":           user.ID,
+			"username":     user.UsernameHint,
+			"quota":        user.VirtualQuota,
+			"token_count":  len(tokens),
+			"checked_in":   user.CheckinDay == today,
+			"checkin_day":  user.CheckinDay,
+			"virtual_only": true,
+		}})
 	case "newapi.usage.logs":
 		if _, ok := a.requireHoneyUser(w, session); !ok {
 			return
@@ -1590,6 +1613,11 @@ func publicUsageEvents(events []model.Event, sessionID string) []map[string]any 
 	result := make([]map[string]any, 0, len(events))
 	for _, event := range events {
 		if sessionID != "" && event.SessionID != sessionID {
+			continue
+		}
+		// Account/page requests are observations, not usage rows. Keep the
+		// public New API usage surface aligned with real invocation history.
+		if event.InvocationID == "" {
 			continue
 		}
 		result = append(result, map[string]any{

@@ -23,6 +23,68 @@ func (appOAuthRoundTripper) RoundTrip(request *http.Request) (*http.Response, er
 	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
 }
 
+func TestNewAPIPublicPagesAndStatusContract(t *testing.T) {
+	a, cfg, _ := newTestApp(t, true)
+	cfg.ProfilePorts[model.ProductNewAPI] = 3000
+	profile := profiles.Build(cfg)[model.ProductNewAPI]
+	client := &inProcessClient{handler: a.publicHandler(profile), cookies: map[string]string{}}
+
+	pages := []string{"/", "/login", "/register", "/forgot-password", "/dashboard", "/pricing", "/models", "/docs", "/keys", "/usage", "/profile"}
+	for _, path := range pages {
+		resp, body := doRawJSON(t, client, http.MethodGet, path, nil, nil)
+		if resp.StatusCode != http.StatusOK || !strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
+			t.Fatalf("New API page %s failed: %d content-type=%q", path, resp.StatusCode, resp.Header.Get("Content-Type"))
+		}
+		if len(resp.Cookies()) != 0 || !strings.Contains(resp.Header.Get("Content-Security-Policy"), "script-src 'nonce-") {
+			t.Fatalf("New API page %s security headers/cookies failed: headers=%#v", path, resp.Header)
+		}
+		if !strings.Contains(string(body), "New API") || !strings.Contains(string(body), "QuantumNous/new-api") || !strings.Contains(string(body), "zcxads666/AegisLure") {
+			t.Fatalf("New API page %s is missing shell attribution: %s", path, body)
+		}
+		assertPublicResponseClean(t, resp, body)
+	}
+
+	resp, body := doRawJSON(t, client, http.MethodGet, "/api/status", nil, nil)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"protocol":"openai-compatible"`) || !strings.Contains(string(body), `"upstream_enabled":false`) {
+		t.Fatalf("public New API status failed: %d %s", resp.StatusCode, body)
+	}
+	if len(resp.Cookies()) != 0 {
+		t.Fatalf("public New API status set a cookie: %#v", resp.Cookies())
+	}
+
+	for _, path := range []string{"/admin", "/billing", "/payment", "/channels", "/webhook"} {
+		resp, body := doRawJSON(t, client, http.MethodGet, path, nil, nil)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("unsafe New API surface %s was exposed: %d %s", path, resp.StatusCode, body)
+		}
+	}
+}
+
+func TestNewAPILogoutClearsServerAssociatedUser(t *testing.T) {
+	a, cfg, _ := newTestApp(t, true)
+	cfg.ProfilePorts[model.ProductNewAPI] = 3000
+	profile := profiles.Build(cfg)[model.ProductNewAPI]
+	client := &inProcessClient{handler: a.publicHandler(profile), cookies: map[string]string{}}
+
+	resp, _ := doJSON(t, client, http.MethodPost, "/api/user/register", map[string]string{
+		"username":          "logout-user",
+		"email":             "logout@example.test",
+		"password":          "Password123!",
+		"verification_code": "123456",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("registration for logout test failed: %d", resp.StatusCode)
+	}
+	resp, _ = doRawJSON(t, client, http.MethodPost, "/api/user/logout", map[string]any{}, nil)
+	if resp.StatusCode != http.StatusOK || len(resp.Cookies()) != 0 {
+		t.Fatalf("logout failed: %d cookies=%#v", resp.StatusCode, resp.Cookies())
+	}
+	resp, _ = doRawJSON(t, client, http.MethodGet, "/api/user/self", nil, nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("logout left the server-associated user active: %d", resp.StatusCode)
+	}
+}
+
 func TestNewAPITenantTokenLifecycleAndPrivacy(t *testing.T) {
 	a, cfg, st := newTestApp(t, true)
 	cfg.ProfilePorts[model.ProductNewAPI] = 3000
