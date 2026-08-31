@@ -3,11 +3,14 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/zcxads666/AegisLure/internal/detect"
 	"github.com/zcxads666/AegisLure/internal/model"
@@ -45,17 +48,49 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 			a.methodNotAllowed(w)
 			return
 		}
+		if !a.allowRate("newapi-register-ip:"+requestSourceIP(r), 8, time.Minute) {
+			obs.ExtraScore += 20
+			obs.ExtraReasons = append(obs.ExtraReasons, "newapi_registration_rate_limited")
+			a.writeJSON(w, http.StatusTooManyRequests, map[string]any{"success": false, "message": "registration temporarily unavailable"})
+			return
+		}
+		if !newAPIStringFieldsOK(r, body, "username", "email", "password", "verification_code", "captcha", "invite_code") {
+			obs.ExtraScore += 20
+			obs.ExtraReasons = append(obs.ExtraReasons, "newapi_registration_shape_probe")
+			a.writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid registration request"})
+			return
+		}
 		value := requestValues(r, body)
-		username := strings.TrimSpace(value["username"])
-		if username == "" || len(username) > 128 {
+		username := normalizeHoneyUsername(value["username"])
+		if username == "" || len([]rune(username)) > 128 || !a.allowRate("newapi-register-user:"+security.Fingerprint(a.cfg.InstanceKey, username), 4, time.Minute) {
+			obs.ExtraScore += 15
+			obs.ExtraReasons = append(obs.ExtraReasons, "newapi_registration_invalid_or_enumeration_probe")
 			a.writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid registration request"})
 			return
 		}
 		password := value["password"]
+		email, emailOK := normalizeHoneyEmail(value["email"])
+		verificationCode := strings.TrimSpace(value["verification_code"])
+		if verificationCode == "" {
+			verificationCode = strings.TrimSpace(value["captcha"])
+		}
+		if password == "" || len([]rune(password)) > 1024 || !emailOK || !validHoneyVerificationCode(verificationCode) {
+			obs.ExtraScore += 20
+			obs.ExtraReasons = append(obs.ExtraReasons, "newapi_registration_shape_probe")
+			a.writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid registration request"})
+			return
+		}
+		lengthBucket, passwordClasses, weakClass := passwordProfile(password)
 		userID := "hu_" + security.MustRandomToken(10)
-		user := model.HoneyUser{ID: userID, InstanceID: a.cfg.InstanceID, UsernameFP: security.Fingerprint(a.cfg.InstanceKey, username), UsernameHint: security.RedactPreview(username, 3), EmailDomain: emailDomain(value["email"]), PasswordFP: security.Fingerprint(a.cfg.InstanceKey, password), VirtualQuota: 0, CreatedAt: time.Now().UTC(), LastSeen: time.Now().UTC()}
+		now := time.Now().UTC()
+		user := model.HoneyUser{ID: userID, InstanceID: a.cfg.InstanceID, UsernameFP: security.Fingerprint(a.cfg.InstanceKey, username), UsernameHint: security.RedactPreview(username, 3), EmailLocalFP: emailLocalFingerprint(a.cfg.InstanceKey, email), EmailDomain: emailDomain(email), PasswordFP: security.Fingerprint(a.cfg.InstanceKey, password), PasswordLengthBucket: lengthBucket, PasswordClasses: passwordClasses, PasswordWeakClass: weakClass, VirtualQuota: 0, CreatedAt: now, LastSeen: now}
 		if err := a.store.CreateHoneyUser(user); err != nil {
-			a.writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": "registration unavailable"})
+			// Keep duplicate usernames indistinguishable from other invalid
+			// registration attempts; the username fingerprint never leaves the
+			// local store.
+			obs.ExtraScore += 25
+			obs.ExtraReasons = append(obs.ExtraReasons, "newapi_registration_duplicate_attempt")
+			a.writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid registration request"})
 			return
 		}
 		a.setSessionUser(session.ID, user.ID)
@@ -68,14 +103,41 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 			return
 		}
 		value := requestValues(r, body)
-		user, ok := a.store.FindHoneyUser(security.Fingerprint(a.cfg.InstanceKey, strings.TrimSpace(value["username"])))
+		username := normalizeHoneyUsername(value["username"])
+		accountRateOK := username == "" || a.allowRate("newapi-login-user:"+security.Fingerprint(a.cfg.InstanceKey, username), 8, time.Minute)
+		if !a.allowRate("newapi-login-ip:"+requestSourceIP(r), 20, time.Minute) || !accountRateOK {
+			obs.ExtraScore += 20
+			obs.ExtraReasons = append(obs.ExtraReasons, "newapi_login_rate_limited")
+			a.writeJSON(w, http.StatusTooManyRequests, map[string]any{"success": false, "message": "login temporarily unavailable"})
+			return
+		}
+		user, ok := a.store.FindHoneyUser(security.Fingerprint(a.cfg.InstanceKey, username))
 		if !ok || user.PasswordFP != security.Fingerprint(a.cfg.InstanceKey, value["password"]) {
+			obs.ExtraScore += 10
+			obs.ExtraReasons = append(obs.ExtraReasons, "newapi_login_failed")
 			a.writeJSON(w, http.StatusUnauthorized, map[string]any{"success": false, "message": "invalid username or password"})
 			return
 		}
 		_ = a.store.TouchHoneyUser(user.ID, func(u *model.HoneyUser) { u.LastSeen = time.Now().UTC() })
 		a.setSessionUser(session.ID, user.ID)
 		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{"id": user.ID, "username": user.UsernameHint}})
+	case "newapi.user.forgot":
+		if r.Method != http.MethodPost {
+			a.methodNotAllowed(w)
+			return
+		}
+		value := requestValues(r, body)
+		// This endpoint deliberately returns the same response for every
+		// target. Rate limiting is still applied to both the source and the
+		// normalized target, but it never becomes an account oracle.
+		target := strings.ToLower(strings.TrimSpace(value["email"]))
+		ipOK := a.allowRate("newapi-forgot-ip:"+requestSourceIP(r), 8, time.Minute)
+		targetOK := target == "" || a.allowRate("newapi-forgot-target:"+security.Fingerprint(a.cfg.InstanceKey, target), 5, time.Minute)
+		if !ipOK || !targetOK {
+			obs.ExtraScore += 15
+			obs.ExtraReasons = append(obs.ExtraReasons, "newapi_forgot_password_rate_limited")
+		}
+		a.writeJSON(w, http.StatusAccepted, map[string]any{"success": true, "message": "If the account exists, password recovery instructions are available."})
 	case "newapi.checkin":
 		user, ok := a.requireHoneyUser(w, session)
 		if !ok {
@@ -104,20 +166,119 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		if !ok {
 			return
 		}
+		if !a.allowRate("newapi-token-ip:"+requestSourceIP(r), 40, time.Minute) || !a.allowRate("newapi-token-user:"+user.ID, 20, time.Minute) {
+			obs.ExtraScore += 15
+			obs.ExtraReasons = append(obs.ExtraReasons, "newapi_token_creation_rate_limited")
+			a.writeJSON(w, http.StatusTooManyRequests, map[string]any{"success": false, "message": "token creation temporarily unavailable"})
+			return
+		}
+		options, err := parseNewAPITokenOptions(r, body, false)
+		if err != nil {
+			obs.ExtraScore += 20
+			obs.ExtraReasons = append(obs.ExtraReasons, "newapi_token_option_probe")
+			a.writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid token request"})
+			return
+		}
 		value, err := security.RandomToken(24)
 		if err != nil {
 			a.writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false})
 			return
 		}
 		raw := "sk-proj-" + value
-		token := model.HoneyToken{ID: "ht_" + security.MustRandomToken(8), HoneyUserID: user.ID, Hash: security.Fingerprint(a.cfg.InstanceKey, raw), PrefixHint: raw[:12], CreatedAt: time.Now().UTC()}
+		name := ""
+		if options.Name != nil {
+			name = *options.Name
+		}
+		token := model.HoneyToken{ID: "ht_" + security.MustRandomToken(8), HoneyUserID: user.ID, Hash: security.Fingerprint(a.cfg.InstanceKey, raw), PrefixHint: raw[:12], Name: name, ModelAllowlist: append([]string(nil), options.ModelAllowlist...), CreatedAt: time.Now().UTC()}
 		if err := a.store.AddToken(token); err != nil {
 			a.writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false})
 			return
 		}
 		obs.ExtraScore += 20
 		obs.ExtraReasons = append(obs.ExtraReasons, "newapi_honey_token_created")
-		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{"id": token.ID, "key": raw, "warning": "The key is shown once and is valid only in this service."}})
+		data := publicTokenView(token)
+		data["key"] = raw
+		data["warning"] = "The key is shown once and is valid only in this service."
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": data})
+	case "newapi.token.list":
+		user, ok := a.requireHoneyUser(w, session)
+		if !ok {
+			return
+		}
+		search := strings.TrimSpace(r.URL.Query().Get("search"))
+		if len([]rune(search)) > 64 {
+			a.writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid token search"})
+			return
+		}
+		includeDisabled := true
+		if raw := r.URL.Query().Get("include_disabled"); raw != "" {
+			parsed, parseErr := strconv.ParseBool(raw)
+			if parseErr != nil {
+				a.writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid token search"})
+				return
+			}
+			includeDisabled = parsed
+		}
+		search = strings.ToLower(search)
+		data := make([]map[string]any, 0)
+		for _, token := range a.store.ListTokens(user.ID) {
+			if !includeDisabled && !token.DisabledAt.IsZero() {
+				continue
+			}
+			if search != "" && !strings.Contains(strings.ToLower(token.ID), search) && !strings.Contains(strings.ToLower(token.Name), search) && !strings.Contains(strings.ToLower(token.PrefixHint), search) {
+				continue
+			}
+			data = append(data, publicTokenView(token))
+		}
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "object": "list", "data": data})
+	case "newapi.token.update":
+		if r.Method != http.MethodPatch && r.Method != http.MethodPut {
+			a.methodNotAllowed(w)
+			return
+		}
+		user, ok := a.requireHoneyUser(w, session)
+		if !ok {
+			return
+		}
+		tokenID, ok := newAPITokenID(r.URL.Path)
+		if !ok {
+			a.writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "token not found"})
+			return
+		}
+		options, err := parseNewAPITokenOptions(r, body, true)
+		if err != nil || options.Name == nil && options.Disabled == nil && !options.ModelAllowlistSet {
+			a.writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid token request"})
+			return
+		}
+		if err := a.store.UpdateToken(user.ID, tokenID, options.Name, options.Disabled, options.ModelAllowlist); err != nil {
+			a.writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "token not found"})
+			return
+		}
+		updated, ok := findHoneyToken(a.store.ListTokens(user.ID), tokenID)
+		if !ok {
+			a.writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "token not found"})
+			return
+		}
+		obs.ExtraScore += 10
+		obs.ExtraReasons = append(obs.ExtraReasons, "newapi_honey_token_updated")
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": publicTokenView(updated)})
+	case "newapi.token.delete":
+		user, ok := a.requireHoneyUser(w, session)
+		if !ok {
+			return
+		}
+		tokenID, ok := newAPITokenID(r.URL.Path)
+		if !ok {
+			a.writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "token not found"})
+			return
+		}
+		if err := a.store.DeleteToken(user.ID, tokenID); err != nil {
+			a.writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "token not found"})
+			return
+		}
+		obs.ExtraScore += 10
+		obs.ExtraReasons = append(obs.ExtraReasons, "newapi_honey_token_deleted")
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]string{"id": tokenID}})
 	case "newapi.user.status":
 		user, ok := a.requireHoneyUser(w, session)
 		if !ok {
@@ -158,9 +319,32 @@ func (a *App) newAPIInvoke(w *captureWriter, r *http.Request, body []byte, sessi
 		a.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": map[string]string{"message": "API key is not available to this session", "type": "invalid_request_error"}})
 		return
 	}
+	_ = a.store.TouchToken(token.ID, func(current *model.HoneyToken) { current.LastUsedAt = time.Now().UTC() })
+	requestedModel := strings.TrimSpace(a.requestModel(body))
+	resolvedEntry, modelResolved := profiles.ResolveModel(model.ProductNewAPI, requestedModel)
+	if len(token.ModelAllowlist) > 0 && (!modelResolved || !containsString(token.ModelAllowlist, resolvedEntry.ID)) {
+		obs.ExtraScore += 25
+		obs.ExtraReasons = append(obs.ExtraReasons, "newapi_token_model_restriction_probe")
+		a.startInvocation(obs, auth, false)
+		a.writeJSON(w, http.StatusForbidden, map[string]any{"error": map[string]string{"message": "model is not available for this API key", "type": "invalid_request_error"}})
+		return
+	}
+	if validationErr := validateNewAPIInvocation(r, body, obs.RouteTemplate); validationErr != "" {
+		a.startInvocation(obs, auth, false)
+		message := "invalid request"
+		if validationErr == "quota_overflow" {
+			obs.ExtraScore += 35
+			obs.ExtraReasons = append(obs.ExtraReasons, "newapi_quota_overflow_probe")
+		} else {
+			obs.ExtraScore += 10
+			obs.ExtraReasons = append(obs.ExtraReasons, "newapi_invalid_request")
+		}
+		a.writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]string{"message": message, "type": "invalid_request_error"}})
+		return
+	}
 	modelName := a.validModelName(model.ProductNewAPI, a.requestModel(body))
-	if entry, ok := profiles.ResolveModel(model.ProductNewAPI, a.requestModel(body)); ok {
-		obs.ModelID, obs.ModelResolved = entry.ID, true
+	if modelResolved {
+		obs.ModelID, obs.ModelResolved = resolvedEntry.ID, true
 	} else if a.requestModel(body) == "" {
 		obs.ModelID, obs.ModelResolved = modelName, true
 	} else {
@@ -177,6 +361,389 @@ func (a *App) newAPIInvoke(w *captureWriter, r *http.Request, body []byte, sessi
 		return
 	}
 	a.writeOpenAIResponseForRoute(w, body, model.ProductNewAPI, obs.RouteTemplate, streamRequested(r, body), obs, modelName)
+}
+
+type newAPITokenOptions struct {
+	Name              *string
+	Disabled          *bool
+	ModelAllowlist    []string
+	ModelAllowlistSet bool
+}
+
+func parseNewAPITokenOptions(r *http.Request, body []byte, allowDisabled bool) (newAPITokenOptions, error) {
+	options := newAPITokenOptions{}
+	if len(body) == 0 {
+		return options, nil
+	}
+	if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/x-www-form-urlencoded") {
+		values, err := url.ParseQuery(string(body))
+		if err != nil {
+			return options, fmt.Errorf("invalid token form")
+		}
+		if raw, ok := values["name"]; ok {
+			if len(raw) != 1 {
+				return options, fmt.Errorf("invalid token name")
+			}
+			name := strings.TrimSpace(raw[0])
+			if len([]rune(name)) > 128 {
+				return options, fmt.Errorf("token name is too long")
+			}
+			options.Name = &name
+		}
+		if raw, ok := values["model_allowlist"]; ok {
+			options.ModelAllowlistSet = true
+			items := make([]string, 0, len(raw))
+			for _, item := range raw {
+				items = append(items, strings.Split(item, ",")...)
+			}
+			canonical, err := canonicalNewAPIModelAllowlist(items)
+			if err != nil {
+				return options, err
+			}
+			options.ModelAllowlist = canonical
+		}
+		if raw, ok := values["disabled"]; ok {
+			if !allowDisabled || len(raw) != 1 {
+				return options, fmt.Errorf("disabled is not allowed")
+			}
+			disabled, err := strconv.ParseBool(raw[0])
+			if err != nil {
+				return options, fmt.Errorf("invalid disabled flag")
+			}
+			options.Disabled = &disabled
+		}
+		return options, nil
+	}
+	if !jsonContentTypeOK(r) {
+		return options, fmt.Errorf("invalid token content type")
+	}
+	value, ok := decodeJSONObject(body)
+	if !ok {
+		return options, fmt.Errorf("invalid token JSON")
+	}
+	if raw, exists := value["name"]; exists {
+		name, ok := raw.(string)
+		if !ok || len([]rune(strings.TrimSpace(name))) > 128 {
+			return options, fmt.Errorf("invalid token name")
+		}
+		name = strings.TrimSpace(name)
+		options.Name = &name
+	}
+	if raw, exists := value["model_allowlist"]; exists {
+		options.ModelAllowlistSet = true
+		canonical, err := canonicalNewAPIModelAllowlist(raw)
+		if err != nil {
+			return options, err
+		}
+		options.ModelAllowlist = canonical
+	}
+	if raw, exists := value["disabled"]; exists {
+		if !allowDisabled {
+			return options, fmt.Errorf("disabled is not allowed")
+		}
+		disabled, ok := raw.(bool)
+		if !ok {
+			return options, fmt.Errorf("invalid disabled flag")
+		}
+		options.Disabled = &disabled
+	}
+	return options, nil
+}
+
+func canonicalNewAPIModelAllowlist(raw any) ([]string, error) {
+	var values []string
+	switch value := raw.(type) {
+	case string:
+		if strings.TrimSpace(value) != "" {
+			values = strings.Split(value, ",")
+		}
+	case []string:
+		values = append(values, value...)
+	case []any:
+		if len(value) > 32 {
+			return nil, fmt.Errorf("too many models")
+		}
+		for _, item := range value {
+			name, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("invalid model allowlist")
+			}
+			values = append(values, name)
+		}
+	default:
+		return nil, fmt.Errorf("invalid model allowlist")
+	}
+	if len(values) > 32 {
+		return nil, fmt.Errorf("too many models")
+	}
+	result := make([]string, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if len([]rune(value)) > 256 {
+			return nil, fmt.Errorf("model name is too long")
+		}
+		entry, ok := profiles.ResolveModel(model.ProductNewAPI, value)
+		if !ok {
+			return nil, fmt.Errorf("unknown model")
+		}
+		if !seen[entry.ID] {
+			seen[entry.ID] = true
+			result = append(result, entry.ID)
+		}
+	}
+	return result, nil
+}
+
+func newAPITokenID(path string) (string, bool) {
+	if !strings.HasPrefix(path, "/api/token/") {
+		return "", false
+	}
+	id, err := url.PathUnescape(strings.TrimPrefix(path, "/api/token/"))
+	if err != nil || id == "" || len(id) > 128 || !strings.HasPrefix(id, "ht_") || strings.ContainsAny(id, "/\\\r\n") {
+		return "", false
+	}
+	return id, true
+}
+
+func findHoneyToken(tokens []model.HoneyToken, id string) (model.HoneyToken, bool) {
+	for _, token := range tokens {
+		if token.ID == id {
+			return token, true
+		}
+	}
+	return model.HoneyToken{}, false
+}
+
+func publicTokenView(token model.HoneyToken) map[string]any {
+	allowlist := append([]string{}, token.ModelAllowlist...)
+	view := map[string]any{
+		"id":              token.ID,
+		"name":            token.Name,
+		"prefix_hint":     token.PrefixHint,
+		"model_allowlist": allowlist,
+		"created_at":      token.CreatedAt,
+		"disabled":        !token.DisabledAt.IsZero(),
+	}
+	if !token.DisabledAt.IsZero() {
+		view["disabled_at"] = token.DisabledAt
+	}
+	if !token.LastUsedAt.IsZero() {
+		view["last_used_at"] = token.LastUsedAt
+	}
+	return view
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func validateNewAPIInvocation(r *http.Request, body []byte, route string) string {
+	if !jsonContentTypeOK(r) {
+		return "invalid_request"
+	}
+	value, ok := decodeJSONObject(body)
+	if !ok {
+		return "invalid_request"
+	}
+	if raw, exists := value["model"]; exists {
+		modelName, ok := raw.(string)
+		if !ok || strings.TrimSpace(modelName) == "" || len([]rune(modelName)) > 256 {
+			return "invalid_request"
+		}
+	}
+	if raw, exists := value["stream"]; exists {
+		if _, ok := raw.(bool); !ok {
+			return "invalid_request"
+		}
+	}
+	for _, field := range []string{"max_tokens", "max_completion_tokens", "n", "best_of"} {
+		raw, exists := value[field]
+		if !exists {
+			continue
+		}
+		if newAPIIntegerOverflow(raw, 1_000_000) {
+			return "quota_overflow"
+		}
+		number, ok := boundedNewAPIInteger(raw, 1_000_000)
+		if !ok || number < 1 {
+			return "invalid_request"
+		}
+	}
+	_ = route
+	return ""
+}
+
+func boundedNewAPIInteger(value any, maximum int64) (int64, bool) {
+	switch number := value.(type) {
+	case float64:
+		if math.IsNaN(number) || math.IsInf(number, 0) || number < 1 || number > float64(maximum) || math.Trunc(number) != number {
+			return 0, false
+		}
+		return int64(number), true
+	case float32:
+		converted := float64(number)
+		if math.IsNaN(converted) || math.IsInf(converted, 0) || converted < 1 || converted > float64(maximum) || math.Trunc(converted) != converted {
+			return 0, false
+		}
+		return int64(number), true
+	case int:
+		if number < 1 || int64(number) > maximum {
+			return 0, false
+		}
+		return int64(number), true
+	case int64:
+		if number < 1 || number > maximum {
+			return 0, false
+		}
+		return number, true
+	case json.Number:
+		parsed, err := strconv.ParseInt(string(number), 10, 64)
+		if err != nil || parsed < 1 || parsed > maximum {
+			return 0, false
+		}
+		return parsed, true
+	default:
+		return 0, false
+	}
+}
+
+func newAPIIntegerOverflow(value any, maximum int64) bool {
+	switch number := value.(type) {
+	case float64:
+		return math.IsInf(number, 0) || number > float64(maximum) || number < -float64(maximum)
+	case float32:
+		return float64(number) > float64(maximum) || float64(number) < -float64(maximum)
+	case int:
+		return int64(number) > maximum || int64(number) < -maximum
+	case int64:
+		return number > maximum || number < -maximum
+	case json.Number:
+		parsed, err := strconv.ParseInt(string(number), 10, 64)
+		if err == nil {
+			return parsed > maximum || parsed < -maximum
+		}
+		floating, floatErr := strconv.ParseFloat(string(number), 64)
+		return floatErr == nil && (floating > float64(maximum) || floating < -float64(maximum))
+	default:
+		return false
+	}
+}
+
+func normalizeHoneyUsername(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func normalizeHoneyEmail(value string) (string, bool) {
+	email := strings.ToLower(strings.TrimSpace(value))
+	if email == "" {
+		return "", true
+	}
+	if len([]rune(email)) > 320 || strings.Count(email, "@") != 1 || strings.ContainsAny(email, "\r\n\t ") {
+		return "", false
+	}
+	parts := strings.SplitN(email, "@", 2)
+	if parts[0] == "" || parts[1] == "" || len([]rune(parts[1])) > 255 || strings.HasPrefix(parts[1], ".") || strings.HasSuffix(parts[1], ".") {
+		return "", false
+	}
+	return email, true
+}
+
+func emailLocalFingerprint(key, email string) string {
+	if email == "" {
+		return ""
+	}
+	parts := strings.SplitN(email, "@", 2)
+	if len(parts) != 2 || parts[0] == "" {
+		return ""
+	}
+	return security.Fingerprint(key, parts[0])
+}
+
+func validHoneyVerificationCode(value string) bool {
+	if value == "" {
+		return true
+	}
+	if len(value) != 6 {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func passwordProfile(password string) (string, []string, string) {
+	length := len([]rune(password))
+	lengthBucket := "32_plus"
+	switch {
+	case length == 0:
+		lengthBucket = "empty"
+	case length <= 7:
+		lengthBucket = "1_7"
+	case length <= 11:
+		lengthBucket = "8_11"
+	case length <= 15:
+		lengthBucket = "12_15"
+	case length <= 31:
+		lengthBucket = "16_31"
+	}
+	seen := map[string]bool{}
+	for _, r := range password {
+		switch {
+		case unicode.IsLower(r):
+			seen["lower"] = true
+		case unicode.IsUpper(r):
+			seen["upper"] = true
+		case unicode.IsDigit(r):
+			seen["digit"] = true
+		case unicode.IsSpace(r):
+			seen["space"] = true
+		case unicode.IsPunct(r) || unicode.IsSymbol(r):
+			seen["symbol"] = true
+		default:
+			seen["other"] = true
+		}
+	}
+	classes := make([]string, 0, len(seen))
+	for _, class := range []string{"lower", "upper", "digit", "symbol", "space", "other"} {
+		if seen[class] {
+			classes = append(classes, class)
+		}
+	}
+	weakClass := classifyWeakPassword(password)
+	return lengthBucket, classes, weakClass
+}
+
+func classifyWeakPassword(password string) string {
+	normalized := strings.ToLower(strings.TrimSpace(password))
+	switch normalized {
+	case "password", "password1", "password123", "123456", "12345678", "123456789", "qwerty", "qwerty123", "admin", "admin123", "letmein", "welcome", "changeme":
+		return "common_password"
+	}
+	if normalized != "" {
+		allDigits := true
+		for _, r := range normalized {
+			if r < '0' || r > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits && len(normalized) <= 10 {
+			return "numeric_only"
+		}
+	}
+	return ""
 }
 
 func (a *App) handleVLLM(w *captureWriter, r *http.Request, profile profiles.Profile, session Session, body []byte, obs *Observation) {
@@ -857,6 +1424,28 @@ func requestValues(r *http.Request, body []byte) map[string]string {
 		}
 	}
 	return result
+}
+
+func newAPIStringFieldsOK(r *http.Request, body []byte, fields ...string) bool {
+	if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/x-www-form-urlencoded") {
+		_, err := url.ParseQuery(string(body))
+		return err == nil
+	}
+	if !jsonContentTypeOK(r) {
+		return false
+	}
+	value, ok := decodeJSONObject(body)
+	if !ok {
+		return false
+	}
+	for _, field := range fields {
+		if raw, exists := value[field]; exists {
+			if _, ok := raw.(string); !ok {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func emailDomain(email string) string {

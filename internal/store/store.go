@@ -556,6 +556,71 @@ func (s *Store) FindToken(hash string) (model.HoneyToken, bool) {
 	return model.HoneyToken{}, false
 }
 
+func (s *Store) ListTokens(userID string) []model.HoneyToken {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]model.HoneyToken, 0)
+	for _, token := range s.state.HoneyTokens {
+		if userID == "" || token.HoneyUserID == userID {
+			result = append(result, token)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].ID < result[j].ID
+		}
+		return result[i].CreatedAt.After(result[j].CreatedAt)
+	})
+	return result
+}
+
+func (s *Store) TouchToken(id string, update func(*model.HoneyToken)) error {
+	return s.Update(func(state *model.State) error {
+		token, ok := state.HoneyTokens[id]
+		if !ok {
+			return errors.New("honey token not found")
+		}
+		update(&token)
+		state.HoneyTokens[id] = token
+		return nil
+	})
+}
+
+func (s *Store) UpdateToken(userID, tokenID string, name *string, disabled *bool, modelAllowlist []string) error {
+	return s.Update(func(state *model.State) error {
+		token, ok := state.HoneyTokens[tokenID]
+		if !ok || token.HoneyUserID != userID {
+			return errors.New("honey token not found")
+		}
+		if name != nil {
+			token.Name = *name
+		}
+		if disabled != nil {
+			if *disabled {
+				token.DisabledAt = time.Now().UTC()
+			} else {
+				token.DisabledAt = time.Time{}
+			}
+		}
+		if modelAllowlist != nil {
+			token.ModelAllowlist = append([]string(nil), modelAllowlist...)
+		}
+		state.HoneyTokens[tokenID] = token
+		return nil
+	})
+}
+
+func (s *Store) DeleteToken(userID, tokenID string) error {
+	return s.Update(func(state *model.State) error {
+		token, ok := state.HoneyTokens[tokenID]
+		if !ok || token.HoneyUserID != userID {
+			return errors.New("honey token not found")
+		}
+		delete(state.HoneyTokens, tokenID)
+		return nil
+	})
+}
+
 func (s *Store) AddQuota(userID string, amount int64) (int64, error) {
 	return s.applyQuota(userID, "adjustment", "", "", amount)
 }

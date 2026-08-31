@@ -73,26 +73,33 @@ type Event struct {
 }
 
 type HoneyUser struct {
-	ID           string    `json:"id"`
-	InstanceID   string    `json:"instance_id"`
-	UsernameFP   string    `json:"username_fp"`
-	UsernameHint string    `json:"username_hint"`
-	EmailDomain  string    `json:"email_domain,omitempty"`
-	PasswordFP   string    `json:"password_fp"`
-	VirtualQuota int64     `json:"virtual_quota"`
-	CreatedAt    time.Time `json:"created_at"`
-	LastSeen     time.Time `json:"last_seen"`
-	CheckedInAt  time.Time `json:"checked_in_at,omitempty"`
-	CheckinDay   string    `json:"checkin_day,omitempty"`
+	ID                   string    `json:"id"`
+	InstanceID           string    `json:"instance_id"`
+	UsernameFP           string    `json:"username_fp"`
+	UsernameHint         string    `json:"username_hint"`
+	EmailLocalFP         string    `json:"email_local_fp,omitempty"`
+	EmailDomain          string    `json:"email_domain,omitempty"`
+	PasswordFP           string    `json:"password_fp"`
+	PasswordLengthBucket string    `json:"password_length_bucket,omitempty"`
+	PasswordClasses      []string  `json:"password_classes,omitempty"`
+	PasswordWeakClass    string    `json:"password_weak_class,omitempty"`
+	VirtualQuota         int64     `json:"virtual_quota"`
+	CreatedAt            time.Time `json:"created_at"`
+	LastSeen             time.Time `json:"last_seen"`
+	CheckedInAt          time.Time `json:"checked_in_at,omitempty"`
+	CheckinDay           string    `json:"checkin_day,omitempty"`
 }
 
 type HoneyToken struct {
-	ID          string    `json:"id"`
-	HoneyUserID string    `json:"honey_user_id"`
-	Hash        string    `json:"hash"`
-	PrefixHint  string    `json:"prefix_hint"`
-	CreatedAt   time.Time `json:"created_at"`
-	DisabledAt  time.Time `json:"disabled_at,omitempty"`
+	ID             string    `json:"id"`
+	HoneyUserID    string    `json:"honey_user_id"`
+	Hash           string    `json:"hash"`
+	PrefixHint     string    `json:"prefix_hint"`
+	Name           string    `json:"name,omitempty"`
+	ModelAllowlist []string  `json:"model_allowlist,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	DisabledAt     time.Time `json:"disabled_at,omitempty"`
+	LastUsedAt     time.Time `json:"last_used_at,omitempty"`
 }
 
 type VirtualEffect struct {

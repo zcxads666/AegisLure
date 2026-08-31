@@ -208,7 +208,20 @@ func newAPIRoute(method, path string) string {
 	case path == "/api/user/checkin":
 		return "newapi.checkin"
 	case path == "/api/token":
+		if method == "GET" {
+			return "newapi.token.list"
+		}
 		return "newapi.token.create"
+	case strings.HasPrefix(path, "/api/token/"):
+		if method == "PATCH" || method == "PUT" {
+			return "newapi.token.update"
+		}
+		if method == "DELETE" {
+			return "newapi.token.delete"
+		}
+		return "newapi.token.update"
+	case path == "/api/user/forgot-password" || path == "/api/user/forget-password":
+		return "newapi.user.forgot"
 	case path == "/api/user/self" || path == "/api/status":
 		return "newapi.user.status"
 	case path == "/api/log" || path == "/api/user/logs":

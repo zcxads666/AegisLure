@@ -353,9 +353,11 @@ func headerBytes(r *http.Request) int {
 
 func requiredMethod(route string) string {
 	switch route {
-	case "newapi.user.register", "newapi.user.login", "newapi.checkin", "newapi.token.create", "openai.chat.completions", "openai.completions", "openai.responses", "openai.embeddings", "ollama.show", "ollama.generate", "ollama.chat", "ollama.embeddings", "ollama.pull", "ollama.push", "ollama.create", "ollama.copy", "vllm.invocations", "vllm.tokenize", "vllm.detokenize", "sglang.generate", "sglang.lora.load", "sglang.weights.update", "sglang.cache.flush", "sglang.weights.get", "localai.models.apply", "localai.models.delete", "localai.audio.transcriptions", "localai.audio.speech", "localai.images.generations":
+	case "newapi.user.register", "newapi.user.login", "newapi.user.forgot", "newapi.checkin", "newapi.token.create", "openai.chat.completions", "openai.completions", "openai.responses", "openai.embeddings", "ollama.show", "ollama.generate", "ollama.chat", "ollama.embeddings", "ollama.pull", "ollama.push", "ollama.create", "ollama.copy", "vllm.invocations", "vllm.tokenize", "vllm.detokenize", "sglang.generate", "sglang.lora.load", "sglang.weights.update", "sglang.cache.flush", "sglang.weights.get", "localai.models.apply", "localai.models.delete", "localai.audio.transcriptions", "localai.audio.speech", "localai.images.generations":
 		return http.MethodPost
 	case "ollama.delete":
+		return http.MethodDelete
+	case "newapi.token.delete":
 		return http.MethodDelete
 	default:
 		return ""
@@ -370,8 +372,10 @@ func allowedMethods(route string) string {
 		return method
 	}
 	switch route {
-	case "ollama.home", "ollama.version", "ollama.tags", "ollama.ps", "openai.models", "vllm.root", "vllm.health", "vllm.version", "vllm.metrics", "vllm.docs", "vllm.openapi", "sglang.health", "sglang.model_info", "sglang.metrics", "sglang.docs", "sglang.redoc", "sglang.openapi", "sglang.server_info", "localai.home", "localai.health", "localai.metrics", "localai.docs", "localai.models.available", "localai.models.installed", "localai.models.task":
+	case "newapi.token.list", "newapi.user.status", "newapi.usage.logs", "ollama.home", "ollama.version", "ollama.tags", "ollama.ps", "openai.models", "vllm.root", "vllm.health", "vllm.version", "vllm.metrics", "vllm.docs", "vllm.openapi", "sglang.health", "sglang.model_info", "sglang.metrics", "sglang.docs", "sglang.redoc", "sglang.openapi", "sglang.server_info", "localai.home", "localai.health", "localai.metrics", "localai.docs", "localai.models.available", "localai.models.installed", "localai.models.task":
 		return http.MethodGet
+	case "newapi.token.update":
+		return http.MethodPatch + ", " + http.MethodPut
 	default:
 		return ""
 	}
@@ -380,6 +384,9 @@ func allowedMethods(route string) string {
 func methodAllowed(route, method string) bool {
 	if route == "ollama.blob" {
 		return method == http.MethodPost || method == http.MethodHead
+	}
+	if route == "newapi.token.update" {
+		return method == http.MethodPatch || method == http.MethodPut
 	}
 	if required := requiredMethod(route); required != "" {
 		return method == required
