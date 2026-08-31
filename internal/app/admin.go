@@ -417,8 +417,6 @@ func (a *App) handleAdminAPI(w http.ResponseWriter, r *http.Request, path string
 		a.adminIdentityAction(w, r, strings.TrimPrefix(path, "identities/"))
 	case strings.HasPrefix(path, "instances/") && (r.Method == http.MethodGet || r.Method == http.MethodPatch):
 		a.adminInstanceRoute(w, r, strings.TrimPrefix(path, "instances/"))
-	case path == "auth/change-password" && r.Method == http.MethodPost:
-		a.adminChangePassword(w, r)
 	case path == "admin-entry:rotate" && r.Method == http.MethodPost:
 		if !sameOriginRequest(r) {
 			a.writeJSON(w, http.StatusForbidden, map[string]string{"error": "cross-site request rejected"})
@@ -552,60 +550,6 @@ func (a *App) adminIdentityAction(w http.ResponseWriter, r *http.Request, path s
 		return
 	}
 	a.writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-}
-
-func (a *App) adminChangePassword(w http.ResponseWriter, r *http.Request) {
-	if !sameOriginRequest(r) {
-		a.writeJSON(w, http.StatusForbidden, map[string]string{"error": "cross-site request rejected"})
-		return
-	}
-	if !a.allowRate("admin-change-password:"+requestSourceIP(r), 5, time.Minute) {
-		rateLimited(w)
-		return
-	}
-	body, tooLarge := readBoundedBody(r, 16*1024)
-	if tooLarge {
-		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid password request"})
-		return
-	}
-	value := a.jsonBody(body)
-	current := stringValue(value["current_password"])
-	next := stringValue(value["new_password"])
-	confirm := stringValue(value["confirm_password"])
-	if len(next) < 8 || len(next) > 128 || next != confirm || !security.VerifyPassword(a.store.Admin().PasswordHash, current) {
-		if len(next) < 8 || len(next) > 128 || next != confirm {
-			a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "new password does not meet policy"})
-			return
-		}
-		a.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "current password is incorrect"})
-		return
-	}
-	hash, err := security.HashPassword(next)
-	if err != nil {
-		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "password change failed"})
-		return
-	}
-	if err := a.store.Update(func(state *model.State) error {
-		if !state.Admin.Initialized || !security.VerifyPassword(state.Admin.PasswordHash, current) {
-			return errors.New("current password is incorrect")
-		}
-		state.Admin.PasswordHash = hash
-		return nil
-	}); err != nil {
-		if strings.Contains(err.Error(), "incorrect") {
-			a.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "current password is incorrect"})
-			return
-		}
-		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "password change failed"})
-		return
-	}
-	a.mu.Lock()
-	for id := range a.adminSessions {
-		delete(a.adminSessions, id)
-	}
-	a.mu.Unlock()
-	a.recordAudit(r, "admin.password.change", "admin", "success", nil)
-	a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "password changed; sign in again"})
 }
 
 func (a *App) adminInstanceAction(w http.ResponseWriter, r *http.Request, path string) {

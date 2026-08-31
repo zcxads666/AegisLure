@@ -56,7 +56,6 @@ macOS 上启动默认的 Ollama/vLLM profile 后，可直接运行 HTTP 指纹�
 <admin_path>/setup/status
 <admin_path>/setup/create-owner
 <admin_path>/admin/api/v1/auth/login
-<admin_path>/admin/api/v1/auth/change-password
 <admin_path>/admin/api/v1/dashboard
 <admin_path>/admin/api/v1/events
 <admin_path>/admin/api/v1/indicators/ips?min_score=40
@@ -73,7 +72,7 @@ macOS 上启动默认的 Ollama/vLLM profile 后，可直接运行 HTTP 指纹�
 是独立登录页；登录后可在总览、观测记录、调用分析、交互链路、IP 情报、蜜罐实例、规则策略和管理设置之间切换。
 实例页的启停会实际控制对应的公开 listener，同时保留管理 listener 在线；所有公开 profile 仍只返回合成响应。
 
-首次打开管理入口即可创建 owner，密码最低 8 个字符；不再需要 Bootstrap code、TOTP 或 MFA。服务仍生成一次性恢复码用于密码找回，请离线保存。由于后台只有单因素密码认证，生产环境必须优先通过 VPN、Windows 防火墙白名单或可信反向代理限制管理端口来源。
+首次打开管理入口即可创建 owner，密码最低 8 个字符；不再需要 Bootstrap code、TOTP 或 MFA。管理端不提供在线改密，服务生成的一次性恢复码和本机救援码是唯一的密码恢复路径，请离线保存。由于后台只有单因素密码认证，生产环境必须优先通过 VPN、Windows 防火墙白名单或可信反向代理限制管理端口来源。
 
 ## Docker Compose
 

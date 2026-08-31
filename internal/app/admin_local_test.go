@@ -18,6 +18,9 @@ func TestLocalAdminDetailRoutesAndInstancePatch(t *testing.T) {
 	if resp, _ := doJSON(t, admin, http.MethodPost, cfg.AdminPath+"admin/api/v1/auth/login", map[string]string{"username": "owner", "password": "correct horse battery staple"}); resp.StatusCode != http.StatusOK {
 		t.Fatalf("admin login status = %d", resp.StatusCode)
 	}
+	if resp, _ := doJSON(t, admin, http.MethodPost, cfg.AdminPath+"admin/api/v1/auth/change-password", map[string]string{"current_password": "correct horse battery staple", "new_password": "another-password", "confirm_password": "another-password"}); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("change-password route should be unavailable, status = %d", resp.StatusCode)
+	}
 
 	public := &inProcessClient{handler: a.publicHandler(profiles.Build(cfg)[model.ProductOllama]), cookies: map[string]string{}}
 	resp, _ := doJSON(t, public, http.MethodGet, "/api/tags", nil)
