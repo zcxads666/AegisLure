@@ -15,7 +15,7 @@ AegisLure 提供五类安全的 clean-room 协议仿真：New API、vLLM、Ollam
 - New API 风格的 guest → 注册 → 签到 → honey key → 合成调用 → 日志链；
 - Argon2id 管理员密码（最低 8 字符）、恢复码、隐藏路径、事件/IP JSON/CSV/plain 导出；
 - Compose 安全基线、随机管理端口/入口、`install.sh`、`hpctl` 和备份命令。
-- Ollama/vLLM persona compatibility suite：PowerShell 指纹检查脚本位于 `scripts/check-ai.ps1`，覆盖公共 Header、错误格式、模型列表、metrics 和 anti-leak 规则。
+- Ollama/vLLM persona compatibility suite：PowerShell 指纹检查脚本位于 `scripts/check-ai.ps1`，覆盖公共 Header、错误格式、模型列表、metrics 和 anti-leak 规则；macOS 可运行 `scripts/check-ai-mac.sh` 做同等检查。
 
 `runtime/`、`data/` 和密钥不进入 Git。当前管理初始化不使用 Bootstrap code 或 TOTP；这是为了降低操作门槛，生产部署仍应把隐藏入口放在 VPN/可信网络后。生产部署前仍需完成正式证书、端口池/hostd、OAuth broker、PostgreSQL/Hive、审计哈希远端复制和外部渗透验收；仓库默认不提供任何真实 OAuth client secret，也不打开 provider 出站能力。
 
@@ -34,6 +34,12 @@ go run ./cmd/aegislure -config ./config.json
 
 ```bash
 HP_PROFILES=new-api,vllm,ollama,sglang,localai go run ./cmd/aegislure -config ./config.json
+```
+
+macOS 上启动默认的 Ollama/vLLM profile 后，可直接运行 HTTP 指纹检查：
+
+```bash
+./scripts/check-ai-mac.sh
 ```
 
 管理 API 的路径格式为：
