@@ -219,20 +219,17 @@ func (a *App) Shutdown(ctx context.Context) error {
 
 func (a *App) publicHandler(profile profiles.Profile) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		setSecurityHeaders(w)
-		if profile.Product == model.ProductVLLM {
-			w.Header().Set("Server", "uvicorn")
-		}
+		setPublicPersonaHeaders(w, profile.Product)
 		select {
 		case a.publicSem <- struct{}{}:
 			defer func() { <-a.publicSem }()
 		default:
-			a.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": map[string]string{"message": "service busy", "type": "rate_limited"}})
+			a.writePublicBoundaryError(w, profile.Product, http.StatusServiceUnavailable, "Service Unavailable")
 			return
 		}
 		start := time.Now()
 		body, tooLarge := readBoundedBody(r, 1<<20)
-		cw := &captureWriter{ResponseWriter: w}
+		cw := &captureWriter{ResponseWriter: w, personaProduct: profile.Product}
 		session := a.sessionFor(r, profile.Product)
 		route := profiles.Route(profile.Product, r.Method, r.URL.Path)
 		obs := &Observation{RouteTemplate: route, ResponseObserved: true, Metadata: map[string]string{"event_type": "http.request.classified", "scenario": profile.Scenario}}
@@ -245,14 +242,14 @@ func (a *App) publicHandler(profile profiles.Profile) http.Handler {
 		if len(r.Header) > 100 || headerBytes(r) > 32*1024 {
 			obs.ExtraScore = 20
 			obs.ExtraReasons = append(obs.ExtraReasons, "request_header_limit_exceeded")
-			a.writeJSON(cw, http.StatusRequestHeaderFieldsTooLarge, map[string]any{"error": map[string]string{"message": "request headers too large", "type": "invalid_request_error"}})
-		} else if requiresPost(route) && r.Method != http.MethodPost {
-			cw.Header().Set("Allow", http.MethodPost)
+			a.writePublicBoundaryError(cw, profile.Product, http.StatusRequestHeaderFieldsTooLarge, "Request headers too large")
+		} else if !methodAllowed(route, r.Method) {
+			cw.Header().Set("Allow", allowedMethods(route))
 			a.writeMethodNotAllowed(cw, profile.Product)
 		} else if tooLarge {
 			obs.ExtraScore = 20
 			obs.ExtraReasons = append(obs.ExtraReasons, "request_body_limit_exceeded")
-			a.writeJSON(cw, http.StatusRequestEntityTooLarge, map[string]any{"error": map[string]string{"message": "request body too large", "type": "invalid_request_error"}})
+			a.writePublicBoundaryError(cw, profile.Product, http.StatusRequestEntityTooLarge, "Request body too large")
 		} else {
 			a.handleProduct(cw, r, profile, session, body, obs)
 		}
@@ -349,19 +346,50 @@ func headerBytes(r *http.Request) int {
 	return total
 }
 
-func requiresPost(route string) bool {
+func requiredMethod(route string) string {
 	switch route {
-	case "newapi.user.register", "newapi.user.login", "newapi.checkin", "newapi.token.create", "openai.chat.completions", "openai.completions", "openai.responses", "openai.embeddings", "ollama.show", "ollama.generate", "ollama.chat", "ollama.embeddings", "ollama.pull", "ollama.push", "ollama.create", "ollama.copy", "ollama.delete", "vllm.invocations", "vllm.tokenize", "vllm.detokenize", "sglang.generate", "sglang.lora.load", "sglang.weights.update", "localai.models.apply", "localai.models.delete", "localai.audio.transcriptions":
-		return true
+	case "newapi.user.register", "newapi.user.login", "newapi.checkin", "newapi.token.create", "openai.chat.completions", "openai.completions", "openai.responses", "openai.embeddings", "ollama.show", "ollama.generate", "ollama.chat", "ollama.embeddings", "ollama.pull", "ollama.push", "ollama.create", "ollama.copy", "vllm.invocations", "vllm.tokenize", "vllm.detokenize", "sglang.generate", "sglang.lora.load", "sglang.weights.update", "localai.models.apply", "localai.models.delete", "localai.audio.transcriptions":
+		return http.MethodPost
+	case "ollama.delete":
+		return http.MethodDelete
 	default:
-		return false
+		return ""
 	}
+}
+
+func allowedMethods(route string) string {
+	if route == "ollama.blob" {
+		return http.MethodPost + ", " + http.MethodHead
+	}
+	if method := requiredMethod(route); method != "" {
+		return method
+	}
+	switch route {
+	case "ollama.home", "ollama.version", "ollama.tags", "ollama.ps", "openai.models", "vllm.root", "vllm.health", "vllm.version", "vllm.metrics", "vllm.docs", "vllm.openapi":
+		return http.MethodGet
+	default:
+		return ""
+	}
+}
+
+func methodAllowed(route, method string) bool {
+	if route == "ollama.blob" {
+		return method == http.MethodPost || method == http.MethodHead
+	}
+	if required := requiredMethod(route); required != "" {
+		return method == required
+	}
+	if allowed := allowedMethods(route); allowed != "" {
+		return method == allowed
+	}
+	return true
 }
 
 type captureWriter struct {
 	http.ResponseWriter
-	status int
-	bytes  int64
+	status         int
+	bytes          int64
+	personaProduct string
 }
 
 func (w *captureWriter) WriteHeader(status int) {
@@ -486,10 +514,13 @@ func uniqueStrings(values []string) []string {
 }
 
 func (a *App) writeJSON(w http.ResponseWriter, status int, value any) {
-	setSecurityHeaders(w)
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if w.Header().Get("Content-Type") == "" {
+		contentType := "application/json; charset=utf-8"
+		if cw, ok := w.(*captureWriter); ok && cw.personaProduct == model.ProductVLLM {
+			contentType = "application/json"
+		}
+		w.Header().Set("Content-Type", contentType)
+	}
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
 }
@@ -499,19 +530,17 @@ func (a *App) writeHTML(w http.ResponseWriter, status int, title, body string) {
 }
 
 func (a *App) writeHTMLWithNonce(w http.ResponseWriter, status int, title, body, nonce string) {
-	setSecurityHeaders(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	// The admin page uses same-origin fetch() for setup, login and dashboard
-	// calls. Keep the default deny policy, but explicitly allow those
-	// same-origin connections; relying on default-src would make browsers
-	// block the page's own API requests.
-	csp := "default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'"
 	if nonce != "" {
-		csp += "; script-src 'nonce-" + nonce + "'"
+		// The admin page uses same-origin fetch() for setup, login and dashboard
+		// calls. Keep the default deny policy, but explicitly allow those
+		// same-origin connections; relying on default-src would make browsers
+		// block the page's own API requests.
+		csp := "default-src 'none'; base-uri 'none'; connect-src 'self'; style-src 'self' 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'"
+		csp += "; script-src 'nonce-" + nonce + "' 'self'"
+		w.Header().Set("Content-Security-Policy", csp)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 	}
-	w.Header().Set("Content-Security-Policy", csp)
-	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
 	if strings.HasPrefix(strings.TrimSpace(body), "<!doctype html>") {
 		_, _ = fmt.Fprint(w, body)
@@ -524,6 +553,29 @@ func setSecurityHeaders(w http.ResponseWriter) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Frame-Options", "DENY")
+}
+
+func setPublicPersonaHeaders(w http.ResponseWriter, product string) {
+	if product == model.ProductVLLM {
+		w.Header().Set("Server", "uvicorn")
+		w.Header().Set("Content-Type", "application/json")
+		return
+	}
+	if product == model.ProductOllama {
+		w.Header().Del("Server")
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	}
+}
+
+func (a *App) writePublicBoundaryError(w http.ResponseWriter, product string, status int, message string) {
+	switch product {
+	case model.ProductVLLM:
+		a.writeJSON(w, status, map[string]string{"detail": message})
+	case model.ProductOllama:
+		a.writeJSON(w, status, map[string]string{"error": strings.ToLower(message)})
+	default:
+		a.writeJSON(w, status, map[string]any{"error": map[string]string{"message": message, "type": "invalid_request_error"}})
+	}
 }
 
 func (a *App) allowRate(key string, limit int, window time.Duration) bool {
@@ -753,7 +805,7 @@ func (a *App) writeOpenAIResponseForRoute(w http.ResponseWriter, body []byte, pr
 	a.writeJSON(w, http.StatusOK, map[string]any{"id": obs.InvocationID, "object": "chat.completion", "created": time.Now().Unix(), "model": modelName, "choices": []any{map[string]any{"index": 0, "message": map[string]string{"role": "assistant", "content": text}, "finish_reason": "stop"}}, "usage": map[string]int{"prompt_tokens": inputTokens, "completion_tokens": outputTokens, "total_tokens": inputTokens + outputTokens}})
 }
 
-func (a *App) writeOllamaStream(w http.ResponseWriter, body []byte, modelName string, obs *Observation) {
+func (a *App) writeLegacyOllamaStream(w http.ResponseWriter, body []byte, modelName string, obs *Observation) {
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	flusher, _ := w.(http.Flusher)
 	chunks := []string{"The request was ", "processed successfully."}

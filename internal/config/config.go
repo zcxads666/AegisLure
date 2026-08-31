@@ -22,6 +22,9 @@ type Config struct {
 	AdminPath       string            `json:"admin_path"`
 	OllamaVersion   string            `json:"ollama_version,omitempty"`
 	VLLMVersion     string            `json:"vllm_version,omitempty"`
+	OllamaKeepAlive string            `json:"ollama_keep_alive,omitempty"`
+	VLLMDocsEnabled bool              `json:"vllm_docs_enabled,omitempty"`
+	VLLMServedNames []string          `json:"vllm_served_model_names,omitempty"`
 	ProfilePorts    map[string]int    `json:"profile_ports"`
 	EnabledProfiles []string          `json:"enabled_profiles"`
 	Scenario        map[string]string `json:"scenario"`
@@ -40,7 +43,10 @@ func Load(path string) (*Config, error) {
 		c.OllamaVersion = "0.9.6"
 	}
 	if c.VLLMVersion == "" {
-		c.VLLMVersion = "0.11.0"
+		c.VLLMVersion = "0.17.0"
+	}
+	if c.OllamaKeepAlive == "" {
+		c.OllamaKeepAlive = "5m"
 	}
 	if c.DataDir == "" {
 		c.DataDir = filepath.Dir(path)
@@ -90,15 +96,16 @@ func Init(path, dataDir string) (*Config, error) {
 		port = 28443
 	}
 	c := &Config{
-		InstanceID:    instanceID,
-		InstanceKey:   instanceKey,
-		DataDir:       dataDir,
-		PublicBind:    "0.0.0.0",
-		AdminBind:     "0.0.0.0",
-		AdminPort:     port,
-		AdminPath:     "/" + adminPathToken + "/",
-		OllamaVersion: "0.9.6",
-		VLLMVersion:   "0.11.0",
+		InstanceID:      instanceID,
+		InstanceKey:     instanceKey,
+		DataDir:         dataDir,
+		PublicBind:      "0.0.0.0",
+		AdminBind:       "0.0.0.0",
+		AdminPort:       port,
+		AdminPath:       "/" + adminPathToken + "/",
+		OllamaVersion:   "0.9.6",
+		VLLMVersion:     "0.17.0",
+		OllamaKeepAlive: "5m",
 		ProfilePorts: map[string]int{
 			"new-api": 3000,
 			"vllm":    8000,
@@ -147,6 +154,15 @@ func applyEnv(c *Config) {
 	}
 	if v := os.Getenv("HP_VLLM_VERSION"); v != "" {
 		c.VLLMVersion = v
+	}
+	if v := os.Getenv("HP_OLLAMA_KEEP_ALIVE"); v != "" {
+		c.OllamaKeepAlive = v
+	}
+	if v := os.Getenv("HP_VLLM_DOCS_ENABLED"); v != "" {
+		c.VLLMDocsEnabled = v == "1" || v == "true"
+	}
+	if v := os.Getenv("HP_VLLM_SERVED_MODEL_NAMES"); v != "" {
+		c.VLLMServedNames = splitComma(v)
 	}
 }
 

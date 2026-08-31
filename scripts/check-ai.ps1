@@ -83,11 +83,14 @@ foreach ($item in @(
     @{ Name = "ollama /v1/models"; Method = "GET"; Path = "/v1/models"; Expected = 200 },
     @{ Name = "ollama /unknown"; Method = "GET"; Path = "/unknown"; Expected = 404 },
     @{ Name = "ollama wrong method"; Method = "GET"; Path = "/api/generate"; Expected = 405 },
-    @{ Name = "ollama invalid JSON"; Method = "POST"; Path = "/api/generate"; Expected = 400 }
+    @{ Name = "ollama invalid JSON"; Method = "POST"; Path = "/api/generate"; Expected = 400; Body = "not-json" },
+    @{ Name = "ollama generate"; Method = "POST"; Path = "/api/generate"; Expected = 200; Body = '{"model":"qwen3.6:35b-a3b","prompt":"reply with ok","stream":false}' },
+    @{ Name = "ollama chat stream"; Method = "POST"; Path = "/api/chat"; Expected = 200; Body = '{"model":"qwen3.6:35b-a3b","messages":[{"role":"user","content":"hello"}],"stream":true}' }
 )) {
-    $body = if ($item.Name -eq "ollama invalid JSON") { "not-json" } else { "" }
+    $body = if ($item.ContainsKey("Body")) { $item.Body } else { "" }
     $response = Invoke-PublicEndpoint $item.Name $item.Method ($ollamaBase + $item.Path) $body
     Assert-Status $response $item.Expected
+    Assert-NotContains $item.Name $response.Headers.ToLowerInvariant() "server: uvicorn"
     $ollama[$item.Name] = $response
 }
 
@@ -104,8 +107,17 @@ try {
         if (-not ([string]$item.digest -match '^sha256:[0-9a-f]{64}$')) { Add-Failure "Ollama digest format is invalid" }
         if ($item.details.family -eq "" -or $item.details.families.Count -ne 1 -or $item.details.families[0] -ne $item.details.family) { Add-Failure "Ollama family metadata is inconsistent" }
     }
+    if ($tags.models[0].details.family -ne "qwen35moe") { Add-Failure "Ollama Qwen family metadata is not qwen35moe" }
 }
 catch { Add-Failure "Ollama tags JSON validation failed: $($_.Exception.Message)" }
+
+try {
+    $psAfter = Invoke-PublicEndpoint "ollama /api/ps after generate" "GET" ($ollamaBase + "/api/ps") ""
+    Assert-Status $psAfter 200
+    $loaded = $psAfter.Body | ConvertFrom-Json
+    if ($null -eq $loaded.models -or $loaded.models.Count -ne 1 -or $loaded.models[0].name -ne "qwen3.6:35b-a3b") { Add-Failure "Ollama /api/ps did not reflect the recent generate call" }
+}
+catch { Add-Failure "Ollama runtime state validation failed: $($_.Exception.Message)" }
 
 $vllm = @{}
 foreach ($item in @(
@@ -114,13 +126,16 @@ foreach ($item in @(
     @{ Name = "vLLM /version"; Method = "GET"; Path = "/version"; Expected = 200 },
     @{ Name = "vLLM /v1/models"; Method = "GET"; Path = "/v1/models"; Expected = 200 },
     @{ Name = "vLLM /metrics"; Method = "GET"; Path = "/metrics"; Expected = 200 },
-    @{ Name = "vLLM /docs"; Method = "GET"; Path = "/docs"; Expected = 200 },
-    @{ Name = "vLLM /openapi.json"; Method = "GET"; Path = "/openapi.json"; Expected = 200 },
+    @{ Name = "vLLM /docs"; Method = "GET"; Path = "/docs"; Expected = 404 },
+    @{ Name = "vLLM /openapi.json"; Method = "GET"; Path = "/openapi.json"; Expected = 404 },
     @{ Name = "vLLM /unknown"; Method = "GET"; Path = "/unknown"; Expected = 404 },
     @{ Name = "vLLM wrong method"; Method = "GET"; Path = "/v1/chat/completions"; Expected = 405 },
-    @{ Name = "vLLM invalid JSON"; Method = "POST"; Path = "/invocations"; Expected = 422 }
+    @{ Name = "vLLM invalid JSON"; Method = "POST"; Path = "/invocations"; Expected = 422; Body = "not-json" },
+    @{ Name = "vLLM chat auth check"; Method = "POST"; Path = "/v1/chat/completions"; Expected = 401; Body = '{"model":"Qwen/Qwen3.6-35B-A3B","messages":[{"role":"user","content":"hello"}],"stream":false}' },
+    @{ Name = "vLLM invocation"; Method = "POST"; Path = "/invocations"; Expected = 200; Body = '{"model":"Qwen/Qwen3.6-35B-A3B","prompt":"reply with ok","stream":false}' },
+    @{ Name = "vLLM invocation stream"; Method = "POST"; Path = "/invocations"; Expected = 200; Body = '{"model":"Qwen/Qwen3.6-35B-A3B","prompt":"stream this","stream":true}' }
 )) {
-    $body = if ($item.Name -eq "vLLM invalid JSON") { "not-json" } else { "" }
+    $body = if ($item.ContainsKey("Body")) { $item.Body } else { "" }
     $response = Invoke-PublicEndpoint $item.Name $item.Method ($vllmBase + $item.Path) $body
     Assert-Status $response $item.Expected
     Assert-Contains $item.Name $response.Headers "Server: uvicorn"
@@ -129,15 +144,27 @@ foreach ($item in @(
 
 try {
     $cards = $vllm["vLLM /v1/models"].Body | ConvertFrom-Json
-    if ($cards.object -ne "list" -or $cards.data.Count -ne 3) { Add-Failure "vLLM model list is not a ModelCard list" }
+    if ($cards.object -ne "list" -or $cards.data.Count -ne 1) { Add-Failure "vLLM model list should expose one served model" }
     foreach ($card in $cards.data) {
-        if ($card.object -ne "model" -or $card.owned_by -ne "vllm" -or $card.root -ne $card.id -or $card.permission.Count -lt 1) { Add-Failure "vLLM ModelCard is inconsistent" }
+        if ($card.object -ne "model" -or $card.owned_by -ne "vllm" -or $card.id -ne "Qwen/Qwen3.6-35B-A3B" -or $card.root -ne "Qwen/Qwen3.6-35B-A3B" -or $card.permission.Count -lt 1) { Add-Failure "vLLM ModelCard is inconsistent" }
         foreach ($field in @("display_name", "provider", "origin", "capabilities", "aliases")) { Assert-NotContains "vLLM ModelCard" ($card | ConvertTo-Json -Depth 8) $field }
     }
     foreach ($metric in @("vllm:num_requests_running", "vllm:num_requests_waiting", "vllm:kv_cache_usage_perc", "vllm:prompt_tokens_total", "vllm:generation_tokens_total", "vllm:request_success_total")) { Assert-Contains "vLLM metrics" $vllm["vLLM /metrics"].Body $metric }
     Assert-Contains "vLLM metrics" $vllm["vLLM /metrics"].Body "# TYPE vllm:request_success_total counter"
+    if ($vllm["vLLM /metrics"].Body -match 'model_name="(openai/gpt-oss-20b|meta-llama/)') { Add-Failure "vLLM metrics expose a second base model" }
 }
 catch { Add-Failure "vLLM JSON/metrics validation failed: $($_.Exception.Message)" }
+
+Assert-Contains "vLLM invocation stream" $vllm["vLLM invocation stream"].Body "data: "
+Assert-Contains "vLLM invocation stream" $vllm["vLLM invocation stream"].Body "data: [DONE]"
+if ($vllm["vLLM invocation stream"].Body -notmatch '"finish_reason":"stop"') { Add-Failure "vLLM stream is missing the terminal finish_reason" }
+
+try {
+    $metricsAfter = Invoke-PublicEndpoint "vLLM /metrics after requests" "GET" ($vllmBase + "/metrics") ""
+    Assert-Status $metricsAfter 200
+    if ($metricsAfter.Body -notmatch 'vllm:request_success_total\{finished_reason="stop",model_name="Qwen/Qwen3\.6-35B-A3B"\} [1-9][0-9]*') { Add-Failure "vLLM request_success_total did not increase" }
+}
+catch { Add-Failure "vLLM runtime metric validation failed: $($_.Exception.Message)" }
 
 if ($ollama["ollama /v1/models"].Body -eq $vllm["vLLM /v1/models"].Body) { Add-Failure "Ollama and vLLM model responses are identical" }
 if ($failures.Count -gt 0) {

@@ -46,11 +46,25 @@ mkdir -p "$DATA_DIR"
 export HP_DATA_DIR="$DATA_DIR"
 export HP_PUBLIC_BIND="${HP_PUBLIC_BIND:-0.0.0.0}"
 export HP_ADMIN_BIND="${HP_ADMIN_BIND:-0.0.0.0}"
-export HP_TLS_CERT="${HP_TLS_CERT:-$ROOT_DIR/runtime/secrets/admin.crt}"
-export HP_TLS_KEY="${HP_TLS_KEY:-$ROOT_DIR/runtime/secrets/admin.key}"
 export HP_PUBLIC_COOKIE_SECURE="${HP_PUBLIC_COOKIE_SECURE:-0}"
+
+# Native development installs may not have the installer-generated admin
+# certificate. Leave both variables unset in that case so the service uses
+# HTTP; when a caller supplies either TLS path, require a complete pair.
+if [[ -z "${HP_TLS_CERT:-}" && -z "${HP_TLS_KEY:-}" ]]; then
+  default_cert="$ROOT_DIR/runtime/secrets/admin.crt"
+  default_key="$ROOT_DIR/runtime/secrets/admin.key"
+  if [[ -f "$default_cert" && -f "$default_key" ]]; then
+    export HP_TLS_CERT="$default_cert"
+    export HP_TLS_KEY="$default_key"
+  fi
+elif [[ -z "${HP_TLS_CERT:-}" || -z "${HP_TLS_KEY:-}" || ! -f "$HP_TLS_CERT" || ! -f "$HP_TLS_KEY" ]]; then
+  echo "HP_TLS_CERT and HP_TLS_KEY must point to existing files when TLS is configured" >&2
+  exit 1
+fi
+
 if [[ -z "${HP_COOKIE_SECURE:-}" ]]; then
-  if [[ -f "$HP_TLS_CERT" && -f "$HP_TLS_KEY" ]]; then
+  if [[ -n "${HP_TLS_CERT:-}" && -n "${HP_TLS_KEY:-}" && -f "$HP_TLS_CERT" && -f "$HP_TLS_KEY" ]]; then
     export HP_COOKIE_SECURE=1
   else
     export HP_COOKIE_SECURE=0

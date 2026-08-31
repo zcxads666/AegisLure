@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -179,14 +180,11 @@ func (a *App) newAPIInvoke(w *captureWriter, r *http.Request, body []byte, sessi
 
 func (a *App) handleVLLM(w *captureWriter, r *http.Request, profile profiles.Profile, session Session, body []byte, obs *Observation) {
 	w.Header().Set("Server", "uvicorn")
-	if isVLLMReadRoute(obs.RouteTemplate) && r.Method != http.MethodGet {
-		a.writeMethodNotAllowed(w, model.ProductVLLM)
-		return
-	}
 	switch obs.RouteTemplate {
 	case "vllm.root":
 		a.writeJSON(w, http.StatusNotFound, map[string]string{"detail": "Not Found"})
 	case "vllm.health":
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		if len(a.store.ActiveEffects(session.ID, model.ProductVLLM, time.Now().UTC())) > 0 {
 			_ = a.store.MarkEffectsVerified(session.ID, model.ProductVLLM, "virtual_worker_degraded", time.Now().UTC())
 			obs.EffectOutcome = "verified"
@@ -199,13 +197,13 @@ func (a *App) handleVLLM(w *captureWriter, r *http.Request, profile profiles.Pro
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("OK"))
 	case "vllm.version":
-		a.writeJSON(w, http.StatusOK, map[string]string{"version": profile.DisplayVersion})
+		a.writeJSON(w, http.StatusOK, map[string]string{"version": profile.Persona.VLLM.Version})
 	case "vllm.metrics":
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(a.vllmMetrics()))
+		_, _ = w.Write([]byte(a.vllmMetrics(profile)))
 	case "openai.models":
-		a.writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": profiles.VLLMModelCards(a.cfg.InstanceKey)})
+		a.writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": profiles.VLLMModelCardsForProfile(a.cfg.InstanceKey, profile.Persona.VLLM)})
 	case "vllm.invocations", "openai.chat.completions", "openai.completions", "openai.responses", "openai.embeddings":
 		a.vllmInvoke(w, r, profile, session, body, obs)
 	case "vllm.tokenize":
@@ -213,32 +211,28 @@ func (a *App) handleVLLM(w *captureWriter, r *http.Request, profile profiles.Pro
 	case "vllm.detokenize":
 		a.writeJSON(w, http.StatusOK, map[string]any{"prompt": "The request was decoded."})
 	case "vllm.docs":
-		a.writeHTML(w, http.StatusOK, "vLLM OpenAI-Compatible Server", `<h1>vLLM OpenAI-Compatible Server</h1><p>Interactive API documentation.</p><p><a href="/openapi.json">OpenAPI schema</a></p>`)
+		if !profile.Persona.VLLM.DocsEnabled {
+			a.writeJSON(w, http.StatusNotFound, map[string]string{"detail": "Not Found"})
+			return
+		}
+		a.writeHTML(w, http.StatusOK, "vLLM OpenAI-Compatible Server", vllmDocsHTML)
 	case "vllm.openapi":
-		a.writeJSON(w, http.StatusOK, map[string]any{
-			"openapi": "3.1.0",
-			"info":    map[string]string{"title": "vLLM OpenAI-Compatible Server", "version": profile.DisplayVersion},
-			"paths": map[string]any{
-				"/health":              map[string]any{},
-				"/version":             map[string]any{},
-				"/v1/models":           map[string]any{},
-				"/v1/chat/completions": map[string]any{},
-				"/v1/completions":      map[string]any{},
-				"/v1/embeddings":       map[string]any{},
-				"/invocations":         map[string]any{},
-				"/tokenize":            map[string]any{},
-				"/detokenize":          map[string]any{},
-			},
-		})
+		if !profile.Persona.VLLM.DocsEnabled {
+			a.writeJSON(w, http.StatusNotFound, map[string]string{"detail": "Not Found"})
+			return
+		}
+		a.writeJSON(w, http.StatusOK, vllmOpenAPISchema(profile))
 	default:
 		a.writeJSON(w, http.StatusNotFound, map[string]any{"detail": "Not Found"})
 	}
 }
 
 func (a *App) vllmInvoke(w *captureWriter, r *http.Request, profile profiles.Profile, session Session, body []byte, obs *Observation) {
-	if _, ok := decodeJSONObject(body); !ok {
+	value, validationErr := validateVLLMRequest(r, body, obs.RouteTemplate)
+	if validationErr != nil {
+		a.notePersonaError(model.ProductVLLM, profile.Persona.VLLM.MetricsModelName())
 		a.startInvocation(obs, "invalid", false)
-		a.writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"detail": []any{map[string]any{"type": "json_invalid", "loc": []string{"body"}, "msg": "JSON decode error"}}})
+		a.writeJSON(w, validationErr.Status, map[string]any{"detail": validationErr.Detail})
 		return
 	}
 	token, auth := a.honeyAuth(r)
@@ -246,8 +240,9 @@ func (a *App) vllmInvoke(w *captureWriter, r *http.Request, profile profiles.Pro
 		obs.CredentialFingerprint = token.Hash
 	}
 	if obs.RouteTemplate == "vllm.invocations" && profile.Scenario == "legacy-gap" && auth == "missing" {
-		modelName, resolved := a.vllmModelName(a.requestModel(body))
+		modelName, resolved := a.vllmModelName(profile, stringValue(value["model"]))
 		if !resolved {
+			a.notePersonaError(model.ProductVLLM, profile.Persona.VLLM.MetricsModelName())
 			a.writeJSON(w, http.StatusNotFound, map[string]string{"detail": "The requested model does not exist."})
 			return
 		}
@@ -256,17 +251,22 @@ func (a *App) vllmInvoke(w *captureWriter, r *http.Request, profile profiles.Pro
 		obs.ExtraScore += 20
 		obs.ExtraReasons = append(obs.ExtraReasons, "vllm_invocations_auth_gap")
 		a.maybeDegradeVLLM(session, body, obs)
-		a.notePersonaInvocation(model.ProductVLLM, modelName, maxInt(8, len(body)/4), maxInt(6, len(personaResponseText(body, model.ProductVLLM))/4))
-		a.writeVLLMResponse(w, body, obs.RouteTemplate, streamRequested(r, body), obs, modelName)
+		a.beginPersonaRequest(model.ProductVLLM, profile.Persona.VLLM.MetricsModelName())
+		defer func() {
+			a.finishPersonaRequest(model.ProductVLLM, profile.Persona.VLLM.MetricsModelName(), obs.SimulatedInputTokens, obs.SimulatedOutputTokens, true)
+		}()
+		a.writeVLLMResponse(w, body, obs.RouteTemplate, streamValue(value), obs, profile.Persona.VLLM.MetricsModelName())
 		return
 	}
 	if profile.Scenario != "no-key" && auth != "valid_honey_key" {
+		a.notePersonaError(model.ProductVLLM, profile.Persona.VLLM.MetricsModelName())
 		a.startInvocation(obs, auth, false)
-		a.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": map[string]string{"message": "Unauthorized", "type": "authentication_error"}})
+		a.writeJSON(w, http.StatusUnauthorized, map[string]any{"detail": "Not authenticated"})
 		return
 	}
-	modelName, resolved := a.vllmModelName(a.requestModel(body))
+	modelName, resolved := a.vllmModelName(profile, stringValue(value["model"]))
 	if !resolved {
+		a.notePersonaError(model.ProductVLLM, profile.Persona.VLLM.MetricsModelName())
 		a.writeJSON(w, http.StatusNotFound, map[string]string{"detail": "The requested model does not exist."})
 		return
 	}
@@ -275,22 +275,16 @@ func (a *App) vllmInvoke(w *captureWriter, r *http.Request, profile profiles.Pro
 	obs.ExtraScore += 25
 	obs.ExtraReasons = append(obs.ExtraReasons, "vllm_synthetic_compute_use")
 	a.maybeDegradeVLLM(session, body, obs)
-	a.notePersonaInvocation(model.ProductVLLM, modelName, maxInt(8, len(body)/4), maxInt(6, len(personaResponseText(body, model.ProductVLLM))/4))
-	a.writeVLLMResponse(w, body, obs.RouteTemplate, streamRequested(r, body), obs, modelName)
+	metricModel := profile.Persona.VLLM.MetricsModelName()
+	a.beginPersonaRequest(model.ProductVLLM, metricModel)
+	defer func() {
+		a.finishPersonaRequest(model.ProductVLLM, metricModel, obs.SimulatedInputTokens, obs.SimulatedOutputTokens, true)
+	}()
+	a.writeVLLMResponse(w, body, obs.RouteTemplate, streamValue(value), obs, modelName)
 }
 
-func (a *App) vllmModelName(requested string) (string, bool) {
-	if requested == "" {
-		catalog := profiles.VLLMModelCards(a.cfg.InstanceKey)
-		if len(catalog) == 0 {
-			return "", false
-		}
-		return catalog[0].ID, true
-	}
-	if entry, ok := profiles.ResolveModel(model.ProductVLLM, requested); ok {
-		return entry.ID, true
-	}
-	return "", false
+func (a *App) vllmModelName(profile profiles.Profile, requested string) (string, bool) {
+	return profiles.ResolveVLLMServedModel(profile.Persona.VLLM, requested)
 }
 
 func isVLLMReadRoute(route string) bool {
@@ -323,9 +317,9 @@ func (a *App) handleOllama(w *captureWriter, r *http.Request, profile profiles.P
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("Ollama is running"))
 	case "ollama.version":
-		a.writeJSON(w, http.StatusOK, map[string]string{"version": profile.DisplayVersion})
+		a.writeJSON(w, http.StatusOK, map[string]string{"version": profile.Persona.Ollama.Version})
 	case "ollama.tags":
-		a.writeJSON(w, http.StatusOK, map[string]any{"models": profiles.OllamaModels(a.cfg.InstanceKey)})
+		a.writeJSON(w, http.StatusOK, map[string]any{"models": profiles.OllamaModelsForProfile(a.cfg.InstanceKey, profile.Persona.Ollama)})
 	case "ollama.ps":
 		activeNames := map[string]time.Time{}
 		for _, active := range a.activePersonaModels(model.ProductOllama, session.ID) {
@@ -340,9 +334,15 @@ func (a *App) handleOllama(w *captureWriter, r *http.Request, profile profiles.P
 				}
 			}
 		}
+		modelNames := make([]string, 0, len(activeNames))
+		for name := range activeNames {
+			modelNames = append(modelNames, name)
+		}
+		sort.Strings(modelNames)
 		models := []map[string]any{}
-		for name, expiresAt := range activeNames {
-			if item, ok := profiles.FindOllamaModel(a.cfg.InstanceKey, name); ok {
+		for _, name := range modelNames {
+			expiresAt := activeNames[name]
+			if item, ok := profiles.FindOllamaModelForProfile(a.cfg.InstanceKey, profile.Persona.Ollama, name); ok {
 				models = append(models, map[string]any{"name": item.Name, "model": item.Model, "size": item.Size, "digest": item.Digest, "details": item.Details, "expires_at": expiresAt.Format(time.RFC3339Nano), "size_vram": item.Size / 2})
 			}
 		}
@@ -359,17 +359,26 @@ func (a *App) handleOllama(w *captureWriter, r *http.Request, profile profiles.P
 			a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "model is required"})
 			return
 		}
-		item, ok := profiles.FindOllamaModel(a.cfg.InstanceKey, requested)
+		item, ok := profiles.FindOllamaModelForProfile(a.cfg.InstanceKey, profile.Persona.Ollama, requested)
 		if !ok {
 			a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "model not found"})
 			return
 		}
 		a.writeJSON(w, http.StatusOK, map[string]any{"modelfile": "FROM " + item.Name, "parameters": "", "template": "{{ .Response }}", "details": item.Details, "model_info": map[string]any{"general.architecture": item.Details.Family, "general.parameter_count": item.Details.ParameterSize}})
 	case "ollama.generate", "ollama.chat":
-		a.ollamaInvoke(w, body, session, obs, r)
+		a.ollamaInvoke(w, r, profile, body, session, obs)
 	case "ollama.embeddings":
-		item, ok := profiles.FindOllamaModel(a.cfg.InstanceKey, a.requestModel(body))
+		value, validationErr := validateOllamaOpenAIRequest(r, body, "openai.embeddings")
+		if validationErr != nil {
+			a.notePersonaError(model.ProductOllama, profile.Persona.Ollama.Version)
+			a.startInvocation(obs, "invalid", false)
+			a.writeJSON(w, validationErr.Status, map[string]string{"error": validationErr.Message})
+			return
+		}
+		item, ok := profiles.FindOllamaModelForProfile(a.cfg.InstanceKey, profile.Persona.Ollama, stringValue(value["model"]))
 		if !ok {
+			a.notePersonaError(model.ProductOllama, stringValue(value["model"]))
+			a.startInvocation(obs, "not_required", false)
 			a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "model not found"})
 			return
 		}
@@ -381,14 +390,14 @@ func (a *App) handleOllama(w *captureWriter, r *http.Request, profile profiles.P
 		obs.SimulatedOutputTokens = 0
 		obs.SimulatedCost = int64(obs.SimulatedInputTokens)
 		a.notePersonaInvocation(model.ProductOllama, item.Model, obs.SimulatedInputTokens, 0)
-		a.markPersonaModel(model.ProductOllama, session.ID, item.Name, 90*time.Second)
+		a.noteOllamaModelLoaded(session, item.Name, profile.Persona.Ollama.KeepAlive)
 		a.writeJSON(w, http.StatusOK, map[string]any{"model": item.Name, "embedding": []float64{0.0123, -0.0456, 0.0789}, "embeddings": [][]float64{{0.0123, -0.0456, 0.0789}}})
 	case "openai.models":
-		a.writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": profiles.OllamaOpenAIModels(a.cfg.InstanceKey)})
+		a.writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": profiles.OllamaOpenAIModelsForProfile(a.cfg.InstanceKey, profile.Persona.Ollama)})
 	case "openai.chat.completions", "openai.completions", "openai.responses", "openai.embeddings":
-		a.ollamaOpenAIInvoke(w, body, session, obs, r)
+		a.ollamaOpenAIInvoke(w, r, profile, body, session, obs)
 	case "ollama.pull", "ollama.push", "ollama.create", "ollama.copy", "ollama.delete", "ollama.blob":
-		a.ollamaTask(w, body, obs)
+		a.ollamaTask(w, r, profile, body, session, obs)
 	default:
 		a.writeJSON(w, http.StatusNotFound, map[string]any{"error": "route not found"})
 	}
@@ -403,14 +412,18 @@ func isOllamaReadRoute(route string) bool {
 	}
 }
 
-func (a *App) ollamaInvoke(w *captureWriter, body []byte, session Session, obs *Observation, r *http.Request) {
-	if _, ok := decodeJSONObject(body); !ok {
+func (a *App) ollamaInvoke(w *captureWriter, r *http.Request, profile profiles.Profile, body []byte, session Session, obs *Observation) {
+	request, validationErr := validateOllamaRequest(r, body, obs.RouteTemplate, profile.Persona.Ollama.KeepAlive)
+	if validationErr != nil {
+		a.notePersonaError(model.ProductOllama, profile.Persona.Ollama.Version)
 		a.startInvocation(obs, "invalid", false)
-		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		a.writeJSON(w, validationErr.Status, map[string]string{"error": validationErr.Message})
 		return
 	}
-	item, ok := profiles.FindOllamaModel(a.cfg.InstanceKey, a.requestModel(body))
+	item, ok := profiles.FindOllamaModelForProfile(a.cfg.InstanceKey, profile.Persona.Ollama, request.Model)
 	if !ok {
+		a.notePersonaError(model.ProductOllama, request.Model)
+		a.startInvocation(obs, "not_required", false)
 		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "model not found"})
 		return
 	}
@@ -420,34 +433,45 @@ func (a *App) ollamaInvoke(w *captureWriter, body []byte, session Session, obs *
 	a.startInvocation(obs, "not_required", true)
 	obs.ExtraScore += 25
 	obs.ExtraReasons = append(obs.ExtraReasons, "ollama_open_deployment_synthetic_use")
-	_ = a.store.AddEffect(model.VirtualEffect{ID: "ve_" + security.MustRandomToken(8), OwnerScope: "session", OwnerKey: session.ID, Product: model.ProductOllama, EffectType: "model_virtually_loaded", State: map[string]string{"model": publicModelName}, CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().Add(90 * time.Second).UTC()})
-	a.markPersonaModel(model.ProductOllama, session.ID, publicModelName, 90*time.Second)
+	a.noteOllamaModelLoaded(session, publicModelName, request.KeepAlive)
 	responseText := personaResponseText(body, model.ProductOllama)
 	inputTokens, outputTokens := maxInt(8, len(body)/4), maxInt(6, len(responseText)/4)
-	obs.SimulatedInputTokens, obs.SimulatedOutputTokens = inputTokens, outputTokens
-	obs.SimulatedCost = int64(inputTokens + outputTokens)
+	setInvocationMeasurements(obs, inputTokens, outputTokens, "synthetic_accepted")
 	a.notePersonaInvocation(model.ProductOllama, modelName, inputTokens, outputTokens)
-	value := a.jsonBody(body)
-	if stringValue(value["stream"]) == "true" || streamRequested(r, body) {
-		a.writeOllamaStream(w, body, publicModelName, obs)
+	if request.Stream {
+		doneReason := "stop"
+		if request.Unload {
+			doneReason = "unload"
+		}
+		a.writeOllamaStream(w, obs.RouteTemplate, publicModelName, responseText, inputTokens, outputTokens, obs, doneReason)
 		return
 	}
-	obs.ExecutionOutcome = "synthetic_accepted"
+	doneReason := "stop"
+	if request.Unload {
+		doneReason = "unload"
+	}
+	createdAt := time.Now().UTC().Format(time.RFC3339Nano)
+	response := map[string]any{"model": publicModelName, "created_at": createdAt, "done": true, "done_reason": doneReason, "total_duration": int64(28_000_000), "load_duration": int64(4_000_000), "prompt_eval_count": inputTokens, "prompt_eval_duration": int64(3_000_000), "eval_count": outputTokens, "eval_duration": int64(21_000_000)}
 	if obs.RouteTemplate == "ollama.generate" {
-		a.writeJSON(w, http.StatusOK, map[string]any{"model": publicModelName, "created_at": time.Now().UTC().Format(time.RFC3339Nano), "response": responseText, "done": true, "total_duration": 28000000, "prompt_eval_count": inputTokens, "eval_count": outputTokens})
-		return
+		response["response"] = responseText
+	} else {
+		response["message"] = map[string]string{"role": "assistant", "content": responseText}
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"model": publicModelName, "created_at": time.Now().UTC().Format(time.RFC3339Nano), "message": map[string]string{"role": "assistant", "content": responseText}, "done": true, "total_duration": 28000000, "prompt_eval_count": inputTokens, "eval_count": outputTokens})
+	a.writeJSON(w, http.StatusOK, response)
 }
 
-func (a *App) ollamaOpenAIInvoke(w *captureWriter, body []byte, session Session, obs *Observation, r *http.Request) {
-	if _, ok := decodeJSONObject(body); !ok {
+func (a *App) ollamaOpenAIInvoke(w *captureWriter, r *http.Request, profile profiles.Profile, body []byte, session Session, obs *Observation) {
+	value, validationErr := validateOllamaOpenAIRequest(r, body, obs.RouteTemplate)
+	if validationErr != nil {
+		a.notePersonaError(model.ProductOllama, profile.Persona.Ollama.Version)
 		a.startInvocation(obs, "invalid", false)
-		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		a.writeJSON(w, validationErr.Status, map[string]string{"error": validationErr.Message})
 		return
 	}
-	item, ok := profiles.FindOllamaModel(a.cfg.InstanceKey, a.requestModel(body))
+	item, ok := profiles.FindOllamaModelForProfile(a.cfg.InstanceKey, profile.Persona.Ollama, stringValue(value["model"]))
 	if !ok {
+		a.notePersonaError(model.ProductOllama, stringValue(value["model"]))
+		a.startInvocation(obs, "not_required", false)
 		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "model not found"})
 		return
 	}
@@ -456,38 +480,83 @@ func (a *App) ollamaOpenAIInvoke(w *captureWriter, body []byte, session Session,
 	a.startInvocation(obs, "not_required", true)
 	obs.ExtraScore += 25
 	obs.ExtraReasons = append(obs.ExtraReasons, "ollama_openai_compat_synthetic_use")
-	_ = a.store.AddEffect(model.VirtualEffect{ID: "ve_" + security.MustRandomToken(8), OwnerScope: "session", OwnerKey: session.ID, Product: model.ProductOllama, EffectType: "model_virtually_loaded", State: map[string]string{"model": item.Name}, CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().Add(90 * time.Second).UTC()})
-	a.markPersonaModel(model.ProductOllama, session.ID, item.Name, 90*time.Second)
-	a.writeOllamaOpenAIResponse(w, body, obs.RouteTemplate, streamRequested(r, body), obs, item.Name)
+	a.noteOllamaModelLoaded(session, item.Name, profile.Persona.Ollama.KeepAlive)
+	a.writeOllamaOpenAIResponse(w, body, obs.RouteTemplate, streamValue(value), obs, item.Name)
+	a.notePersonaInvocation(model.ProductOllama, modelName, obs.SimulatedInputTokens, obs.SimulatedOutputTokens)
 }
 
-func (a *App) ollamaTask(w *captureWriter, body []byte, obs *Observation) {
+func (a *App) ollamaTask(w *captureWriter, r *http.Request, profile profiles.Profile, body []byte, session Session, obs *Observation) {
 	if obs.RouteTemplate == "ollama.blob" {
 		// Blob probes are intentionally bounded and never persisted as files.
 		obs.ExtraScore += 15
 		a.startInvocation(obs, "not_required", true)
 		obs.ExtraReasons = append(obs.ExtraReasons, "ollama_bounded_blob_probe")
 		digest := ""
-		if models := profiles.OllamaModels(a.cfg.InstanceKey); len(models) > 0 {
+		if models := profiles.OllamaModelsForProfile(a.cfg.InstanceKey, profile.Persona.Ollama); len(models) > 0 {
 			digest = models[0].Digest
 		}
 		a.writeJSON(w, http.StatusOK, map[string]any{"status": "success", "digest": digest, "size": 256})
 		return
 	}
+	value, validationErr := validateOllamaTaskRequest(r, body, obs.RouteTemplate)
+	if validationErr != nil {
+		a.notePersonaError(model.ProductOllama, profile.Persona.Ollama.Version)
+		a.startInvocation(obs, "invalid", false)
+		a.writeJSON(w, validationErr.Status, map[string]string{"error": validationErr.Message})
+		return
+	}
+	name := stringValue(value["model"])
+	item, ok := profiles.FindOllamaModelForProfile(a.cfg.InstanceKey, profile.Persona.Ollama, name)
+	if !ok {
+		a.notePersonaError(model.ProductOllama, name)
+		a.startInvocation(obs, "not_required", false)
+		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "model not found"})
+		return
+	}
+	obs.ModelID, obs.ModelResolved = item.Model, true
 	a.startInvocation(obs, "not_required", true)
 	obs.ExtraScore += 35
 	obs.ExtraReasons = append(obs.ExtraReasons, "ollama_model_lifecycle_probe")
-	value := a.jsonBody(body)
-	name := a.validModelName(model.ProductOllama, stringValue(value["model"]))
-	item, _ := profiles.FindOllamaModel(a.cfg.InstanceKey, name)
 	if obs.RouteTemplate == "ollama.pull" {
+		pullStream := true
+		if raw, exists := value["stream"]; exists {
+			pullStream, _ = raw.(bool)
+		}
+		statuses := []string{"pulling manifest", "pulling layers", "verifying sha256 digest", "success"}
+		if !pullStream {
+			a.writeJSON(w, http.StatusOK, map[string]any{"status": "success", "digest": item.Digest, "completed": true})
+			return
+		}
 		w.Header().Set("Content-Type", "application/x-ndjson")
-		for _, status := range []string{"pulling manifest", "pulling layers", "verifying sha256 digest", "success"} {
+		for _, status := range statuses {
 			_ = json.NewEncoder(w).Encode(map[string]any{"status": status, "digest": item.Digest, "completed": status == "success"})
+			w.Flush()
 		}
 		return
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"status": "success", "task_id": "task_" + obs.InvocationID, "model": item.Name, "digest": item.Digest, "progress": []string{"pulling manifest", "pulling layers", "verifying sha256 digest", "success"}})
+}
+
+func (a *App) noteOllamaModelLoaded(session Session, modelName string, keepAlive time.Duration) {
+	if keepAlive <= 0 {
+		now := time.Now().UTC()
+		_ = a.store.ExpireEffects(session.ID, model.ProductOllama, "model_virtually_loaded", "model", modelName, now)
+		a.unmarkPersonaModel(model.ProductOllama, session.ID, modelName)
+		return
+	}
+	now := time.Now().UTC()
+	expiresAt := now.Add(keepAlive)
+	_ = a.store.AddEffect(model.VirtualEffect{
+		ID:         "ve_" + security.MustRandomToken(8),
+		OwnerScope: "session",
+		OwnerKey:   session.ID,
+		Product:    model.ProductOllama,
+		EffectType: "model_virtually_loaded",
+		State:      map[string]string{"model": modelName},
+		CreatedAt:  now,
+		ExpiresAt:  expiresAt,
+	})
+	a.markPersonaModel(model.ProductOllama, session.ID, modelName, keepAlive)
 }
 
 func (a *App) handleSGLang(w *captureWriter, r *http.Request, profile profiles.Profile, session Session, body []byte, obs *Observation) {
@@ -678,12 +747,16 @@ func (a *App) requireHoneyUser(w http.ResponseWriter, session Session) (model.Ho
 }
 
 func (a *App) methodNotAllowed(w *captureWriter) {
-	w.Header().Set("Allow", "POST")
+	if w.Header().Get("Allow") == "" {
+		w.Header().Set("Allow", http.MethodPost)
+	}
 	a.writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 }
 
 func (a *App) writeMethodNotAllowed(w *captureWriter, product string) {
-	w.Header().Set("Allow", "POST")
+	if w.Header().Get("Allow") == "" {
+		w.Header().Set("Allow", http.MethodPost)
+	}
 	if product == model.ProductVLLM {
 		a.writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"detail": "Method Not Allowed"})
 		return

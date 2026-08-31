@@ -3,6 +3,7 @@ package profiles
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 	"time"
 
 	"github.com/zcxads666/AegisLure/internal/model"
@@ -18,6 +19,23 @@ type OllamaDetails struct {
 	Families          []string `json:"families"`
 	ParameterSize     string   `json:"parameter_size"`
 	QuantizationLevel string   `json:"quantization_level"`
+}
+
+// OllamaModelProfile is the native metadata contract for one installed model.
+// It is deliberately independent from CatalogEntry so an Ollama response
+// cannot accidentally expose control-plane fields used by another persona.
+type OllamaModelProfile struct {
+	CanonicalName     string
+	Name              string
+	Model             string
+	Family            string
+	Families          []string
+	Format            string
+	ParameterSize     string
+	QuantizationLevel string
+	Size              int64
+	Digest            string
+	ModifiedAt        time.Time
 }
 
 type OllamaModel struct {
@@ -62,24 +80,43 @@ type VLLMModelCard struct {
 }
 
 func OllamaModels(seed string) []OllamaModel {
-	entries := Catalog(model.ProductOllama)
+	return OllamaModelsForProfile(seed, OllamaPersonaConfig{ModelCatalog: defaultOllamaModelProfiles()})
+}
+
+func OllamaModelsForProfile(seed string, persona OllamaPersonaConfig) []OllamaModel {
+	entries := persona.ModelCatalog
 	result := make([]OllamaModel, 0, len(entries))
 	for _, entry := range entries {
-		name := entry.ID
-		if len(entry.Aliases) > 0 && entry.Aliases[0] != "" {
-			name = entry.Aliases[0]
+		name := entry.Name
+		if name == "" {
+			name = entry.Model
 		}
-		modified := personaModelTime(seed, "ollama", entry.ID)
+		modelName := entry.Model
+		if modelName == "" {
+			modelName = name
+		}
+		canonical := entry.CanonicalName
+		if canonical == "" {
+			canonical = name
+		}
+		modified := entry.ModifiedAt
+		if modified.IsZero() {
+			modified = personaModelTime(seed, canonical)
+		}
+		digest := entry.Digest
+		if digest == "" {
+			digest = personaDigest(seed, "ollama", canonical)
+		}
 		result = append(result, OllamaModel{
 			Name:       name,
-			Model:      name,
+			Model:      modelName,
 			ModifiedAt: modified.Format(time.RFC3339Nano),
-			Size:       entry.ApproxSize,
-			Digest:     personaDigest(seed, "ollama", entry.ID),
+			Size:       entry.Size,
+			Digest:     digest,
 			Details: OllamaDetails{
 				ParentModel:       "",
-				Format:            "gguf",
-				Family:            entry.Architecture,
+				Format:            entry.Format,
+				Family:            entry.Family,
 				Families:          append([]string(nil), entry.Families...),
 				ParameterSize:     entry.ParameterSize,
 				QuantizationLevel: entry.QuantizationLevel,
@@ -90,7 +127,11 @@ func OllamaModels(seed string) []OllamaModel {
 }
 
 func OllamaOpenAIModels(seed string) []OllamaOpenAIModel {
-	models := OllamaModels(seed)
+	return OllamaOpenAIModelsForProfile(seed, OllamaPersonaConfig{ModelCatalog: defaultOllamaModelProfiles()})
+}
+
+func OllamaOpenAIModelsForProfile(seed string, persona OllamaPersonaConfig) []OllamaOpenAIModel {
+	models := OllamaModelsForProfile(seed, persona)
 	result := make([]OllamaOpenAIModel, 0, len(models))
 	for _, item := range models {
 		created, _ := time.Parse(time.RFC3339Nano, item.ModifiedAt)
@@ -100,17 +141,33 @@ func OllamaOpenAIModels(seed string) []OllamaOpenAIModel {
 }
 
 func VLLMModelCards(seed string) []VLLMModelCard {
-	entries := Catalog(model.ProductVLLM)
-	result := make([]VLLMModelCard, 0, len(entries))
-	for _, entry := range entries {
-		created := personaModelTime(seed, "vllm", entry.ID).Unix()
-		permissionID := "modelperm-" + digestHex(seed, "vllm-permission", entry.ID)[:16]
+	return VLLMModelCardsForProfile(seed, VLLMPersonaProfile{Version: "0.17.0", Model: Catalog(model.ProductVLLM)[0].ID, ServedModelNames: []string{Catalog(model.ProductVLLM)[0].ID}})
+}
+
+func VLLMModelCardsForProfile(seed string, persona VLLMPersonaProfile) []VLLMModelCard {
+	baseModel := persona.Model
+	if baseModel == "" {
+		baseModel = Catalog(model.ProductVLLM)[0].ID
+	}
+	servedNames := persona.ServedModelNames
+	if len(servedNames) == 0 {
+		servedNames = []string{baseModel}
+	}
+	created := personaModelTime(seed, baseModel).Unix()
+	result := make([]VLLMModelCard, 0, len(servedNames))
+	seen := make(map[string]bool, len(servedNames))
+	for _, name := range servedNames {
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		permissionID := "modelperm-" + digestHex(seed, "vllm-permission", name)[:16]
 		result = append(result, VLLMModelCard{
-			ID:      entry.ID,
+			ID:      name,
 			Object:  "model",
 			Created: created,
 			OwnedBy: "vllm",
-			Root:    entry.ID,
+			Root:    baseModel,
 			Parent:  nil,
 			Permission: []VLLMPermission{{
 				ID:                 permissionID,
@@ -131,29 +188,83 @@ func VLLMModelCards(seed string) []VLLMModelCard {
 	return result
 }
 
-func FindOllamaModel(seed, requested string) (OllamaModel, bool) {
-	for _, item := range OllamaModels(seed) {
-		if item.Name == requested || item.Model == requested {
-			return item, true
+// ResolveVLLMServedModel accepts the base model or one of the configured
+// served aliases and returns the first served name. vLLM uses that first name
+// for the response model and its model_name metric label, while accepting all
+// configured names at the API boundary.
+func ResolveVLLMServedModel(persona VLLMPersonaProfile, requested string) (string, bool) {
+	servedNames := persona.ServedModelNames
+	if len(servedNames) == 0 && persona.Model != "" {
+		servedNames = []string{persona.Model}
+	}
+	if len(servedNames) == 0 {
+		return "", false
+	}
+	if strings.TrimSpace(requested) == "" {
+		return servedNames[0], true
+	}
+	for _, name := range servedNames {
+		if name == requested {
+			return servedNames[0], true
 		}
 	}
-	for _, entry := range Catalog(model.ProductOllama) {
-		if entry.ID == requested {
-			if len(entry.Aliases) == 0 {
-				return OllamaModel{}, false
-			}
-			for _, item := range OllamaModels(seed) {
-				if item.Model == entry.Aliases[0] {
-					return item, true
-				}
-			}
+	return "", false
+}
+
+func FindOllamaModel(seed, requested string) (OllamaModel, bool) {
+	return FindOllamaModelForProfile(seed, OllamaPersonaConfig{ModelCatalog: defaultOllamaModelProfiles()}, requested)
+}
+
+func FindOllamaModelForProfile(seed string, persona OllamaPersonaConfig, requested string) (OllamaModel, bool) {
+	models := OllamaModelsForProfile(seed, persona)
+	for index, item := range models {
+		if item.Name == requested || item.Model == requested || persona.ModelCatalog[index].CanonicalName == requested {
+			return item, true
 		}
 	}
 	return OllamaModel{}, false
 }
 
-func personaModelTime(seed, persona, modelID string) time.Time {
-	digest := sha256.Sum256([]byte(seed + "\x00" + persona + "\x00" + modelID))
+func defaultOllamaModelProfiles() []OllamaModelProfile {
+	return []OllamaModelProfile{
+		{
+			CanonicalName:     "Qwen/Qwen3.6-35B-A3B",
+			Name:              "qwen3.6:35b-a3b",
+			Model:             "qwen3.6:35b-a3b",
+			Family:            "qwen35moe",
+			Families:          []string{"qwen35moe"},
+			Format:            "gguf",
+			ParameterSize:     "36B",
+			QuantizationLevel: "Q4_K_M",
+			Size:              24_000_000_000,
+		},
+		{
+			CanonicalName:     "openai/gpt-oss-20b",
+			Name:              "gpt-oss:20b",
+			Model:             "gpt-oss:20b",
+			Family:            "gptoss",
+			Families:          []string{"gptoss"},
+			Format:            "gguf",
+			ParameterSize:     "20B",
+			QuantizationLevel: "MXFP4",
+			Size:              13_200_000_000,
+		},
+		{
+			CanonicalName:     "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+			Name:              "llama4:scout",
+			Model:             "llama4:scout",
+			Family:            "llama",
+			Families:          []string{"llama"},
+			Format:            "gguf",
+			ParameterSize:     "109B",
+			QuantizationLevel: "Q4_K_M",
+			Size:              68_000_000_000,
+		},
+	}
+}
+
+func personaModelTime(seed, modelID string) time.Time {
+	digest := sha256.Sum256([]byte(seed + "\x00" + modelID))
 	base := time.Date(2026, time.June, 1, 8, 0, 0, 0, time.UTC)
 	days := int(digest[0]) % 78
 	hours := int(digest[1]) % 12

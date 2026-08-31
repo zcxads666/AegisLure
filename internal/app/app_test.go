@@ -167,8 +167,23 @@ func TestAdminPageUsesNonceAndCompletesOwnerSetupLogin(t *testing.T) {
 	if strings.Count(string(pageBody), "<!doctype html>") != 1 {
 		t.Fatalf("admin page should contain one document root, got %d", strings.Count(string(pageBody), "<!doctype html>"))
 	}
-	if !strings.Contains(string(pageBody), "font-family:\"Inter\",\"Noto Sans SC\"") || !strings.Contains(string(pageBody), "pointer-events:none") {
-		t.Fatal("admin page is missing the local font stack or non-blocking decoration layer")
+	if !strings.Contains(string(pageBody), "assets/app.js") || !strings.Contains(string(pageBody), "assets/styles.css") {
+		t.Fatal("admin page is missing its embedded application assets")
+	}
+	for _, asset := range []struct {
+		path        string
+		contentType string
+	}{
+		{path: "app.js", contentType: "text/javascript"},
+		{path: "styles.css", contentType: "text/css"},
+		{path: "htm-preact.module.js", contentType: "text/javascript"},
+	} {
+		resp := client.do(t, http.MethodGet, cfg.AdminPath+"assets/"+asset.path, nil, "")
+		assetBody, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || !strings.Contains(resp.Header.Get("Content-Type"), asset.contentType) || len(assetBody) == 0 {
+			t.Fatalf("admin asset %s unavailable: status=%d type=%q bytes=%d", asset.path, resp.StatusCode, resp.Header.Get("Content-Type"), len(assetBody))
+		}
 	}
 
 	base := cfg.AdminPath
@@ -206,7 +221,7 @@ func TestOllamaNativeAndVLLMGapRecordInvocationFacts(t *testing.T) {
 	profilesByName := profiles.Build(cfg)
 
 	ollamaClient := &inProcessClient{handler: a.publicHandler(profilesByName[model.ProductOllama]), cookies: map[string]string{}}
-	resp, ollama := doJSON(t, ollamaClient, http.MethodPost, "/api/generate", map[string]any{"model": "qwen3.6:35b-a3b", "prompt": "reply with ok"})
+	resp, ollama := doJSON(t, ollamaClient, http.MethodPost, "/api/generate", map[string]any{"model": "qwen3.6:35b-a3b", "prompt": "reply with ok", "stream": false})
 	if resp.StatusCode != http.StatusOK || ollama["response"] != "OK" || ollama["done"] != true {
 		t.Fatalf("unexpected Ollama response: %d %#v", resp.StatusCode, ollama)
 	}
@@ -250,7 +265,7 @@ func TestOllamaCompatibilityAndVirtualEffectVerification(t *testing.T) {
 	if !ok || len(models) != 3 {
 		t.Fatalf("unexpected Ollama catalog: %#v", tags)
 	}
-	resp, _ = doJSON(t, client, http.MethodPost, "/api/generate", map[string]any{"model": "qwen3.6:35b-a3b", "prompt": "hello"})
+	resp, _ = doJSON(t, client, http.MethodPost, "/api/generate", map[string]any{"model": "qwen3.6:35b-a3b", "prompt": "hello", "stream": false})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("generate status = %d", resp.StatusCode)
 	}
@@ -380,7 +395,7 @@ func TestAdminRecoveryCodeResetsPassword(t *testing.T) {
 	}
 }
 
-func TestPublicRequestBudgetsAndSecurityHeaders(t *testing.T) {
+func TestPublicRequestBudgetsAndPersonaHeaders(t *testing.T) {
 	a, cfg, _ := newTestApp(t, true)
 	profile := profiles.Build(cfg)[model.ProductOllama]
 	client := &inProcessClient{handler: a.publicHandler(profile), cookies: map[string]string{}}
@@ -389,8 +404,8 @@ func TestPublicRequestBudgetsAndSecurityHeaders(t *testing.T) {
 	if resp.StatusCode != http.StatusMethodNotAllowed || resp.Header.Get("Allow") != "POST" {
 		t.Fatalf("GET on POST-only route = %d allow=%q", resp.StatusCode, resp.Header.Get("Allow"))
 	}
-	if resp.Header.Get("X-Content-Type-Options") != "nosniff" || resp.Header.Get("Referrer-Policy") != "no-referrer" {
-		t.Fatalf("security headers missing: %#v", resp.Header)
+	if resp.Header.Get("X-Content-Type-Options") != "" || resp.Header.Get("Referrer-Policy") != "" || resp.Header.Get("Server") == "uvicorn" {
+		t.Fatalf("Ollama exposed a foreign persona header: %#v", resp.Header)
 	}
 	if cookies := resp.Cookies(); len(cookies) != 0 {
 		t.Fatalf("public Ollama endpoint must not set a session cookie: %#v", cookies)
@@ -505,11 +520,11 @@ func TestPublicPersonasHaveSeparateCleanModelSurfaces(t *testing.T) {
 		Object string                   `json:"object"`
 		Data   []profiles.VLLMModelCard `json:"data"`
 	}
-	if err := json.Unmarshal(vllmBody, &cards); err != nil || cards.Object != "list" || len(cards.Data) != 3 {
+	if err := json.Unmarshal(vllmBody, &cards); err != nil || cards.Object != "list" || len(cards.Data) != 1 {
 		t.Fatalf("invalid vLLM model list: %s: %#v", err, cards)
 	}
 	for _, card := range cards.Data {
-		if card.Object != "model" || card.OwnedBy != "vllm" || card.Root != card.ID || len(card.Permission) != 1 {
+		if card.Object != "model" || card.OwnedBy != "vllm" || card.ID != "Qwen/Qwen3.6-35B-A3B" || card.Root != "Qwen/Qwen3.6-35B-A3B" || len(card.Permission) != 1 {
 			t.Fatalf("invalid vLLM ModelCard: %#v", card)
 		}
 	}
@@ -524,6 +539,9 @@ func TestVLLMMetricsAndHeadersStayConsistent(t *testing.T) {
 	for _, endpoint := range []string{"/", "/health", "/version", "/v1/models", "/metrics", "/docs", "/openapi.json", "/unknown"} {
 		resp, body := doRawJSON(t, client, http.MethodGet, endpoint, nil, nil)
 		assertPublicResponseClean(t, resp, body)
+		if (endpoint == "/docs" || endpoint == "/openapi.json" || endpoint == "/") && resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("vLLM %s status = %d, want 404", endpoint, resp.StatusCode)
+		}
 		if resp.Header.Get("Server") != "uvicorn" {
 			t.Fatalf("vLLM %s missing consistent Server header: %#v", endpoint, resp.Header)
 		}
@@ -540,7 +558,7 @@ func TestVLLMMetricsAndHeadersStayConsistent(t *testing.T) {
 	if strings.Contains(strings.ToLower(string(metricsBefore)), "synthetic") || strings.Contains(string(metricsBefore), "decoy=") {
 		t.Fatal("vLLM metrics leaked internal marker")
 	}
-	resp, _ = doJSON(t, client, http.MethodPost, "/invocations", map[string]any{"model": "Qwen/Qwen3.6-35B-A3B", "prompt": "reply with ok"})
+	resp, _ = doJSON(t, client, http.MethodPost, "/invocations", map[string]any{"model": "Qwen/Qwen3.6-35B-A3B", "prompt": "reply with ok", "stream": false})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("vLLM invocation status = %d", resp.StatusCode)
 	}

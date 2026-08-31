@@ -265,6 +265,24 @@ func (s *Store) MarkEffectsVerified(ownerKey, product, effectType string, now ti
 	return verified
 }
 
+// ExpireEffects ends matching virtual effects without removing their audit
+// records. It is used when a protocol request explicitly unloads a model.
+func (s *Store) ExpireEffects(ownerKey, product, effectType, stateKey, stateValue string, now time.Time) int {
+	expired := 0
+	_ = s.Update(func(state *model.State) error {
+		for id, effect := range state.Effects {
+			if effect.OwnerKey != ownerKey || effect.Product != product || effect.EffectType != effectType || effect.State[stateKey] != stateValue || !effect.ExpiresAt.After(now) {
+				continue
+			}
+			effect.ExpiresAt = now
+			state.Effects[id] = effect
+			expired++
+		}
+		return nil
+	})
+	return expired
+}
+
 func (s *Store) AppendEvent(event model.Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
