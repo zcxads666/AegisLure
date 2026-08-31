@@ -13,11 +13,13 @@ AegisLure 提供五类安全的 clean-room 协议仿真：New API、vLLM、Ollam
 - `exact/contains/starts_with/ends_with` 探活规则的安全契约；
 - vLLM `secured/legacy-gap/no-key` 语义、Ollama 原生/ OpenAI 兼容接口、SGLang HTTP 管理面和 LocalAI 模型管理面；
 - New API 风格的 guest → 注册 → 签到 → honey key → 合成调用 → 日志链；
+- 可选、默认关闭的 GitHub/Discord/LinuxDO 官方 OAuth broker：只保存稳定 subject HMAC，支持本地身份解除关联/删除；
 - Argon2id 管理员密码（最低 8 字符）、恢复码、隐藏路径、事件/IP JSON/CSV/plain 导出；
-- Compose 安全基线、随机管理端口/入口、`install.sh`、`hpctl` 和备份命令。
+- 本地只读 PromptPot/T-Pot source registry、幂等 JSONL 导入、IP/身份人工审批和 TTL 导出任务；
+- Compose 安全基线、随机管理端口/入口、TLS/Host 限制、事件保留、`install.sh`、`hpctl`、备份/恢复和离线 SPDX SBOM。
 - Ollama/vLLM persona compatibility suite：PowerShell 指纹检查脚本位于 `scripts/check-ai.ps1`，覆盖公共 Header、错误格式、模型列表、metrics 和 anti-leak 规则；macOS 可运行 `scripts/check-ai-mac.sh` 做同等检查。
 
-`runtime/`、`data/` 和密钥不进入 Git。当前管理初始化不使用 Bootstrap code 或 TOTP；这是为了降低操作门槛，生产部署仍应把隐藏入口放在 VPN/可信网络后。生产部署前仍需完成正式证书、端口池/hostd、OAuth broker、PostgreSQL/Hive、审计哈希远端复制和外部渗透验收；仓库默认不提供任何真实 OAuth client secret，也不打开 provider 出站能力。
+`runtime/`、`data/` 和密钥不进入 Git。当前管理初始化不使用 Bootstrap code 或 TOTP；这是为了降低操作门槛，生产部署仍应把隐藏入口放在 VPN/可信网络后。OAuth broker 已作为可选单机能力实现，但默认关闭，且只允许固定官方端点。正式发布前仍需完成正式证书、主机防火墙/VPN、no-egress 与 OAuth 出站抓包验收、不可变镜像签名、备份恢复演练、外部渗透和 2–4 周稳定性观察；PostgreSQL/Hive、审计哈希远端复制和 sensor 联动属于本请求明确排除的联机设计。
 
 ## 本地运行
 
@@ -58,6 +60,12 @@ macOS 上启动默认的 Ollama/vLLM profile 后，可直接运行 HTTP 指纹�
 <admin_path>/admin/api/v1/dashboard
 <admin_path>/admin/api/v1/events
 <admin_path>/admin/api/v1/indicators/ips?min_score=40
+<admin_path>/admin/api/v1/indicators/{id}:approve|ignore|revoke
+<admin_path>/admin/api/v1/indicators/ips?status=approved&format=json|csv|plain|stix2|nftables
+<admin_path>/admin/api/v1/exports
+<admin_path>/admin/api/v1/import-sources
+<admin_path>/admin/api/v1/identity-indicators
+<admin_path>/admin/api/v1/model-catalogs
 <admin_path>/admin/api/v1/instances/<profile>/(start|stop|restart)
 ```
 
@@ -99,7 +107,7 @@ Windows 的 Hyper-V 防火墙规则中允许对应 TCP 端口。WSL NAT 模式�
 `wsl.exe -- hostname -I` 得到的 WSL 地址；该地址不一定是 Windows 以太网卡地址，不能把它
 与 Windows 主机 IP 混用。Docker Compose 部署仍可单独使用。
 
-`compose.yaml` 暴露五个候选蜜罐端口和一个随机高位管理端口。实际是否监听由 `HP_PROFILES` 决定，未启用的候选端口不会返回应用响应。容器采用非 root、只读 rootfs、tmpfs、drop-all-capabilities、no-new-privileges、资源上限和隔离网络；没有 Docker socket、host PID/network、GPU 或模型卷。端口计划由 `hpctl ports plan/apply` 生成并校验签名；apply 后需显式重启 Compose 服务。
+`compose.yaml` 为五个 profile 各暴露默认端口加 7 个候选端口（共 40 个公开 profile 映射）和一个随机高位管理端口。实际是否监听由 `HP_PROFILES` 决定，未启用的候选端口不会返回应用响应。容器采用非 root、只读 rootfs、tmpfs、drop-all-capabilities、no-new-privileges、资源上限和隔离网络；没有 Docker socket、host PID/network、GPU 或模型卷。端口计划由 `hpctl ports plan/apply` 生成并校验签名；apply 后需显式重启 Compose 服务。
 
 ## 安全边界
 
@@ -107,11 +115,11 @@ Windows 的 Hyper-V 防火墙规则中允许对应 TCP 端口。WSL NAT 模式�
 - URL 只做语法/IP 类别判断，不做 DNS、连接、重定向或下载。
 - GGUF、pickle、torch、音频/视频和归档输入只保存有限哈希/分类信息，不进入危险解析库。
 - `Authorization`、Cookie、密码、验证码和 token 只进入 keyed fingerprint 或固定 `[REDACTED]`；事件预览上限 2KB。
-- 管理员 OAuth/跨站身份 feed 不是本 baseline 的默认能力；Discord 和未经许可的 LinuxDO 跨站用途必须保持 local-only。
+- OAuth 只允许跳转到官方授权页；默认关闭，Discord 和 LinuxDO 身份保持 local-only，未经批准的跨站 feed 在服务端拒绝。
 - 风险分只表示观测证据，不等同于真实身份；单次访问、普通 OAuth 登录或单次公开服务调用不会自动封禁。
 
 ## 参考代码
 
 `new-api` 上游派生仓库由部署者在项目外部的受控源码目录维护，AegisLure 本仓库中的 `new-api` profile 只模拟安全的用户侧业务契约。任何要合并进上游派生版的变更，都必须保留 AGPLv3、上游历史、署名、原仓库链接和对应 source-code 入口，并通过出站/secret/危险解析审查。
 
-架构与发布门见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，运维命令见 [docs/OPERATIONS.md](docs/OPERATIONS.md)，安全边界见 [SECURITY.md](SECURITY.md)。
+架构与发布门见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，运维命令见 [docs/OPERATIONS.md](docs/OPERATIONS.md)，隐私与数据生命周期见 [docs/PRIVACY.md](docs/PRIVACY.md)，发布清单见 [docs/RELEASE.md](docs/RELEASE.md)，第三方归属见 [NOTICE](NOTICE)，安全边界见 [SECURITY.md](SECURITY.md)。

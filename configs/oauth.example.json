@@ -1,0 +1,28 @@
+{
+  "providers": {
+    "github": {
+      "enabled": false,
+      "client_id": "replace-with-provider-client-id",
+      "client_secret": "replace-with-provider-client-secret",
+      "redirect_url": "https://aegislure.example.test/api/oauth/github/callback",
+      "scopes": [],
+      "policy_mode": "local_only"
+    },
+    "discord": {
+      "enabled": false,
+      "client_id": "replace-with-provider-client-id",
+      "client_secret": "replace-with-provider-client-secret",
+      "redirect_url": "https://aegislure.example.test/api/oauth/discord/callback",
+      "scopes": ["identify"],
+      "policy_mode": "local_only"
+    },
+    "linuxdo": {
+      "enabled": false,
+      "client_id": "replace-with-provider-client-id",
+      "client_secret": "replace-with-provider-client-secret",
+      "redirect_url": "https://aegislure.example.test/api/oauth/linuxdo/callback",
+      "scopes": ["openid"],
+      "policy_mode": "pending_approval"
+    }
+  }
+}

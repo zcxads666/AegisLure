@@ -1,0 +1,33 @@
+AegisLure third-party and attribution notice
+
+This repository is a clean-room, protocol-level emulator. It does not include
+the source code of New API, vLLM, Ollama, SGLang, or LocalAI, and it does not
+run their model runtimes. Product names and public contract references are
+used to identify the compatibility surfaces being emulated.
+
+New API
+-------
+The public New API project is maintained at:
+https://github.com/QuantumNous/new-api
+
+The New API project is licensed under AGPLv3 and has its own attribution and
+source-code obligations. The New API profile in this repository is not an
+upstream source fork. Any separately distributed upstream-derived deployment
+must preserve the applicable upstream license, history, attribution, source
+offer and modification notices for the exact code it distributes.
+
+Other referenced projects
+-------------------------
+- vLLM: Apache License 2.0; https://github.com/vllm-project/vllm
+- Ollama: see the applicable project notices at https://github.com/ollama/ollama
+- SGLang: Apache License 2.0; https://github.com/sgl-project/sglang
+- LocalAI: MIT License; https://github.com/mudler/LocalAI
+- Preact: MIT License; copyright Jason Miller; see
+  internal/app/ui/vendor/THIRD_PARTY_NOTICES.txt
+- HTM: Apache License 2.0; see
+  internal/app/ui/vendor/THIRD_PARTY_NOTICES.txt
+
+The complete Go module dependency inventory is generated locally with
+`make sbom` from the committed go.mod/go.sum. Dependency license fields in
+that inventory are marked NOASSERTION and require the distributor's own legal
+review before publication.
