@@ -71,7 +71,10 @@ type App struct {
 	publicSem      chan struct{}
 	personaMu      sync.Mutex
 	personaRuntime map[string]*personaRuntimeState
-	servers        []*http.Server
+	serverMu       sync.RWMutex
+	profileServers map[string]*http.Server
+	profilePorts   map[string]net.Listener
+	adminServer    *http.Server
 }
 
 type rateBucket struct {
@@ -81,38 +84,39 @@ type rateBucket struct {
 
 func New(cfg *config.Config, st *store.Store) *App {
 	return &App{
-		cfg: cfg, store: st, profiles: profiles.Build(cfg), log: log.New(os.Stdout, "aegislure ", log.LstdFlags|log.LUTC), sessions: make(map[string]Session), anonymous: make(map[string]string), adminSessions: make(map[string]AdminSession), rateBuckets: make(map[string]rateBucket), publicSem: make(chan struct{}, 64), personaRuntime: make(map[string]*personaRuntimeState),
+		cfg: cfg, store: st, profiles: profiles.Build(cfg), log: log.New(os.Stdout, "aegislure ", log.LstdFlags|log.LUTC), sessions: make(map[string]Session), anonymous: make(map[string]string), adminSessions: make(map[string]AdminSession), rateBuckets: make(map[string]rateBucket), publicSem: make(chan struct{}, 64), personaRuntime: make(map[string]*personaRuntimeState), profileServers: make(map[string]*http.Server), profilePorts: make(map[string]net.Listener),
 	}
 }
 
 func (a *App) Start() error {
-	listeners := make([]net.Listener, 0, len(a.cfg.EnabledProfiles)+1)
+	a.serverMu.Lock()
+	defer a.serverMu.Unlock()
+	if a.adminServer != nil {
+		return errors.New("service already started")
+	}
+	started := make([]string, 0, len(a.cfg.EnabledProfiles))
 	for _, name := range a.cfg.EnabledProfiles {
-		profile, ok := a.profiles[name]
-		if !ok {
-			return fmt.Errorf("unknown profile %q", name)
-		}
-		if profile.DefaultPort == 0 {
-			return fmt.Errorf("profile %q has no configured port", name)
-		}
-		addr := fmt.Sprintf("%s:%d", a.cfg.PublicBind, profile.DefaultPort)
-		listener, err := net.Listen("tcp", addr)
-		if err != nil {
-			for _, bound := range listeners {
-				_ = bound.Close()
+		if err := a.startProfileLocked(name); err != nil {
+			for _, startedName := range started {
+				if server := a.profileServers[startedName]; server != nil {
+					_ = server.Close()
+				}
+				delete(a.profileServers, startedName)
+				delete(a.profilePorts, startedName)
 			}
-			return fmt.Errorf("bind %s: %w", addr, err)
+			return err
 		}
-		listeners = append(listeners, listener)
-		server := &http.Server{Addr: addr, Handler: a.publicHandler(profile), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 35 * time.Second, IdleTimeout: 15 * time.Second, MaxHeaderBytes: 32 * 1024}
-		a.servers = append(a.servers, server)
-		go a.serve(server, listener, false)
+		started = append(started, name)
 	}
 	adminAddr := fmt.Sprintf("%s:%d", a.cfg.AdminBind, a.cfg.AdminPort)
 	adminListener, err := net.Listen("tcp", adminAddr)
 	if err != nil {
-		for _, bound := range listeners {
-			_ = bound.Close()
+		for _, startedName := range started {
+			if server := a.profileServers[startedName]; server != nil {
+				_ = server.Close()
+			}
+			delete(a.profileServers, startedName)
+			delete(a.profilePorts, startedName)
 		}
 		return fmt.Errorf("bind admin %s: %w", adminAddr, err)
 	}
@@ -120,18 +124,67 @@ func (a *App) Start() error {
 		cert, certErr := tls.LoadX509KeyPair(certFile, keyFile)
 		if certErr != nil {
 			_ = adminListener.Close()
-			for _, bound := range listeners {
-				_ = bound.Close()
+			for _, startedName := range started {
+				if server := a.profileServers[startedName]; server != nil {
+					_ = server.Close()
+				}
+				delete(a.profileServers, startedName)
+				delete(a.profilePorts, startedName)
 			}
 			return fmt.Errorf("load admin TLS certificate: %w", certErr)
 		}
 		adminListener = tls.NewListener(adminListener, &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}, CurvePreferences: []tls.CurveID{tls.X25519, tls.CurveP256}})
 	}
-	listeners = append(listeners, adminListener)
 	admin := &http.Server{Addr: adminAddr, Handler: a.adminHandler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 35 * time.Second, IdleTimeout: 15 * time.Second, MaxHeaderBytes: 32 * 1024}
-	a.servers = append(a.servers, admin)
+	a.adminServer = admin
 	go a.serve(admin, adminListener, true)
 	return nil
+}
+
+func (a *App) startProfileLocked(name string) error {
+	profile, ok := a.profiles[name]
+	if !ok {
+		return fmt.Errorf("unknown profile %q", name)
+	}
+	if profile.DefaultPort == 0 {
+		return fmt.Errorf("profile %q has no configured port", name)
+	}
+	if _, running := a.profileServers[name]; running {
+		return nil
+	}
+	addr := fmt.Sprintf("%s:%d", a.cfg.PublicBind, profile.DefaultPort)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("bind %s: %w", addr, err)
+	}
+	server := &http.Server{Addr: addr, Handler: a.publicHandler(profile), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 35 * time.Second, IdleTimeout: 15 * time.Second, MaxHeaderBytes: 32 * 1024}
+	a.profileServers[name] = server
+	a.profilePorts[name] = listener
+	go a.serve(server, listener, false)
+	return nil
+}
+
+func (a *App) stopProfile(name string) error {
+	a.serverMu.Lock()
+	server, running := a.profileServers[name]
+	if running {
+		delete(a.profileServers, name)
+		delete(a.profilePorts, name)
+	}
+	a.serverMu.Unlock()
+	if !running {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return server.Shutdown(ctx)
+}
+
+func (a *App) startProfile(name string) error {
+	a.serverMu.Lock()
+	err := a.startProfileLocked(name)
+	a.serverMu.Unlock()
+	return err
 }
 
 func (a *App) serve(server *http.Server, listener net.Listener, admin bool) {
@@ -143,8 +196,20 @@ func (a *App) serve(server *http.Server, listener net.Listener, admin bool) {
 }
 
 func (a *App) Shutdown(ctx context.Context) error {
+	a.serverMu.Lock()
+	servers := make([]*http.Server, 0, len(a.profileServers)+1)
+	for name, server := range a.profileServers {
+		servers = append(servers, server)
+		delete(a.profileServers, name)
+		delete(a.profilePorts, name)
+	}
+	if a.adminServer != nil {
+		servers = append(servers, a.adminServer)
+		a.adminServer = nil
+	}
+	a.serverMu.Unlock()
 	var first error
-	for _, server := range a.servers {
+	for _, server := range servers {
 		if err := server.Shutdown(ctx); err != nil && first == nil {
 			first = err
 		}

@@ -1,0 +1,7 @@
+This directory contains the browser-ready standalone build of:
+
+- Preact, MIT License, Copyright (c) 2015-present Jason Miller
+- HTM, Apache License 2.0, Copyright (c) 2017-present The Preact Authors
+
+The source packages and complete license texts are available through the
+dependency manifest in internal/app/ui/package.json.
