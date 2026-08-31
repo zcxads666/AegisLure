@@ -184,6 +184,9 @@ func TestAdminPageUsesNonceAndCompletesOwnerSetupLogin(t *testing.T) {
 		if resp.StatusCode != http.StatusOK || !strings.Contains(resp.Header.Get("Content-Type"), asset.contentType) || len(assetBody) == 0 {
 			t.Fatalf("admin asset %s unavailable: status=%d type=%q bytes=%d", asset.path, resp.StatusCode, resp.Header.Get("Content-Type"), len(assetBody))
 		}
+		if resp.Header.Get("Cache-Control") != "no-store" {
+			t.Fatalf("admin asset %s must not be cached across binary upgrades: cache-control=%q", asset.path, resp.Header.Get("Cache-Control"))
+		}
 	}
 
 	base := cfg.AdminPath

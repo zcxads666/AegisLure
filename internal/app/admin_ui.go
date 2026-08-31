@@ -65,7 +65,10 @@ func (a *App) writeAdminAsset(w http.ResponseWriter, path string) {
 	}
 	setSecurityHeaders(w)
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Cache-Control", "public, max-age=3600")
+	// The UI assets are embedded in the binary and can change between local
+	// restarts. Do not let a stale app.js survive a server upgrade and keep
+	// executing an older route renderer in an already-open admin console.
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(content)
