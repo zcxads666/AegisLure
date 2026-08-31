@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"sort"
@@ -571,16 +572,33 @@ func (a *App) handleSGLang(w *captureWriter, r *http.Request, profile profiles.P
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("sglang:request_success_total 42\nsglang:cache_hit_rate 0.61\n"))
 	case "sglang.docs", "sglang.redoc":
-		a.writeHTML(w, http.StatusOK, "SGLang API", `<h1>SGLang API</h1><p>Interactive API documentation.</p><p>OpenAPI schema: <a href="/openapi.json">/openapi.json</a></p>`)
+		a.writeHTML(w, http.StatusOK, "SGLang API", `<h1>SGLang API</h1><p>Interactive API documentation.</p><p>OpenAPI schema: <a href="/openapi.json">/openapi.json</a></p><p>OpenAI-compatible and native generation endpoints are available.</p>`)
 	case "sglang.openapi":
-		a.writeJSON(w, http.StatusOK, map[string]any{"openapi": "3.1.0", "info": map[string]string{"title": "SGLang OpenAI Compatible API", "version": profile.DisplayVersion}, "paths": map[string]any{"/generate": map[string]any{}, "/v1/chat/completions": map[string]any{}, "/server_info": map[string]any{}, "/load_lora_adapter_from_tensors": map[string]any{}}})
+		a.writeJSON(w, http.StatusOK, sglangOpenAPISchema(profile))
 	case "sglang.server_info":
-		a.writeJSON(w, http.StatusOK, map[string]any{"model_path": "/models/Qwen/Qwen3.6-35B-A3B", "api_key": a.derivedHoneyKey(model.ProductSGLang), "ssl_keyfile": "/run/secrets/server.key", "rank": 0, "world_size": 1})
+		info := map[string]any{"model_path": "/models/Qwen/Qwen3.6-35B-A3B", "api_key": a.derivedHoneyKey(model.ProductSGLang), "ssl_keyfile": "/run/secrets/server.key", "rank": 0, "world_size": 1, "tp_size": 1, "pp_size": 1}
+		for _, effect := range a.store.ActiveEffects(session.ID, model.ProductSGLang, time.Now().UTC()) {
+			switch effect.EffectType {
+			case "sglang_lora_adapter_virtualized":
+				info["lora_adapters"] = []string{"adapter-canary"}
+				obs.EffectOutcome = "verified"
+				_ = a.store.MarkEffectsVerified(session.ID, model.ProductSGLang, effect.EffectType, time.Now().UTC())
+			case "sglang_weight_update_virtualized":
+				info["weight_revision"] = "weight-canary-active"
+				obs.EffectOutcome = "verified"
+				_ = a.store.MarkEffectsVerified(session.ID, model.ProductSGLang, effect.EffectType, time.Now().UTC())
+			}
+		}
+		if obs.EffectOutcome == "verified" {
+			obs.ExtraScore += 15
+			obs.ExtraReasons = append(obs.ExtraReasons, "post_call_effect_verification")
+		}
+		a.writeJSON(w, http.StatusOK, info)
 	case "openai.models":
 		a.writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": profiles.Catalog(model.ProductSGLang)})
-	case "sglang.generate", "openai.chat.completions", "openai.completions", "openai.embeddings":
+	case "sglang.generate", "openai.chat.completions", "openai.completions", "openai.responses", "openai.embeddings":
 		a.sglangInvoke(w, r, profile, body, obs)
-	case "sglang.lora.load", "sglang.weights.update":
+	case "sglang.lora.load", "sglang.weights.update", "sglang.cache.flush", "sglang.weights.get":
 		a.sglangAdminAction(w, r, session, body, obs)
 	default:
 		a.writeJSON(w, http.StatusNotFound, map[string]any{"detail": "Not Found"})
@@ -611,10 +629,16 @@ func (a *App) sglangInvoke(w *captureWriter, r *http.Request, profile profiles.P
 func (a *App) sglangAdminAction(w *captureWriter, r *http.Request, session Session, body []byte, obs *Observation) {
 	key := a.bearer(r)
 	if key == "" {
+		a.startInvocation(obs, "missing", false)
+		obs.ExtraScore += 25
+		obs.ExtraReasons = append(obs.ExtraReasons, "sglang_admin_route_without_key")
 		a.writeJSON(w, http.StatusUnauthorized, map[string]string{"detail": "Not authenticated"})
 		return
 	}
 	if key != a.derivedHoneyKey(model.ProductSGLang) {
+		a.startInvocation(obs, "invalid", false)
+		obs.ExtraScore += 25
+		obs.ExtraReasons = append(obs.ExtraReasons, "sglang_admin_route_invalid_key")
 		a.writeJSON(w, http.StatusForbidden, map[string]string{"detail": "Invalid admin key"})
 		return
 	}
@@ -622,8 +646,26 @@ func (a *App) sglangAdminAction(w *captureWriter, r *http.Request, session Sessi
 	a.startInvocation(obs, "leaked_key_reused", true)
 	obs.ExtraScore += 55
 	obs.ExtraReasons = append(obs.ExtraReasons, "sglang_server_info_honey_key_reused")
-	_ = a.store.AddEffect(model.VirtualEffect{ID: "ve_" + security.MustRandomToken(8), OwnerScope: "session", OwnerKey: session.ID, Product: model.ProductSGLang, EffectType: "weight_export_canary_created", State: map[string]string{"canary": "weight_canary_" + obs.InvocationID}, CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().Add(15 * time.Minute).UTC()})
-	a.writeJSON(w, http.StatusOK, map[string]any{"status": "accepted", "task_id": "lora_" + obs.InvocationID, "weight_id": "weight_" + obs.InvocationID})
+	effectType := "sglang_weight_update_virtualized"
+	if obs.RouteTemplate == "sglang.lora.load" {
+		effectType = "sglang_lora_adapter_virtualized"
+	} else if obs.RouteTemplate == "sglang.cache.flush" {
+		effectType = "sglang_cache_flush_virtualized"
+	} else if obs.RouteTemplate == "sglang.weights.get" {
+		effectType = "sglang_weight_metadata_canary"
+	}
+	obs.EffectOutcome = "applied"
+	_ = a.store.AddEffect(model.VirtualEffect{ID: "ve_" + security.MustRandomToken(8), OwnerScope: "session", OwnerKey: session.ID, Product: model.ProductSGLang, EffectType: effectType, State: map[string]string{"canary": "weight_canary_" + obs.InvocationID, "request_hash": security.Fingerprint(a.cfg.InstanceKey, string(body))[:20]}, CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().Add(15 * time.Minute).UTC()})
+	switch obs.RouteTemplate {
+	case "sglang.cache.flush":
+		a.writeJSON(w, http.StatusOK, map[string]any{"status": "success", "flushed": true, "task_id": "cache_" + obs.InvocationID})
+	case "sglang.weights.get":
+		a.writeJSON(w, http.StatusOK, map[string]any{"status": "success", "weights": []map[string]any{{"name": "weight_canary", "revision": "virtual"}}})
+	case "sglang.lora.load":
+		a.writeJSON(w, http.StatusOK, map[string]any{"status": "accepted", "task_id": "lora_" + obs.InvocationID, "adapter_name": "adapter-canary", "weight_id": "weight_" + obs.InvocationID})
+	default:
+		a.writeJSON(w, http.StatusOK, map[string]any{"status": "accepted", "task_id": "weights_" + obs.InvocationID, "weight_id": "weight_" + obs.InvocationID})
+	}
 }
 
 func (a *App) handleLocalAI(w *captureWriter, r *http.Request, profile profiles.Profile, session Session, body []byte, obs *Observation) {
@@ -635,35 +677,95 @@ func (a *App) handleLocalAI(w *captureWriter, r *http.Request, profile profiles.
 	case "localai.metrics":
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("localai_requests_total 18\nlocalai_models_loaded 1\n"))
+		loaded := len(a.store.ActiveEffects(session.ID, model.ProductLocalAI, time.Now().UTC()))
+		_, _ = w.Write([]byte(fmt.Sprintf("localai_requests_total 18\nlocalai_models_loaded %d\n", loaded)))
 	case "localai.docs":
-		a.writeJSON(w, http.StatusOK, map[string]any{"openapi": "3.0.0", "info": map[string]string{"title": "LocalAI", "version": profile.DisplayVersion}, "paths": map[string]any{"/v1/chat/completions": map[string]any{}, "/models/apply": map[string]any{}, "/v1/audio/transcriptions": map[string]any{}}})
+		a.writeJSON(w, http.StatusOK, localAIOpenAPISchema(profile))
 	case "localai.models.available":
 		a.writeJSON(w, http.StatusOK, map[string]any{"models": profiles.Catalog(model.ProductLocalAI), "source": "model-gallery"})
 	case "localai.models.installed":
-		a.writeJSON(w, http.StatusOK, map[string]any{"models": []any{}})
+		a.localAIInstalled(w, session, obs)
 	case "localai.models.apply":
+		if profile.Scenario == "current-rbac" && !a.localAIAdminAuth(r, obs, w) {
+			return
+		}
+		value, ok := decodeJSONObject(body)
+		if !ok {
+			a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid model installation request"})
+			return
+		}
+		modelName := stringValue(value["model"])
+		if modelName == "" {
+			modelName = stringValue(value["name"])
+		}
+		if modelName == "" {
+			modelName = profiles.Catalog(model.ProductLocalAI)[0].ID
+		}
+		if len(modelName) > 256 || strings.ContainsAny(modelName, "\r\n") {
+			a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid model name"})
+			return
+		}
+		jobID := "job_" + security.MustRandomToken(10)
 		a.startInvocation(obs, "not_required", true)
 		obs.ExtraScore += 50
 		obs.ExtraReasons = append(obs.ExtraReasons, "localai_model_install_probe")
-		a.writeJSON(w, http.StatusOK, map[string]any{"id": "job_" + obs.InvocationID, "status": "ready", "steps": []string{"resolving source", "downloading manifest", "validating archive", "installing backend", "ready"}})
+		obs.EffectOutcome = "applied"
+		now := time.Now().UTC()
+		_ = a.store.AddEffect(model.VirtualEffect{ID: "ve_" + security.MustRandomToken(8), OwnerScope: "session", OwnerKey: session.ID, Product: model.ProductLocalAI, EffectType: "localai_model_install_virtualized", State: map[string]string{"task_id": jobID, "model": modelName, "source": "gallery"}, CreatedAt: now, ExpiresAt: now.Add(90 * time.Second)})
+		a.writeJSON(w, http.StatusOK, map[string]any{"id": jobID, "status": "ready", "model": modelName, "steps": []string{"resolving source", "downloading manifest", "validating archive", "installing backend", "ready"}})
 	case "localai.models.delete":
+		if profile.Scenario == "current-rbac" && !a.localAIAdminAuth(r, obs, w) {
+			return
+		}
+		value, ok := decodeJSONObject(body)
+		if !ok {
+			a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid model delete request"})
+			return
+		}
+		modelName := stringValue(value["model"])
+		if modelName == "" {
+			modelName = stringValue(value["name"])
+		}
+		if len(modelName) > 256 || strings.ContainsAny(modelName, "\r\n") {
+			a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid model name"})
+			return
+		}
 		a.startInvocation(obs, "not_required", true)
 		obs.ExtraScore += 45
 		obs.ExtraReasons = append(obs.ExtraReasons, "localai_model_delete_probe")
-		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "deleted": true})
+		deleted := a.store.ExpireEffects(session.ID, model.ProductLocalAI, "localai_model_install_virtualized", "model", modelName, time.Now().UTC())
+		obs.EffectOutcome = "applied"
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "deleted": deleted > 0, "model": modelName})
+	case "localai.models.task":
+		a.localAIModelTask(w, r, session, obs)
 	case "localai.audio.transcriptions":
+		if profile.Scenario == "current-rbac" && !a.localAIUserAuth(r, obs, w) {
+			return
+		}
 		a.startInvocation(obs, "not_required", true)
 		obs.ExtraScore += 25
-		a.writeJSON(w, http.StatusOK, map[string]string{"text": "Transcription completed."})
+		a.writeJSON(w, http.StatusOK, map[string]any{"text": "Transcription completed.", "duration": 1.2, "language": "en"})
+	case "localai.audio.speech":
+		if profile.Scenario == "current-rbac" && !a.localAIUserAuth(r, obs, w) {
+			return
+		}
+		a.startInvocation(obs, "not_required", true)
+		obs.ExtraScore += 25
+		w.Header().Set("Content-Type", "audio/mpeg")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ID3\x04\x00AegisLure audio sample"))
+	case "localai.images.generations":
+		if profile.Scenario == "current-rbac" && !a.localAIUserAuth(r, obs, w) {
+			return
+		}
+		a.startInvocation(obs, "not_required", true)
+		obs.ExtraScore += 30
+		a.writeJSON(w, http.StatusOK, map[string]any{"created": time.Now().Unix(), "data": []map[string]string{{"b64_json": "c3l1c2VyLWltYWdl"}}})
 	case "openai.models":
 		a.writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": profiles.Catalog(model.ProductLocalAI)})
-	case "openai.chat.completions", "openai.completions", "openai.embeddings":
+	case "openai.chat.completions", "openai.completions", "openai.responses", "openai.embeddings":
 		if profile.Scenario == "current-rbac" {
-			_, auth := a.honeyAuth(r)
-			if auth != "valid_honey_key" {
-				a.startInvocation(obs, auth, false)
-				a.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
+			if !a.localAIUserAuth(r, obs, w) {
 				return
 			}
 		}
@@ -680,6 +782,59 @@ func (a *App) handleLocalAI(w *captureWriter, r *http.Request, profile profiles.
 	default:
 		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
+}
+
+func (a *App) localAIUserAuth(r *http.Request, obs *Observation, w *captureWriter) bool {
+	token, auth := a.honeyAuth(r)
+	if auth != "valid_honey_key" {
+		a.startInvocation(obs, auth, false)
+		a.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
+		return false
+	}
+	obs.CredentialFingerprint = token.Hash
+	return true
+}
+
+func (a *App) localAIAdminAuth(r *http.Request, obs *Observation, w *captureWriter) bool {
+	return a.localAIUserAuth(r, obs, w)
+}
+
+func (a *App) localAIInstalled(w *captureWriter, session Session, obs *Observation) {
+	items := make([]map[string]any, 0)
+	for _, effect := range a.store.ActiveEffects(session.ID, model.ProductLocalAI, time.Now().UTC()) {
+		if effect.EffectType != "localai_model_install_virtualized" {
+			continue
+		}
+		name := effect.State["model"]
+		item := map[string]any{"id": name, "name": name, "status": "ready", "backend": "llama-cpp", "task_id": effect.State["task_id"], "source": "gallery"}
+		items = append(items, item)
+		obs.EffectOutcome = "verified"
+	}
+	if len(items) > 0 {
+		obs.ExtraScore += 15
+		obs.ExtraReasons = append(obs.ExtraReasons, "post_call_effect_verification")
+		_ = a.store.MarkEffectsVerified(session.ID, model.ProductLocalAI, "localai_model_install_virtualized", time.Now().UTC())
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"models": items, "data_only": true})
+}
+
+func (a *App) localAIModelTask(w *captureWriter, r *http.Request, session Session, obs *Observation) {
+	taskID := strings.TrimPrefix(r.URL.Path, "/models/jobs/")
+	if taskID == "" || strings.ContainsAny(taskID, "/\r\n") {
+		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
+		return
+	}
+	for _, effect := range a.store.ActiveEffects(session.ID, model.ProductLocalAI, time.Now().UTC()) {
+		if effect.EffectType == "localai_model_install_virtualized" && effect.State["task_id"] == taskID {
+			obs.EffectOutcome = "verified"
+			obs.ExtraScore += 15
+			obs.ExtraReasons = append(obs.ExtraReasons, "post_call_effect_verification")
+			_ = a.store.MarkEffectsVerified(session.ID, model.ProductLocalAI, effect.EffectType, time.Now().UTC())
+			a.writeJSON(w, http.StatusOK, map[string]any{"id": taskID, "status": "ready", "progress": []string{"resolving source", "downloading manifest", "validating archive", "installing backend", "ready"}, "model": effect.State["model"]})
+			return
+		}
+	}
+	a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
 }
 
 func requestValues(r *http.Request, body []byte) map[string]string {

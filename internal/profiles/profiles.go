@@ -328,6 +328,10 @@ func sglangRoute(method, path string) string {
 		return "sglang.lora.load"
 	case path == "/update_weights_from_disk":
 		return "sglang.weights.update"
+	case path == "/flush_cache":
+		return "sglang.cache.flush"
+	case path == "/get_weights_by_name":
+		return "sglang.weights.get"
 	case path == "/v1/models":
 		return "openai.models"
 	case strings.HasPrefix(path, "/v1/chat/completions"):
@@ -336,6 +340,8 @@ func sglangRoute(method, path string) string {
 		return "openai.completions"
 	case strings.HasPrefix(path, "/v1/embeddings"):
 		return "openai.embeddings"
+	case strings.HasPrefix(path, "/v1/responses"):
+		return "openai.responses"
 	}
 	return "sglang.unknown"
 }
@@ -366,8 +372,16 @@ func localAIRoute(method, path string) string {
 		return "openai.completions"
 	case strings.HasPrefix(path, "/v1/embeddings"):
 		return "openai.embeddings"
+	case strings.HasPrefix(path, "/v1/responses"):
+		return "openai.responses"
 	case path == "/v1/audio/transcriptions":
 		return "localai.audio.transcriptions"
+	case path == "/v1/audio/speech":
+		return "localai.audio.speech"
+	case path == "/v1/images/generations":
+		return "localai.images.generations"
+	case strings.HasPrefix(path, "/models/jobs/"):
+		return "localai.models.task"
 	}
 	return "localai.unknown"
 }

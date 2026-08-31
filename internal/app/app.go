@@ -353,7 +353,7 @@ func headerBytes(r *http.Request) int {
 
 func requiredMethod(route string) string {
 	switch route {
-	case "newapi.user.register", "newapi.user.login", "newapi.checkin", "newapi.token.create", "openai.chat.completions", "openai.completions", "openai.responses", "openai.embeddings", "ollama.show", "ollama.generate", "ollama.chat", "ollama.embeddings", "ollama.pull", "ollama.push", "ollama.create", "ollama.copy", "vllm.invocations", "vllm.tokenize", "vllm.detokenize", "sglang.generate", "sglang.lora.load", "sglang.weights.update", "localai.models.apply", "localai.models.delete", "localai.audio.transcriptions":
+	case "newapi.user.register", "newapi.user.login", "newapi.checkin", "newapi.token.create", "openai.chat.completions", "openai.completions", "openai.responses", "openai.embeddings", "ollama.show", "ollama.generate", "ollama.chat", "ollama.embeddings", "ollama.pull", "ollama.push", "ollama.create", "ollama.copy", "vllm.invocations", "vllm.tokenize", "vllm.detokenize", "sglang.generate", "sglang.lora.load", "sglang.weights.update", "sglang.cache.flush", "sglang.weights.get", "localai.models.apply", "localai.models.delete", "localai.audio.transcriptions", "localai.audio.speech", "localai.images.generations":
 		return http.MethodPost
 	case "ollama.delete":
 		return http.MethodDelete
@@ -370,7 +370,7 @@ func allowedMethods(route string) string {
 		return method
 	}
 	switch route {
-	case "ollama.home", "ollama.version", "ollama.tags", "ollama.ps", "openai.models", "vllm.root", "vllm.health", "vllm.version", "vllm.metrics", "vllm.docs", "vllm.openapi":
+	case "ollama.home", "ollama.version", "ollama.tags", "ollama.ps", "openai.models", "vllm.root", "vllm.health", "vllm.version", "vllm.metrics", "vllm.docs", "vllm.openapi", "sglang.health", "sglang.model_info", "sglang.metrics", "sglang.docs", "sglang.redoc", "sglang.openapi", "sglang.server_info", "localai.home", "localai.health", "localai.metrics", "localai.docs", "localai.models.available", "localai.models.installed", "localai.models.task":
 		return http.MethodGet
 	default:
 		return ""
