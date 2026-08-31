@@ -3,12 +3,12 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#f7f9fc" />
-    <meta name="description" content="New API compatible local AI gateway" />
-    <title>New API · AI Gateway</title>
+    <meta name="theme-color" content="#ffffff" />
+    <meta name="description" content="Unified AI API gateway and local virtual tenant" />
+    <title>New API</title>
     <style>
       :root {
-        color-scheme: light;
+        color-scheme: light dark;
         --bg: #f7f9fc;
         --surface: rgba(255,255,255,.86);
         --surface-solid: #fff;
@@ -60,21 +60,24 @@
         display: flex;
         align-items: center;
         gap: 28px;
-        width: min(1180px, calc(100% - 40px));
-        min-height: 72px;
+        width: min(1150px, calc(100% - 40px));
+        min-height: 64px;
         margin: 0 auto;
       }
       .brand { display: inline-flex; align-items: center; gap: 10px; min-width: max-content; }
       .brand-mark {
+        position: relative;
         display: grid;
         place-items: center;
         width: 31px;
         height: 31px;
-        border-radius: 10px;
+        overflow: hidden;
+        border-radius: 50%;
         color: #fff;
-        background: linear-gradient(145deg, #487dff, #694df2);
+        background: conic-gradient(from 215deg, #39b5e8, #6570f7 38%, #f25cba 72%, #39b5e8);
         box-shadow: 0 6px 14px rgba(65, 91, 239, .25);
       }
+      .brand-mark::after { width: 17px; height: 17px; border-radius: 50%; background: var(--bg); content: ""; }
       .brand-mark svg { width: 18px; height: 18px; }
       .brand-name { font-size: 15px; font-weight: 750; letter-spacing: -.02em; }
       .brand-sub { color: var(--subtle); font-size: 11px; font-weight: 600; letter-spacing: .03em; }
@@ -93,19 +96,23 @@
       }
       .main-nav a:hover, .main-nav a.active { color: var(--ink); background: #edf1fa; }
       .header-tools { display: flex; align-items: center; gap: 8px; }
+      .header-theme { display: grid; place-items: center; width: 34px; height: 34px; padding: 0; border: 1px solid var(--line); border-radius: 10px; color: #667085; background: transparent; }
+      .header-theme:hover { color: var(--ink); background: rgba(127, 143, 174, .1); }
+      .header-menu { display: none; place-items: center; width: 34px; height: 34px; padding: 0; border: 1px solid var(--line); border-radius: 10px; color: #667085; background: transparent; }
+      .header-menu:hover { color: var(--ink); background: rgba(127, 143, 174, .1); }
       .header-action { color: #fff; background: var(--ink); padding-inline: 16px; }
       .header-action:hover { background: #263044; }
       .user-chip { color: var(--blue-deep); background: #eaf0ff; max-width: 150px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
       .user-chip:hover { background: #dfe8ff; }
-      .main { min-height: calc(100vh - 72px); }
-      .container { width: min(1180px, calc(100% - 40px)); margin: 0 auto; }
+      .main { min-height: calc(100vh - 64px); }
+      .container { width: min(1150px, calc(100% - 40px)); margin: 0 auto; }
       .hero {
         position: relative;
         display: grid;
         grid-template-columns: minmax(0, 1.02fr) minmax(390px, .98fr);
         align-items: center;
-        gap: 68px;
-        padding: 92px 0 82px;
+        gap: 48px;
+        padding: 80px 0 74px;
       }
       .hero::before {
         position: absolute;
@@ -145,14 +152,14 @@
       .eyebrow-pill i { display: block; width: 6px; height: 6px; border-radius: 50%; background: #5a7cff; box-shadow: 0 0 0 4px rgba(90,124,255,.12); }
       h1, h2, h3, p { margin-top: 0; }
       .hero h1 {
-        max-width: 650px;
+        max-width: 580px;
         margin: 21px 0 20px;
-        font-size: clamp(42px, 5vw, 69px);
+        font-size: clamp(42px, 4.5vw, 56px);
         line-height: 1.04;
         letter-spacing: -.065em;
       }
       .gradient-text { color: var(--blue); background: linear-gradient(105deg, #2e64eb 0%, #6958ef 70%, #815eea 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
-      .hero-copy > p:not(.eyebrow) { max-width: 600px; color: var(--muted); font-size: 17px; line-height: 1.75; }
+      .hero-copy > p:not(.eyebrow) { max-width: 600px; color: var(--muted); font-size: 16px; line-height: 1.75; }
       .hero-actions { display: flex; flex-wrap: wrap; gap: 11px; margin-top: 29px; }
       .button {
         display: inline-flex;
@@ -179,6 +186,7 @@
       .hero-proof span { display: inline-flex; align-items: center; gap: 7px; }
       .hero-proof i { width: 6px; height: 6px; border-radius: 50%; background: #62bda1; }
       .terminal {
+        min-height: 500px;
         overflow: hidden;
         border: 1px solid #dfe5f0;
         border-radius: var(--radius-xl);
@@ -189,11 +197,13 @@
       .terminal-title { display: flex; align-items: center; gap: 9px; font-size: 12px; font-weight: 800; }
       .terminal-title i { width: 8px; height: 8px; border-radius: 50%; background: #2db27d; box-shadow: 0 0 0 4px rgba(45,178,125,.12); }
       .terminal-badge { padding: 5px 8px; border-radius: 7px; color: #5f6d85; background: #f2f5fa; font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
-      .terminal-tabs { display: flex; flex-wrap: wrap; gap: 5px; padding: 15px 21px 0; }
-      .terminal-tabs button { padding: 7px 9px; border: 0; border-radius: 7px; color: #8a94a7; background: transparent; font-size: 11px; font-weight: 700; }
-      .terminal-tabs button.active { color: #345bd6; background: #edf2ff; }
-      .terminal-body { padding: 18px 21px 21px; }
-      .endpoint { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; color: #53617a; font: 600 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .terminal-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 0 21px; border-bottom: 1px solid #edf0f6; }
+      .terminal-tabs button { padding: 14px 12px 11px; border: 0; border-bottom: 2px solid transparent; color: #8a94a7; background: transparent; font-size: 11px; font-weight: 700; }
+      .terminal-tabs button.active { border-bottom-color: #ee7800; color: #ee7800; }
+      .terminal-status { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; color: #8791a1; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .terminal-status i { width: 6px; height: 6px; border-radius: 50%; background: #2db27d; box-shadow: 0 0 0 4px rgba(45,178,125,.1); }
+      .terminal-body { padding: 0; }
+      .endpoint { display: flex; align-items: center; gap: 10px; margin: 0; padding: 17px 21px; border-bottom: 1px solid #edf0f6; color: #53617a; font: 600 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; }
       .endpoint > span:nth-child(2) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .method { padding: 5px 7px; border-radius: 6px; color: #157455; background: #e6f7f0; font-size: 10px; font-weight: 800; }
       .ok { margin-left: auto; color: #15956a; font-size: 10px; font-weight: 800; }
@@ -201,15 +211,19 @@
       .syntax-key { color: #6c57d9; }
       .syntax-string { color: #1a8b77; }
       .syntax-number { color: #bd6a1d; }
-      .terminal-response { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 14px; padding: 12px 14px; border-radius: 11px; background: #f4f7fd; color: #63708a; font-size: 11px; }
+      .terminal-panel { padding: 19px 21px; border-bottom: 1px solid #edf0f6; }
+      .terminal-label { display: block; margin-bottom: 10px; color: #a0a8b6; font-size: 9px; font-weight: 800; letter-spacing: .16em; }
+      .terminal-panel pre { min-height: 136px; border: 0; border-radius: 0; padding: 0; background: transparent; }
+      .terminal-response { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 0; padding: 14px 21px; border-bottom: 1px solid #edf0f6; background: transparent; color: #63708a; font-size: 11px; }
       .terminal-response strong { color: #273856; font-weight: 750; }
       .terminal-response span:last-child { color: #8290a8; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .terminal-footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 13px 21px; color: #9ca5b2; font: 9px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .04em; text-transform: uppercase; }
       .section { padding: 70px 0; }
       .section-tight { padding: 26px 0 78px; }
       .section-heading { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 27px; }
       .section-heading h2 { margin: 0; font-size: clamp(25px, 3vw, 37px); line-height: 1.1; letter-spacing: -.045em; }
       .section-heading p { max-width: 500px; margin: 0; color: var(--muted); font-size: 14px; line-height: 1.7; }
-      .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+      .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
       .stat { padding: 24px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: rgba(255,255,255,.72); }
       .stat strong { display: block; margin-bottom: 5px; color: #273b71; font-size: 31px; letter-spacing: -.05em; }
       .stat span { color: var(--muted); font-size: 12px; font-weight: 650; }
@@ -363,6 +377,59 @@
       .loading { padding: 45px; color: #8e99aa; font-size: 12px; text-align: center; }
       .spinner { display: inline-block; width: 14px; height: 14px; margin-right: 7px; border: 2px solid #dbe3f2; border-top-color: #5d7bf1; border-radius: 50%; vertical-align: -3px; animation: spin .7s linear infinite; }
       @keyframes spin { to { transform: rotate(360deg); } }
+      html.dark {
+        color-scheme: dark;
+        --bg: #0b0f14;
+        --surface: rgba(22, 28, 36, .88);
+        --surface-solid: #161c24;
+        --ink: #f2f5f8;
+        --muted: #a7b1bf;
+        --subtle: #7f8b99;
+        --line: rgba(255,255,255,.11);
+        --line-strong: rgba(255,255,255,.18);
+        --blue: #54a9ed;
+        --blue-deep: #8bc9f6;
+        --violet: #ad93ff;
+        --cyan: #5dc8e2;
+        --green: #53c69d;
+        --amber: #edb15d;
+        --red: #ec7b96;
+        --shadow: 0 24px 70px rgba(0,0,0,.28);
+        --shadow-sm: 0 8px 24px rgba(0,0,0,.2);
+      }
+      html.dark body { background: radial-gradient(circle at 75% 0%, rgba(44, 111, 177, .18), transparent 32rem), linear-gradient(180deg, #0d1319 0, #0b0f14 55%, #0d1116 100%); }
+      html.dark .site-header { border-color: rgba(255,255,255,.1); background: rgba(11,15,20,.78); }
+      html.dark .main-nav a, html.dark .header-theme { color: #aeb9c6; }
+      html.dark .main-nav a:hover, html.dark .main-nav a.active { color: #f2f5f8; background: rgba(255,255,255,.1); }
+      html.dark .header-action { color: #0c1117; background: #f2f5f8; }
+      html.dark .header-action:hover { background: #fff; }
+      html.dark .brand-mark::after { background: var(--bg); }
+      html.dark .hero::before { background-image: linear-gradient(rgba(100, 150, 215, .07) 1px, transparent 1px), linear-gradient(90deg, rgba(100, 150, 215, .07) 1px, transparent 1px); }
+      html.dark .terminal, html.dark .model-card, html.dark .pricing-card, html.dark .docs-nav, html.dark .docs-panel, html.dark .auth-card, html.dark .account-card, html.dark .panel, html.dark .step { border-color: var(--line); background: var(--surface); box-shadow: var(--shadow-sm); }
+      html.dark .terminal-top, html.dark .terminal-tabs, html.dark .endpoint, html.dark .terminal-panel, html.dark .terminal-response { border-color: var(--line); }
+      html.dark .terminal-badge, html.dark .terminal-tabs button.active, html.dark .tag, html.dark .api-snippet { color: #b8c5d4; background: rgba(255,255,255,.09); }
+      html.dark .terminal-tabs button.active { color: #f0a263; border-bottom-color: #f0a263; }
+      html.dark .terminal-panel pre, html.dark pre { color: #c3cfdd; background: rgba(3,7,12,.35); border-color: var(--line); }
+      html.dark .terminal-response strong, html.dark .model-card h3, html.dark .profile-item strong, html.dark .data-table td strong { color: #eef3f8; }
+      html.dark .terminal-footer, html.dark .terminal-status, html.dark .terminal-response span:last-child { color: #8492a3; }
+      html.dark .button-secondary, html.dark .oauth-grid a { border-color: var(--line-strong); color: #d7e0ea; background: rgba(255,255,255,.04); }
+      html.dark .button-secondary:hover, html.dark .oauth-grid a:hover { border-color: rgba(84,169,237,.7); background: rgba(84,169,237,.1); }
+      html.dark .button-quiet, html.dark .section-heading p, html.dark .page-intro p, html.dark .model-card p, html.dark .feature-card p, html.dark .step p, html.dark .docs-panel p, html.dark .docs-panel li, html.dark .auth-copy > p, html.dark .auth-switch, html.dark .panel-head span, html.dark .mini-row, html.dark .data-table td { color: var(--muted); }
+      html.dark .feature-card, html.dark .feature-card:nth-child(2), html.dark .feature-card:nth-child(3), html.dark .feature-card:nth-child(4), html.dark .callout, html.dark .checkin-card, html.dark .account-card.accent { border-color: var(--line); background: linear-gradient(145deg, rgba(44,62,84,.44), rgba(22,28,36,.86)); }
+      html.dark .callout { border-color: rgba(94,130,240,.42); }
+      html.dark .stat { border-color: var(--line); background: rgba(22,28,36,.74); }
+      html.dark .stat strong, html.dark .account-card strong, html.dark .pricing-value { color: #d7e7ff; }
+      html.dark .docs-nav a, html.dark .account-nav a { color: #aeb9c6; }
+      html.dark .docs-nav a:hover, html.dark .docs-nav a.active, html.dark .account-nav a.active, html.dark .account-nav a:hover { color: #91c9f6; background: rgba(84,169,237,.12); }
+      html.dark .field span, html.dark .field input, html.dark .field select { color: #dce5ee; }
+      html.dark .field input, html.dark .field select { border-color: var(--line-strong); background: rgba(3,7,12,.38); }
+      html.dark .field input:focus, html.dark .field select:focus { border-color: #54a9ed; box-shadow: 0 0 0 3px rgba(84,169,237,.16); }
+      html.dark .site-footer { border-color: var(--line); background: rgba(11,15,20,.55); }
+      html.dark .footer-copy strong, html.dark .footer-links { color: #e2e9f0; }
+      html.dark .footer-attribution, html.dark .footer-copy, html.dark .footer-links a { color: #8e9aaa; }
+      html.dark .notice { color: #9ad7be; background: rgba(47,165,119,.14); }
+      html.dark .notice.warning { color: #f2c981; background: rgba(185,112,15,.16); }
+      html.dark .form-error { color: #f2a2b5; background: rgba(194,61,90,.16); }
       @media (max-width: 960px) {
         .hero { grid-template-columns: 1fr; gap: 42px; padding-top: 61px; }
         .hero-copy { max-width: 720px; }
@@ -375,11 +442,12 @@
       }
       @media (max-width: 720px) {
         .header-inner, .container { width: min(100% - 28px, 1180px); }
-        .header-inner { min-height: 64px; gap: 10px; }
-        .brand-sub, .main-nav a:nth-child(3), .main-nav a:nth-child(4) { display: none; }
-        .main-nav { gap: 0; }
-        .main-nav a { padding-inline: 8px; font-size: 11px; }
-        .header-tools .header-action { padding-inline: 11px; font-size: 11px; }
+        .header-inner { position: relative; min-height: 64px; gap: 10px; }
+        .brand-sub, .main-nav, .header-tools .header-action { display: none; }
+        .header-tools { margin-left: auto; }
+        .header-menu { display: grid; }
+        .main-nav.open { position: absolute; top: 58px; right: 0; z-index: 30; display: grid; min-width: 150px; gap: 3px; padding: 8px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface-solid); box-shadow: var(--shadow-sm); }
+        .main-nav.open a { padding: 10px 12px; font-size: 12px; white-space: nowrap; }
         .hero { padding: 51px 0 57px; }
         .hero h1 { font-size: clamp(39px, 12vw, 57px); }
         .hero-copy > p:not(.eyebrow) { font-size: 15px; }
@@ -408,6 +476,16 @@
 
         const root = document.getElementById("app");
         const initialRoute = document.body.dataset.page || "newapi.home";
+        const initialTheme = (() => {
+          try {
+            const value = window.localStorage.getItem("newapi-theme");
+            return value === "light" || value === "dark" ? value : "system";
+          } catch (_) {
+            return "system";
+          }
+        })();
+        const isChinese = /^zh/i.test(navigator.language || "");
+        const copy = (english, chinese) => isChinese ? chinese : english;
         const state = {
           user: null,
           userLoaded: false,
@@ -422,7 +500,9 @@
           noticeTone: "normal",
           authError: "",
           newKey: "",
-          terminalTab: "chat"
+          terminalTab: "chat",
+          theme: initialTheme,
+          menuOpen: false
         };
 
         const iconPaths = {
@@ -439,7 +519,8 @@
           plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
           shield: '<path d="M12 3 20 6v5c0 5.2-3.4 8.8-8 10-4.6-1.2-8-4.8-8-10V6l8-3Z"/><path d="m8.5 12 2.2 2.2 4.8-5"/>',
           spark: '<path d="m12 3-1.5 6.5L4 11l6.5 1.5L12 19l1.5-6.5L20 11l-6.5-1.5L12 3Z"/>',
-          user: '<circle cx="12" cy="8" r="3.5"/><path d="M4 21a8 8 0 0 1 16 0"/>'
+          user: '<circle cx="12" cy="8" r="3.5"/><path d="M4 21a8 8 0 0 1 16 0"/>',
+          theme: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"/>'
         };
 
         function icon(name, size) {
@@ -458,6 +539,17 @@
           const date = new Date(value);
           if (Number.isNaN(date.getTime())) return "—";
           return new Intl.DateTimeFormat("en-US", { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
+        }
+        function applyTheme() {
+          const dark = state.theme === "dark" || (state.theme === "system" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.classList.toggle("dark", dark);
+          document.documentElement.classList.toggle("light", !dark);
+        }
+        function toggleTheme() {
+          state.theme = state.theme === "dark" ? "light" : "dark";
+          try { window.localStorage.setItem("newapi-theme", state.theme); } catch (_) {}
+          applyTheme();
+          render();
         }
         function pageFromPath() {
           const path = window.location.pathname.replace(/\/+$/, "") || "/";
@@ -480,6 +572,7 @@
           if (window.location.pathname !== path) window.history.pushState({}, "", path);
           state.notice = "";
           state.authError = "";
+          state.menuOpen = false;
           render();
           hydratePage();
         }
@@ -506,14 +599,15 @@
           return state.notice ? '<div class="notice' + (state.noticeTone === "warning" ? " warning" : "") + '">' + esc(state.notice) + "</div>" : "";
         }
         function brand() {
-          return '<a class="brand" href="/" data-nav><span class="brand-mark">' + icon("spark", 18) + '</span><span><span class="brand-name">New API</span><span class="brand-sub"> · local gateway</span></span></a>';
+          return '<a class="brand" href="/" data-nav><span class="brand-mark">' + icon("spark", 18) + '</span><span><span class="brand-name">New API</span><span class="brand-sub"> · ' + copy("local gateway", "本地网关") + '</span></span></a>';
         }
         function header(active) {
           const account = state.user
-            ? '<a class="header-action user-chip" href="/dashboard" data-nav>' + icon("user", 14) + esc(state.user.username || "Account") + "</a>"
-            : '<a class="header-action" href="/login" data-nav>Sign in</a>';
+            ? '<a class="header-action user-chip" href="/dashboard" data-nav>' + icon("user", 14) + esc(state.user.username || copy("Account", "账户")) + "</a>"
+            : '<a class="header-action" href="/login" data-nav>' + copy("Sign in", "登录") + '</a>';
           const link = (key, label, href) => '<a class="' + (active === key ? "active" : "") + '" href="' + href + '" data-nav>' + label + "</a>";
-          return '<header class="site-header"><div class="header-inner">' + brand() + '<nav class="main-nav">' + link("home", "Home", "/") + link("models", "Models", "/models") + link("pricing", "Pricing", "/pricing") + link("docs", "Docs", "/docs") + '</nav><div class="header-tools">' + account + "</div></div></header>";
+          const themeLabel = state.theme === "dark" ? copy("Light theme", "浅色主题") : copy("Dark theme", "深色主题");
+          return '<header class="site-header"><div class="header-inner">' + brand() + '<nav class="main-nav' + (state.menuOpen ? " open" : "") + '">' + link("home", copy("Home", "主页"), "/") + link("dashboard", copy("Dashboard", "控制台"), "/dashboard") + link("models", copy("Models", "模型广场"), "/models") + link("pricing", copy("Capabilities", "能力"), "/pricing") + link("docs", copy("Docs", "文档"), "/docs") + '</nav><div class="header-tools"><button class="header-theme" type="button" data-action="theme-toggle" aria-label="' + esc(themeLabel) + '">' + icon("theme", 16) + '</button><button class="header-menu" type="button" data-action="menu-toggle" aria-label="' + copy("Open menu", "打开菜单") + '" aria-expanded="' + (state.menuOpen ? "true" : "false") + '">' + icon("menu", 16) + '</button>' + account + "</div></div></header>";
         }
         function footer() {
           return '<footer class="site-footer"><div class="container footer-inner"><div class="footer-copy"><strong>New API · virtual tenant</strong>Protocol-compatible interaction surface for local security observation. This deployment returns bounded local responses and does not relay requests to an upstream model.<span class="footer-attribution">Frontend design and development by New API contributors.</span><span class="boundary-note"><i></i>virtual-only · no payment surface</span></div><div class="footer-links"><a href="https://github.com/QuantumNous/new-api" rel="noreferrer">New API source</a><a href="https://github.com/zcxads666/AegisLure" rel="noreferrer">AegisLure source</a><a href="/docs" data-nav>Documentation</a><a href="/models" data-nav>Model catalog</a></div></div></footer>';
@@ -527,19 +621,43 @@
         function terminal() {
           const tab = state.terminalTab;
           const values = {
-            chat: { path: "/v1/chat/completions", title: "chat.completions", requestKey: "messages", request: '[{"role":"user","content":"hello"}]', response: '"content": "Local response ready."' },
-            responses: { path: "/v1/responses", title: "responses", requestKey: "input", request: '"hello"', response: '"output_text": "Local response ready."' },
-            embeddings: { path: "/v1/embeddings", title: "embeddings", requestKey: "input", request: '["hello"]', response: '"embedding": [0.017, -0.042, 0.009]' },
-            claude: { path: "/v1/messages", title: "messages", requestKey: "messages", request: '[{"role":"user","content":"hello"}]', response: '"type": "message", "stop_reason": "end_turn"' },
-            gemini: { path: "/v1beta/models/gemini-3.7-flash:generateContent", title: "generateContent", requestKey: "contents", request: '[{"role":"user","parts":[{"text":"hello"}]}]', response: '"finishReason": "STOP"' }
+            chat: { path: "/v1/chat/completions", request: 'curl -X POST "/v1/chat/completions" \\\n-H "Authorization: Bearer sk-••••" \\\n-d \'{\n  "model": "honey-model",\n  "messages": [\n    { "role": "user", "content": "hello" }\n  ]\n}\'', response: '{\n  "choices": [{ "message": { "content": "Local response ready." } }],\n  "usage": { "total_tokens": 27 }\n}', meta: ["142 MS", "27 TOKENS", "$0.00081"] },
+            responses: { path: "/v1/responses", request: 'curl -X POST "/v1/responses" \\\n-H "Authorization: Bearer sk-••••" \\\n-d \'{ "model": "honey-model", "input": "hello" }\'', response: '{\n  "output_text": "Local response ready.",\n  "status": "completed"\n}', meta: ["139 MS", "18 TOKENS", "$0.00054"] },
+            claude: { path: "/v1/messages", request: 'curl -X POST "/v1/messages" \\\n-H "x-api-key: sk-••••" \\\n-H "anthropic-version: 2023-06-01" \\\n-d \'{\n  "model": "your-model",\n  "max_tokens": 1024,\n  "messages": [\n    { "role": "user", "content": "hello" }\n  ]\n}\'', response: '{\n  "content": [{ "type": "text", "text": "Claude message routed." }],\n  "usage": { "input_tokens": 11, "output_tokens": 18 }\n}', meta: ["156 MS", "29 TOKENS", "$0.00087"] },
+            gemini: { path: "/v1beta/models/gemini-3.7-flash:generateContent", request: 'curl -X POST "/v1beta/models/gemini-3.7-flash:generateContent" \\\n-H "x-goog-api-key: sk-••••" \\\n-d \'{\n  "contents": [{\n    "parts": [{ "text": "hello" }]\n  }]\n}\'', response: '{\n  "candidates": [{ "content": { "parts": [{ "text": "Gemini content routed." }] } }],\n  "finishReason": "STOP"\n}', meta: ["151 MS", "24 TOKENS", "$0.00072"] }
           };
           const data = values[tab] || values.chat;
-          const tabs = [["chat", "Chat"], ["responses", "Responses"], ["embeddings", "Embeddings"], ["claude", "Claude"], ["gemini", "Gemini"]];
+          const tabs = [["chat", "Chat"], ["responses", "Responses"], ["claude", "Claude"], ["gemini", "Gemini"]];
           const tabButtons = tabs.map((item) => '<button class="' + (tab === item[0] ? "active" : "") + '" data-terminal="' + item[0] + '">' + item[1] + "</button>").join("");
-          return '<div class="terminal"><div class="terminal-top"><div class="terminal-title"><i></i> Local runtime</div><span class="terminal-badge">local only</span></div><div class="terminal-tabs">' + tabButtons + '</div><div class="terminal-body"><div class="endpoint"><span class="method">POST</span><span>' + data.path + "</span><span class=\"ok\">200 OK</span></div><pre>{\n  <span class=\"syntax-key\">\"model\"</span>: <span class=\"syntax-string\">\"" + (tab === "gemini" ? "gemini-3.7-flash" : tab === "claude" ? "claude-sonnet-5" : "honey-model") + '\"</span>,\n  <span class="syntax-key">"' + data.requestKey + '"</span>: <span class="syntax-string">' + esc(data.request) + '</span>\n}</pre><div class="terminal-response"><strong>' + esc(data.title) + " · bounded output</strong><span>request_id: req_demo_••••</span></div></div></div>";
+          return '<div class="terminal"><div class="terminal-tabs">' + tabButtons + '<span class="terminal-status"><i></i>200 OK</span></div><div class="terminal-body"><div class="endpoint"><span class="method">POST</span><span>' + esc(data.path) + '</span></div><div class="terminal-panel"><span class="terminal-label">' + copy("REQUEST", "请求") + '</span><pre>' + esc(data.request) + '</pre></div><div class="terminal-panel"><span class="terminal-label">' + copy("RESPONSE", "响应") + '</span><pre>' + esc(data.response) + '</pre></div></div><div class="terminal-footer"><span>' + data.meta.join(" · ") + '</span><span>STREAM · SSE</span></div></div>';
         }
         function homePage() {
           return publicLayout("home", '<div class="container"><section class="hero"><div class="hero-copy"><span class="eyebrow-pill"><i></i>AI application infrastructure · local security tenant</span><h1>Unified API gateway for <span class="gradient-text">virtual AI models</span></h1><p>Explore a familiar New API workflow with OpenAI-compatible, Claude Messages, and Gemini GenerateContent surfaces, virtual usage, and observable request lifecycles. Built for local security testing—not real inference.</p><div class="hero-actions"><a class="button button-primary" href="/register" data-nav>Get started ' + icon("arrow", 15) + '</a><a class="button button-secondary" href="/models" data-nav>View model catalog</a><a class="button button-quiet" href="/docs" data-nav>Read docs ' + icon("arrow", 14) + "</a></div><div class=\"hero-proof\"><span><i></i>OpenAI-compatible</span><span><i></i>Claude + Gemini</span><span><i></i>Zero upstream egress</span></div></div>" + terminal() + '</section><section class="section-tight"><div class="stats"><div class="stat"><strong>10+</strong><span>compatible API routes</span></div><div class="stat"><strong>3</strong><span>virtual model surfaces</span></div><div class="stat"><strong>0</strong><span>upstream requests made</span></div></div></section></div><section class="section"><div class="container"><div class="section-heading"><div><p class="eyebrow">Designed for observation</p><h2>Everything needed for a safe<br>virtual tenant.</h2></div><p>The visual language follows the New API public experience while the business boundary stays intentionally local, bounded, and inspectable.</p></div><div class="feature-grid"><article class="feature-card"><div class="feature-icon">' + icon("spark", 18) + '</div><h3>Fast local responses</h3><p>Deterministic templates and small bounded payloads keep the interaction useful without spending real compute.</p></article><article class="feature-card"><div class="feature-icon">' + icon("shield", 18) + '</div><h3>Hardened boundary</h3><p>Honey keys are one-time visible, stored as keyed hashes, and accepted only by this local service.</p></article><article class="feature-card"><div class="feature-icon">' + icon("layers", 18) + '</div><h3>SDK-compatible surface</h3><p>OpenAI, Claude, and Gemini request shapes share one catalog, quota ledger, usage log, and SSE-safe local runtime.</p></article><article class="feature-card"><div class="feature-icon">' + icon("chart", 18) + '</div><h3>Observable lifecycle</h3><p>Registration, check-in, key creation, invocation, balance, and request IDs form one visible chain.</p></article></div></div></section><section class="section"><div class="container"><div class="section-heading"><div><p class="eyebrow">How it works</p><h2>A familiar flow, with a virtual boundary.</h2></div></div><div class="steps"><article class="step"><div class="step-number">01 / CONFIGURE</div><h3>Create a virtual tenant</h3><p>Register with a username, email shape, password shape, and a six-digit simulation code.</p></article><article class="step"><div class="step-number">02 / CONNECT</div><h3>Issue a local API key</h3><p>Check in for virtual quota, then create a key that is valid only on this listener.</p></article><article class="step"><div class="step-number">03 / OBSERVE</div><h3>Call and verify</h3><p>Use a compatible request, receive a local response, and inspect the matching usage record.</p></article></div></div></section><section class="section-tight"><div class="container"><div class="callout"><div><h2>Ready to inspect the flow?</h2><p>Start with the public catalog, then create a virtual account when you need the full lifecycle.</p></div><a class="button button-primary" href="/register" data-nav>Create a virtual account ' + icon("arrow", 15) + "</a></div></div></section>");
+        }
+        function homePageAligned() {
+          const features = [
+            ["spark", copy("Fast local responses", "极速本地响应"), copy("Deterministic templates keep the interaction useful without spending real compute.", "确定性模板让交互可用，同时不消耗真实推理算力。")],
+            ["shield", copy("Hardened boundary", "安全边界"), copy("Honey keys and request evidence stay inside this bounded listener.", "蜜罐 Key 与请求证据只留在这个有界监听器内。")],
+            ["layers", copy("Compatible surface", "兼容协议表面"), copy("OpenAI, Claude Messages, and Gemini GenerateContent share one local catalog.", "OpenAI、Claude Messages 与 Gemini GenerateContent 共用一个本地模型目录。")],
+            ["chart", copy("Observable lifecycle", "可观察链路"), copy("Registration, check-in, key creation, invocation, and usage form one visible chain.", "注册、签到、Key、调用与用量组成一条可见的完整链路。")]
+          ];
+          const featureCards = features.map((item) => '<article class="feature-card"><div class="feature-icon">' + icon(item[0], 18) + '</div><h3>' + esc(item[1]) + '</h3><p>' + esc(item[2]) + '</p></article>').join("");
+          const stats = [
+            ["10+", copy("compatible API routes", "兼容 API 路由")],
+            ["3", copy("virtual model surfaces", "虚拟模型表面")],
+            ["0", copy("upstream requests made", "上游请求次数")],
+            ["SSE", copy("streaming ready", "流式响应就绪")]
+          ].map((item) => '<div class="stat"><strong>' + item[0] + '</strong><span>' + esc(item[1]) + '</span></div>').join("");
+          const steps = [
+            ["01 / " + copy("CONFIGURE", "配置"), copy("Create a virtual tenant", "创建虚拟租户"), copy("Register with a username, email shape, password shape, and six-digit simulation code.", "用用户名、邮箱格式、密码和六位模拟验证码注册。")],
+            ["02 / " + copy("CONNECT", "连接"), copy("Issue a local API key", "签发本地 API Key"), copy("Check in for virtual quota, then create a key valid only on this listener.", "签到获得虚拟额度，再创建只在此监听器上有效的 Key。")],
+            ["03 / " + copy("OBSERVE", "观察"), copy("Call and verify", "调用并验证"), copy("Send a compatible request, receive a bounded response, and inspect the matching usage record.", "发送兼容请求、接收有界响应，并查看对应的用量记录。")]
+          ].map((item) => '<article class="step"><div class="step-number">' + esc(item[0]) + '</div><h3>' + esc(item[1]) + '</h3><p>' + esc(item[2]) + '</p></article>').join("");
+          const eyebrow = copy("AI application infrastructure · local security tenant", "人工智能应用基座 · 本地安全租户");
+          const title = copy("Unified API gateway for", "统一 API 网关，服务于");
+          const titleAccent = copy("virtual AI models", "海量 AI 模型");
+          const description = copy("Explore a familiar New API workflow with OpenAI-compatible, Claude Messages, and Gemini GenerateContent surfaces, virtual usage, and observable request lifecycles. Built for local security testing—not real inference.", "通过统一、标准的接口协议接入本地虚拟模型，覆盖 OpenAI 兼容、Claude Messages 与 Gemini GenerateContent。用于观察请求链路，不连接真实上游模型。");
+          return publicLayout("home", '<div class="container"><section class="hero"><div class="hero-copy"><span class="eyebrow-pill"><i></i>' + esc(eyebrow) + '</span><h1>' + esc(title) + '<br><span class="gradient-text">' + esc(titleAccent) + '</span></h1><p>' + esc(description) + '</p><div class="hero-actions"><a class="button button-primary" href="/register" data-nav>' + copy("Get started", "开始使用") + ' ' + icon("arrow", 15) + '</a><a class="button button-secondary" href="/models" data-nav>' + copy("View model catalog", "查看模型目录") + '</a><a class="button button-quiet" href="/docs" data-nav>' + copy("Read docs", "文档") + ' ' + icon("arrow", 14) + '</a></div><div class="hero-proof"><span><i></i>OpenAI-compatible</span><span><i></i>Claude + Gemini</span><span><i></i>' + copy("Zero upstream egress", "零上游外连") + '</span></div></div>' + terminal() + '</section><section class="section-tight"><div class="stats">' + stats + '</div></section></div><section class="section"><div class="container"><div class="section-heading"><div><p class="eyebrow">' + copy("Designed for observation", "核心能力") + '</p><h2>' + copy("A safe virtual tenant,\nready to inspect.", "为观察而生，\n安全的虚拟租户。") .replace("\n", "<br>") + '</h2></div><p>' + copy("The visual language follows the New API public experience while the business boundary stays local, bounded, and inspectable.", "沿用 New API 公共端的熟悉体验，同时把业务边界固定在本地、有界且可审计。") + '</p></div><div class="feature-grid">' + featureCards + '</div></div></section><section class="section"><div class="container"><div class="section-heading"><div><p class="eyebrow">' + copy("How it works", "工作流程") + '</p><h2>' + copy("A familiar flow, with a virtual boundary.", "三步走完本地验证链路。") + '</h2></div></div><div class="steps">' + steps + '</div></div></section><section class="section-tight"><div class="container"><div class="callout"><div><h2>' + copy("Ready to inspect the flow?", "准备开始验证了吗？") + '</h2><p>' + copy("Start with the public catalog, then create a virtual account when you need the full lifecycle.", "先浏览公共模型目录；需要完整链路时，再创建虚拟账户。") + '</p></div><a class="button button-primary" href="/register" data-nav>' + copy("Create a virtual account", "创建虚拟账户") + ' ' + icon("arrow", 15) + '</a></div></div></section>');
         }
         function modelsPage() {
           let content = pageIntro("Catalog", "Models built for a bounded demo.", "The page and /v1/models endpoint read from the same deployment catalog. Guest access is read-only; no model request leaves this service.");
@@ -639,7 +757,7 @@
         function render() {
           const page = pageFromPath();
           let html = "";
-          if (page === "home") html = homePage();
+          if (page === "home") html = homePageAligned();
           else if (page === "models") html = modelsPage();
           else if (page === "pricing") html = pricingPage();
           else if (page === "docs") html = docsPage();
@@ -650,7 +768,7 @@
           else if (page === "usage") html = usagePage();
           else if (page === "profile") html = profilePage();
           root.innerHTML = html;
-          document.title = page === "home" ? "New API · AI Gateway" : "New API · " + page.charAt(0).toUpperCase() + page.slice(1);
+          document.title = page === "home" ? "New API" : "New API · " + page.charAt(0).toUpperCase() + page.slice(1);
         }
         function refreshSelf() {
           return api("/api/user/self").then((data) => {
@@ -784,6 +902,11 @@
           }
           const action = event.target.closest("[data-action]");
           if (action) {
+            if (action.dataset.action === "theme-toggle") toggleTheme();
+            if (action.dataset.action === "menu-toggle") {
+              state.menuOpen = !state.menuOpen;
+              render();
+            }
             if (action.dataset.action === "checkin") doCheckin();
             if (action.dataset.action === "create-key") createKey();
             if (action.dataset.action === "copy-key") {
@@ -804,6 +927,7 @@
         });
         window.addEventListener("popstate", () => { state.notice = ""; render(); hydratePage(); });
 
+        applyTheme();
         refreshSelf().then(() => {
           render();
           return hydratePage();
