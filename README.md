@@ -42,6 +42,12 @@ macOS 上启动默认的 Ollama/vLLM profile 后，可直接运行 HTTP 指纹�
 ./scripts/check-ai-mac.sh
 ```
 
+需要人工查看完整 HTTP 请求和响应时，运行不带断言的观察脚本：
+
+```bash
+./scripts/observe-ai-mac.sh
+```
+
 管理 API 的路径格式为：
 
 ```text
