@@ -1,7 +1,9 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/csv"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +16,21 @@ func TestEventsSequenceSurvivesReopenAndQuotaIsAtomic(t *testing.T) {
 	st, err := Open(dir, "store-test-key")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := os.Stat(st.DatabasePath()); err != nil {
+		t.Fatalf("SQLite database was not created: %v", err)
+	}
+	db, err := sql.Open("sqlite", st.DatabasePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var journalMode string
+	if err := db.QueryRow("PRAGMA journal_mode").Scan(&journalMode); err != nil {
+		t.Fatal(err)
+	}
+	if strings.ToLower(journalMode) != "wal" {
+		t.Fatalf("SQLite journal mode = %q, want wal", journalMode)
 	}
 	if err := st.CreateHoneyUser(model.HoneyUser{ID: "user-1", UsernameFP: "user-fp", VirtualQuota: 100}); err != nil {
 		t.Fatal(err)

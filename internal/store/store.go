@@ -2,6 +2,7 @@ package store
 
 import (
 	"bufio"
+	"database/sql"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
@@ -16,43 +17,211 @@ import (
 
 	"github.com/zcxads666/AegisLure/internal/config"
 	"github.com/zcxads666/AegisLure/internal/model"
+	_ "modernc.org/sqlite"
 )
 
 type Store struct {
 	mu       sync.RWMutex
 	dir      string
 	key      string
+	db       *sql.DB
+	dbPath   string
 	state    model.State
 	eventSeq uint64
+}
+
+// Close releases the SQLite handle. The on-disk database remains the
+// authoritative standalone store and can be reopened after a clean or
+// interrupted process exit.
+func (s *Store) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db == nil {
+		return nil
+	}
+	err := s.db.Close()
+	s.db = nil
+	return err
+}
+
+func (s *Store) DatabasePath() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.dbPath
 }
 
 func Open(dir, key string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
 	}
-	s := &Store{dir: dir, key: key}
+	dbPath := filepath.Join(dir, "aegislure.sqlite")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite store: %w", err)
+	}
+	s := &Store{dir: dir, key: key, db: db, dbPath: dbPath}
+	if err := configureSQLite(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	s.state = model.State{
 		HoneyUsers:  make(map[string]model.HoneyUser),
 		HoneyTokens: make(map[string]model.HoneyToken),
 		Effects:     make(map[string]model.VirtualEffect),
 		Quotas:      make(map[string]int64),
 	}
-	path := filepath.Join(dir, "state.json")
-	if b, err := os.ReadFile(path); err == nil {
-		if err := json.Unmarshal(b, &s.state); err != nil {
-			return nil, fmt.Errorf("decode state: %w", err)
+	stateLoaded, err := s.loadStateFromSQLite()
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if !stateLoaded {
+		path := filepath.Join(dir, "state.json")
+		if b, readErr := os.ReadFile(path); readErr == nil {
+			if err := json.Unmarshal(b, &s.state); err != nil {
+				_ = db.Close()
+				return nil, fmt.Errorf("decode state: %w", err)
+			}
+		} else if !errors.Is(readErr, os.ErrNotExist) {
+			_ = db.Close()
+			return nil, readErr
 		}
-		s.ensureMaps()
-	} else if !errors.Is(err, os.ErrNotExist) {
+	}
+	s.ensureMaps()
+	if err := s.importLegacyEventsIfNeeded(); err != nil {
+		_ = db.Close()
 		return nil, err
 	}
 	if err := s.loadEventSequence(); err != nil {
+		_ = db.Close()
 		return nil, err
+	}
+	if !stateLoaded {
+		if err := s.saveLocked(); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
 	}
 	return s, nil
 }
 
+func configureSQLite(db *sql.DB) error {
+	for _, statement := range []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA synchronous=NORMAL",
+		"PRAGMA foreign_keys=ON",
+		"PRAGMA busy_timeout=5000",
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			return fmt.Errorf("configure sqlite: %s: %w", statement, err)
+		}
+	}
+	_, err := db.Exec(`
+CREATE TABLE IF NOT EXISTS metadata (
+	key TEXT PRIMARY KEY NOT NULL,
+	value BLOB NOT NULL
+);
+CREATE TABLE IF NOT EXISTS events (
+	sequence INTEGER PRIMARY KEY NOT NULL,
+	event_id TEXT NOT NULL UNIQUE,
+	observed_at TEXT NOT NULL,
+	product TEXT NOT NULL,
+	source_ip TEXT NOT NULL,
+	route_template TEXT NOT NULL,
+	event_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS events_observed_at_idx ON events(observed_at);
+CREATE INDEX IF NOT EXISTS events_product_idx ON events(product, observed_at);
+CREATE INDEX IF NOT EXISTS events_source_ip_idx ON events(source_ip, observed_at);
+CREATE INDEX IF NOT EXISTS events_route_idx ON events(route_template, observed_at);
+`)
+	if err != nil {
+		return fmt.Errorf("create sqlite schema: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) loadStateFromSQLite() (bool, error) {
+	var raw []byte
+	err := s.db.QueryRow(`SELECT value FROM metadata WHERE key = 'state_json'`).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read sqlite state: %w", err)
+	}
+	if err := json.Unmarshal(raw, &s.state); err != nil {
+		return false, fmt.Errorf("decode sqlite state: %w", err)
+	}
+	return true, nil
+}
+
+func (s *Store) importLegacyEventsIfNeeded() error {
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&count); err != nil {
+		return fmt.Errorf("count sqlite events: %w", err)
+	}
+	if count != 0 {
+		return nil
+	}
+	f, err := os.Open(filepath.Join(s.dir, "events.jsonl"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("open legacy events: %w", err)
+	}
+	defer f.Close()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin legacy event migration: %w", err)
+	}
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
+	var sequence uint64
+	for scanner.Scan() {
+		var event model.Event
+		if json.Unmarshal(scanner.Bytes(), &event) != nil {
+			continue
+		}
+		sequence++
+		if event.Sequence == 0 {
+			event.Sequence = sequence
+		}
+		if event.Sequence > sequence {
+			sequence = event.Sequence
+		}
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO events(sequence,event_id,observed_at,product,source_ip,route_template,event_json) VALUES(?,?,?,?,?,?,?)`, event.Sequence, event.EventID, event.ObservedAt.Format(time.RFC3339Nano), event.Product, event.SourceIP, event.RouteTemplate, string(mustJSON(event))); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("migrate legacy event: %w", err)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("read legacy events: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit legacy events: %w", err)
+	}
+	return nil
+}
+
+func mustJSON(value any) []byte {
+	data, _ := json.Marshal(value)
+	return data
+}
+
 func (s *Store) loadEventSequence() error {
+	if s.db != nil {
+		var sequence int64
+		if err := s.db.QueryRow(`SELECT COALESCE(MAX(sequence), 0) FROM events`).Scan(&sequence); err != nil {
+			return fmt.Errorf("read sqlite event sequence: %w", err)
+		}
+		if sequence > 0 {
+			s.eventSeq = uint64(sequence)
+		}
+		return nil
+	}
 	f, err := os.Open(filepath.Join(s.dir, "events.jsonl"))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -95,8 +264,8 @@ func (s *Store) ensureMaps() {
 }
 
 func (s *Store) Save() error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.saveLocked()
 }
 
@@ -104,6 +273,19 @@ func (s *Store) saveLocked() error {
 	b, err := json.MarshalIndent(s.state, "", "  ")
 	if err != nil {
 		return err
+	}
+	if s.db != nil {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin sqlite state save: %w", err)
+		}
+		if _, err := tx.Exec(`INSERT INTO metadata(key,value) VALUES('state_json',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, b); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("write sqlite state: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit sqlite state: %w", err)
+		}
 	}
 	tmp := filepath.Join(s.dir, "state.json.tmp")
 	if err := os.WriteFile(tmp, append(b, '\n'), 0600); err != nil {
@@ -288,13 +470,22 @@ func (s *Store) AppendEvent(event model.Event) error {
 	defer s.mu.Unlock()
 	s.eventSeq++
 	event.Sequence = s.eventSeq
+	encoded, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	if s.db != nil {
+		if _, err := s.db.Exec(`INSERT INTO events(sequence,event_id,observed_at,product,source_ip,route_template,event_json) VALUES(?,?,?,?,?,?,?)`, event.Sequence, event.EventID, event.ObservedAt.Format(time.RFC3339Nano), event.Product, event.SourceIP, event.RouteTemplate, string(encoded)); err != nil {
+			return fmt.Errorf("append sqlite event: %w", err)
+		}
+	}
 	path := filepath.Join(s.dir, "events.jsonl")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	if err := json.NewEncoder(f).Encode(event); err != nil {
+	if _, err := f.Write(append(encoded, '\n')); err != nil {
 		return err
 	}
 	return f.Sync()
@@ -303,6 +494,41 @@ func (s *Store) AppendEvent(event model.Event) error {
 func (s *Store) Events(limit int, product, sourceIP string) ([]model.Event, error) {
 	if limit == 0 || limit > 1000 {
 		limit = 100
+	}
+	if s.db != nil {
+		rows, err := s.db.Query(`SELECT event_json FROM events ORDER BY sequence ASC`)
+		if err != nil {
+			return nil, fmt.Errorf("query sqlite events: %w", err)
+		}
+		defer rows.Close()
+		var all []model.Event
+		for rows.Next() {
+			var raw string
+			if err := rows.Scan(&raw); err != nil {
+				return nil, err
+			}
+			var event model.Event
+			if json.Unmarshal([]byte(raw), &event) != nil {
+				continue
+			}
+			if product != "" && event.Product != product {
+				continue
+			}
+			if sourceIP != "" && event.SourceIP != sourceIP {
+				continue
+			}
+			all = append(all, event)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		if limit > 0 && len(all) > limit {
+			all = all[len(all)-limit:]
+		}
+		for i, j := 0, len(all)-1; i < j; i, j = i+1, j-1 {
+			all[i], all[j] = all[j], all[i]
+		}
+		return all, nil
 	}
 	path := filepath.Join(s.dir, "events.jsonl")
 	f, err := os.Open(path)

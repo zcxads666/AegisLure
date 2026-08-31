@@ -6,10 +6,10 @@ AegisLure 提供五类安全的 clean-room 协议仿真：New API、vLLM、Ollam
 
 ## 当前版本
 
-当前仓库实现的是可断网运行的 Standalone P0–P2 baseline：
+当前仓库实现的是可断网运行的 Standalone 单机 baseline：
 
 - Go HTTP 服务，同时承载启用的 profile 和隐藏管理入口；
-- 事件 JSONL append-only 存储、虚拟账户/令牌/额度和风险聚合；这是 Lite 存储后端，SQLite WAL/多机 Hive 属于后续发布门；
+- SQLite WAL 权威存储、JSONL 兼容镜像、虚拟账户/令牌/额度和风险聚合；多机 Hive/传输仍属于后续发布门；
 - `exact/contains/starts_with/ends_with` 探活规则的安全契约；
 - vLLM `secured/legacy-gap/no-key` 语义、Ollama 原生/ OpenAI 兼容接口、SGLang HTTP 管理面和 LocalAI 模型管理面；
 - New API 风格的 guest → 注册 → 签到 → honey key → 合成调用 → 日志链；
@@ -21,7 +21,7 @@ AegisLure 提供五类安全的 clean-room 协议仿真：New API、vLLM、Ollam
 
 ## 本地运行
 
-需要 Go 1.22+：
+需要 Go 1.25+：
 
 ```bash
 ./hpctl init --config ./config.json --data-dir ./data

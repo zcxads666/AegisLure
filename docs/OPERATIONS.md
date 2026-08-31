@@ -33,7 +33,7 @@ The current admin profile intentionally has no Bootstrap code and no TOTP/MFA. T
 
 The backup archive contains the runtime config and event/state files. Protect it like a secret because the config contains the instance key and the state contains keyed hashes. Restore only onto an isolated, stopped installation after validating ownership and permissions. Restore accepts only the three expected archive members, applies size limits, stages extraction, and atomically replaces state/data files; it does not restore TLS secrets or arbitrary paths.
 
-The Lite backend currently uses an append-only `events.jsonl` file plus an atomic JSON state file. Event sequence numbers are persisted in the event stream and re-established on restart; duplicate ingestion from the same process is not currently a distributed ACK protocol. Do not treat this standalone store as the later PostgreSQL/Hive sensor transport.
+The standalone backend uses `aegislure.sqlite` in WAL mode as its authoritative local store, plus append-only `events.jsonl` and atomic `state.json` compatibility/backup mirrors. Event sequence numbers and virtual state are restored after restart. Imported third-party events use a local provenance key for idempotency; this is not the later distributed durable ACK protocol. Do not treat this standalone store as the later PostgreSQL/Hive sensor transport.
 
 ## Incident response
 

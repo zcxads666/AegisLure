@@ -14,7 +14,7 @@ Internet
    └── random admin port + exact random path → authenticated control API
 ```
 
-The current binary combines the first-stage `hp-edge`, `hp-core`, `hp-collector`, `hp-controller` and `hp-admin-gateway` responsibilities so it can run on a single small node. The code keeps product routing, event storage, detection and admin paths separated behind package boundaries so they can become processes in Distributed v2 without changing the event contract.
+The current binary combines the first-stage `hp-edge`, `hp-core`, `hp-collector`, `hp-controller` and `hp-admin-gateway` responsibilities so it can run on a single small node. SQLite WAL is the authoritative local store; `events.jsonl` and `state.json` remain bounded compatibility/backup mirrors. The code keeps product routing, event storage, detection and admin paths separated behind package boundaries so they can become processes in Distributed v2 without changing the event contract.
 
 ## Four configuration contracts
 
@@ -39,7 +39,7 @@ The service never emits a `real_inference` outcome.
 
 ## Next release gates
 
-1. Replace the Lite JSONL store with the planned SQLite WAL adapter and retention jobs while keeping the same event schema.
+1. Add retention jobs while keeping the SQLite WAL event schema and JSONL compatibility mirror bounded.
 2. Split OAuth broker and mailer into separate egress-allowlisted services; no provider credentials belong in the current binary.
 3. Add New API upstream fork build metadata and a source-code/NOTICE synchronization check.
 4. Add compatibility golden fixtures from safe public contracts, fuzzing, no-egress integration tests and arm64 image builds.
