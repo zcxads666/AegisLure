@@ -73,14 +73,22 @@ func (a *App) newAPIOAuthStatus() map[string]any {
 	return status
 }
 
+const newAPILoginFailureScore = 10
+
+func addNewAPILoginFailureRisk(obs *Observation) {
+	obs.ExtraScore += newAPILoginFailureScore
+	obs.ExtraReasons = append(obs.ExtraReasons, "newapi_login_failed")
+}
+
 func markNewAPIOAuthObservation(obs *Observation, provider, intent, surface, channelState, outcome string) {
 	obs.EventType = "newapi.oauth.simulation"
 	obs.AuthOutcome = "rejected"
 	obs.ExecutionOutcome = "rejected_before_dispatch"
 	obs.InvocationLevel = string(model.L1)
-	obs.IntentClass = "normal_use"
-	zero := 0
-	obs.ScoreOverride = &zero
+	// An OAuth button click is an authentication attempt just like a failed
+	// password login. Keep the OAuth-specific event metadata while sharing the
+	// same risk evidence and detector-derived intent classification.
+	addNewAPILoginFailureRisk(obs)
 	if obs.Metadata == nil {
 		obs.Metadata = make(map[string]string)
 	}
@@ -98,6 +106,7 @@ func markNewAPIOAuthObservation(obs *Observation, provider, intent, surface, cha
 	obs.Metadata["oauth_outcome"] = outcome
 	obs.Metadata["oauth_network"] = "none"
 	obs.Metadata["oauth_credentials"] = "not_collected"
+	obs.Metadata["risk_equivalent"] = "newapi.user.login.failed"
 }
 
 func (a *App) writeNewAPIOAuthNotFound(w *captureWriter) {

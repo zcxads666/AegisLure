@@ -110,6 +110,10 @@ func TestNewAPIOAuthSimulationIsConfigurableAndRecordsNoProviderCredentials(t *t
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("disabled OAuth simulation status = %d", resp.StatusCode)
 	}
+	resp, _ = doJSON(t, public, http.MethodPost, "/api/user/login", map[string]string{"username": "missing-login-user", "password": "wrong-password"})
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("failed password login status = %d", resp.StatusCode)
+	}
 
 	admin := &inProcessClient{handler: a.adminHandler(), cookies: map[string]string{}}
 	if resp, _ := doJSON(t, admin, http.MethodPost, cfg.AdminPath+"admin/api/v1/auth/login", map[string]string{"username": "owner", "password": "correct horse battery staple"}); resp.StatusCode != http.StatusOK {
@@ -151,18 +155,26 @@ func TestNewAPIOAuthSimulationIsConfigurableAndRecordsNoProviderCredentials(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := false
+	var loginEvent, oauthEvent *model.Event
 	for _, event := range events {
+		if event.EventType == "newapi.user.login.failed" && event.RouteTemplate == "newapi.user.login" {
+			candidate := event
+			loginEvent = &candidate
+		}
 		if event.EventType != "newapi.oauth.simulation" || event.RouteTemplate != "newapi.oauth.simulation" || event.Metadata["oauth_provider"] != "github" || event.Metadata["oauth_network"] != "none" || event.Metadata["oauth_outcome"] != "rejected" {
 			continue
 		}
-		found = true
-		if event.Metadata["oauth_outcome"] != "rejected" || event.Metadata["oauth_surface"] != "register" || event.Score != 0 || strings.Contains(strings.ToLower(event.BodyPreview), "access_token") || strings.Contains(strings.ToLower(event.BodyPreview), "client_secret") {
+		candidate := event
+		oauthEvent = &candidate
+		if event.Metadata["oauth_outcome"] != "rejected" || event.Metadata["oauth_surface"] != "register" || event.Metadata["risk_equivalent"] != "newapi.user.login.failed" || !containsString(event.ReasonCodes, "newapi_login_failed") || strings.Contains(strings.ToLower(event.BodyPreview), "access_token") || strings.Contains(strings.ToLower(event.BodyPreview), "client_secret") {
 			t.Fatalf("OAuth event was not bounded and rejected safely: %+v", event)
 		}
 	}
-	if !found {
-		t.Fatal("OAuth simulation event was not recorded")
+	if loginEvent == nil || oauthEvent == nil {
+		t.Fatalf("authentication risk events were not recorded: login=%+v oauth=%+v", loginEvent, oauthEvent)
+	}
+	if oauthEvent.Score != loginEvent.Score || oauthEvent.Confidence != loginEvent.Confidence || oauthEvent.IntentClass != loginEvent.IntentClass {
+		t.Fatalf("OAuth risk did not match failed password login: login=%+v oauth=%+v", *loginEvent, *oauthEvent)
 	}
 }
 

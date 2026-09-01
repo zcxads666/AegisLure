@@ -203,8 +203,7 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		}
 		user, ok := a.store.FindHoneyUser(security.Fingerprint(a.cfg.InstanceKey, username))
 		if !ok || user.PasswordFP != security.Fingerprint(a.cfg.InstanceKey, value["password"]) {
-			obs.ExtraScore += 10
-			obs.ExtraReasons = append(obs.ExtraReasons, "newapi_login_failed")
+			addNewAPILoginFailureRisk(obs)
 			a.writeJSON(w, http.StatusUnauthorized, map[string]any{"success": false, "message": "invalid username or password"})
 			return
 		}
