@@ -401,6 +401,8 @@ func (a *App) handleAdminAPI(w http.ResponseWriter, r *http.Request, path string
 		a.adminIdentityIndicatorAction(w, r, strings.TrimPrefix(path, "identity-indicators/"))
 	case strings.HasPrefix(path, "identity-policies/") && r.Method == http.MethodPost:
 		a.adminIdentityPolicyAction(w, r, strings.TrimPrefix(path, "identity-policies/"))
+	case strings.HasPrefix(path, "identity-policies/") && (r.Method == http.MethodPatch || r.Method == http.MethodPut):
+		a.adminIdentityPolicyUpdate(w, r, strings.TrimPrefix(path, "identity-policies/"))
 	case path == "instances" && r.Method == http.MethodGet:
 		a.adminInstances(w)
 	case path == "instances" && r.Method == http.MethodPost:
@@ -411,8 +413,8 @@ func (a *App) handleAdminAPI(w http.ResponseWriter, r *http.Request, path string
 		a.adminPacks(w)
 	case path == "audit":
 		a.adminAudit(w, r)
-	case path == "identity-policies":
-		a.writeJSON(w, http.StatusOK, map[string]any{"providers": []map[string]string{{"provider": "github", "mode": "local_only", "cross_site": "disabled_by_default"}, {"provider": "discord", "mode": "local_only", "cross_site": "blocked"}, {"provider": "linuxdo", "mode": "local_only", "cross_site": "pending_approval"}}})
+	case path == "identity-policies" && r.Method == http.MethodGet:
+		a.adminIdentityPolicies(w)
 	case path == "identities" && r.Method == http.MethodGet:
 		a.adminIdentities(w)
 	case strings.HasPrefix(path, "identities/"):

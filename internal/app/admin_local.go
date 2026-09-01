@@ -862,7 +862,7 @@ func (a *App) adminInstanceCompatibility(w http.ResponseWriter, name string) {
 
 func compatibilityRoutes(product string) []string {
 	routes := map[string][]string{
-		model.ProductNewAPI:  {"/", "/login", "/sign-in", "/register", "/sign-up", "/forgot-password", "/forget-password", "/dashboard", "/models", "/pricing", "/docs", "/keys", "/token", "/usage", "/usage-logs", "/profile", "/api/status", "/api/user/login", "/api/user/register", "/api/user/logout", "/api/user/self", "/api/user/forgot-password", "/api/user/forget-password", "/api/user/checkin", "/api/user/logs", "/api/log", "/api/oauth/{provider}/start", "/api/oauth/{provider}/callback", "/api/token", "/api/token/{id}", "/v1/models", "/v1/models/{model}", "/v1/messages", "/v1/chat/completions", "/v1/completions", "/v1/responses", "/v1/embeddings", "/v1beta/models", "/v1beta/models/{model}:generateContent", "/v1beta/models/{model}:streamGenerateContent", "/v1beta/openai/models"},
+		model.ProductNewAPI:  {"/", "/login", "/sign-in", "/register", "/sign-up", "/forgot-password", "/forget-password", "/dashboard", "/models", "/pricing", "/docs", "/keys", "/token", "/usage", "/usage-logs", "/profile", "/api/status", "/api/user/login", "/api/user/register", "/api/user/logout", "/api/user/self", "/api/user/forgot-password", "/api/user/forget-password", "/api/user/checkin", "/api/user/logs", "/api/log", "/api/oauth/state", "/api/oauth/{provider}/start", "/api/oauth/{provider}/callback", "/api/token", "/api/token/{id}", "/v1/models", "/v1/models/{model}", "/v1/messages", "/v1/chat/completions", "/v1/completions", "/v1/responses", "/v1/embeddings", "/v1beta/models", "/v1beta/models/{model}:generateContent", "/v1beta/models/{model}:streamGenerateContent", "/v1beta/openai/models"},
 		model.ProductVLLM:    {"/", "/health", "/version", "/metrics", "/v1/models", "/v1/chat/completions", "/v1/completions", "/v1/responses", "/v1/embeddings", "/invocations", "/docs", "/openapi.json"},
 		model.ProductOllama:  {"/", "/api/version", "/api/tags", "/api/ps", "/api/show", "/api/generate", "/api/chat", "/api/embeddings", "/v1/models", "/v1/chat/completions", "/v1/embeddings"},
 		model.ProductSGLang:  {"/health", "/get_model_info", "/metrics", "/docs", "/redoc", "/openapi.json", "/server_info", "/generate", "/load_lora_adapter_from_tensors", "/update_weights_from_disk", "/flush_cache", "/get_weights_by_name", "/v1/models", "/v1/chat/completions"},
@@ -1175,4 +1175,65 @@ func (a *App) adminIdentityPolicyAction(w http.ResponseWriter, r *http.Request, 
 	}
 	a.recordAudit(r, "identity.policy.validate", "identity-policy/"+providerText, "success", map[string]string{"mode": mode})
 	a.writeJSON(w, http.StatusOK, map[string]any{"provider": provider, "valid": true, "mode": mode, "cross_site_feed": false, "raw_provider_id": false, "email": false, "token": false})
+}
+
+func (a *App) adminIdentityPolicies(w http.ResponseWriter) {
+	policies := a.store.ListOAuthChannelPolicies()
+	items := make([]map[string]any, 0, len(policies))
+	for _, policy := range policies {
+		items = append(items, map[string]any{
+			"provider":   policy.Provider,
+			"enabled":    policy.Enabled,
+			"mode":       policy.Mode,
+			"cross_site": policy.CrossSite,
+			"updated_at": policy.UpdatedAt,
+		})
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"providers": items})
+}
+
+type identityPolicyUpdateRequest struct {
+	Enabled *bool `json:"enabled"`
+}
+
+func (a *App) adminIdentityPolicyUpdate(w http.ResponseWriter, r *http.Request, path string) {
+	if !sameOriginRequest(r) {
+		a.writeJSON(w, http.StatusForbidden, map[string]string{"error": "cross-site request rejected"})
+		return
+	}
+	providerText := strings.TrimSpace(path)
+	provider, ok := oauth.ParseProvider(providerText)
+	if !ok || providerText != string(provider) {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported identity provider"})
+		return
+	}
+	body, tooLarge := readBoundedBody(r, 4*1024)
+	if tooLarge {
+		a.writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "identity policy update too large"})
+		return
+	}
+	var request identityPolicyUpdateRequest
+	if err := decodeStrictValue(body, &request); err != nil || request.Enabled == nil {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "identity policy enabled flag is required"})
+		return
+	}
+	policy, ok := a.store.GetOAuthChannelPolicy(string(provider))
+	if !ok {
+		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "identity policy not found"})
+		return
+	}
+	policy.Enabled = *request.Enabled
+	if err := a.store.SetOAuthChannelPolicy(policy); err != nil {
+		a.writeJSON(w, http.StatusConflict, map[string]string{"error": "identity policy update failed"})
+		return
+	}
+	policy, _ = a.store.GetOAuthChannelPolicy(string(provider))
+	a.recordAudit(r, "identity.policy.update", "identity-policy/"+string(provider), "success", map[string]string{"enabled": fmt.Sprintf("%t", policy.Enabled)})
+	a.writeJSON(w, http.StatusOK, map[string]any{
+		"provider":   policy.Provider,
+		"enabled":    policy.Enabled,
+		"mode":       policy.Mode,
+		"cross_site": policy.CrossSite,
+		"updated_at": policy.UpdatedAt,
+	})
 }

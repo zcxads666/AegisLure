@@ -66,9 +66,20 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		}
 		session.UserID = user.ID
 		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": newAPIAuthBundle(user, session)})
+	case "newapi.oauth.simulation":
+		if r.Method != http.MethodPost {
+			a.methodNotAllowed(w)
+			return
+		}
+		a.handleNewAPIOAuthSimulation(w, r, body, obs)
 	case "newapi.oauth.start":
-		broker := a.currentOAuthBroker()
 		provider, ok := newAPIOAuthProvider(r.URL.Path, false)
+		if ok && a.oauthChannelEnabled(provider) {
+			markNewAPIOAuthObservation(obs, string(provider), "login", "login", "enabled", "rejected")
+			a.writeNewAPIOAuthRejected(w, http.StatusUnauthorized)
+			return
+		}
+		broker := a.currentOAuthBroker()
 		if broker == nil || !ok {
 			a.writeJSON(w, http.StatusNotFound, map[string]any{"error": map[string]string{"message": "Not found", "type": "invalid_request_error"}})
 			return
@@ -80,8 +91,13 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		}
 		http.Redirect(w, r, authorization.URL, http.StatusFound)
 	case "newapi.oauth.callback":
-		broker := a.currentOAuthBroker()
 		provider, ok := newAPIOAuthProvider(r.URL.Path, true)
+		if ok && a.oauthChannelEnabled(provider) {
+			markNewAPIOAuthObservation(obs, string(provider), "login", "login", "enabled", "rejected")
+			a.writeNewAPIOAuthRejected(w, http.StatusUnauthorized)
+			return
+		}
+		broker := a.currentOAuthBroker()
 		if broker == nil || !ok || r.URL.Query().Get("error") != "" {
 			a.writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "OAuth login could not be completed"})
 			return
@@ -225,7 +241,7 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		}
 		a.writeJSON(w, http.StatusAccepted, map[string]any{"success": true, "message": "If the account exists, password recovery instructions are available."})
 	case "newapi.status":
-		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{
+		status := map[string]any{
 			"status":                     true,
 			"version":                    "v0.0.0",
 			"system_name":                "New API",
@@ -233,12 +249,8 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 			"password_login_enabled":     true,
 			"password_register_enabled":  true,
 			"register_enabled":           true,
-			"oauth_register_enabled":     false,
 			"email_verification":         false,
 			"turnstile_check":            false,
-			"github_oauth":               false,
-			"discord_oauth":              false,
-			"linuxdo_oauth":              false,
 			"wechat_login":               false,
 			"passkey_login":              false,
 			"checkin_enabled":            true,
@@ -254,7 +266,11 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 			"SidebarModulesAdmin":        `{"chat":{"enabled":false},"console":{"enabled":true,"detail":true,"token":true,"log":true,"midjourney":false,"task":false},"personal":{"enabled":true,"topup":false,"personal":true},"admin":{"enabled":false}}`,
 			"footer_html":                `Frontend design and development by New API contributors.`,
 			"notice":                     "",
-		}})
+		}
+		for key, value := range a.newAPIOAuthStatus() {
+			status[key] = value
+		}
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": status})
 	case "newapi.checkin":
 		user, ok := a.requireHoneyUser(w, session)
 		if !ok {

@@ -24,3 +24,6 @@
 @media(max-width:1000px){.mobile-brand{display:flex}.fleet-summary{grid-template-columns:1fr 1fr 1fr}}
 @media(max-width:720px){.fleet-summary{gap:.6rem}.fleet-summary>div{padding:.75rem}.fleet-summary small{font-size:.62rem}.fleet-summary .summary-icon{width:1.8rem;height:1.8rem}.chain-meta{gap:.45rem}}
 @media(max-width:440px){.fleet-summary{grid-template-columns:1fr}.fleet-summary>div{justify-content:flex-start}}
+/* Identity policy controls add an explicit public-entry column. */
+.policy-row{grid-template-columns:1.1fr 1.1fr 1.2fr .9fr auto}.policy-row .toggle{justify-self:end}
+@media(max-width:720px){.policy-row{grid-template-columns:repeat(5,max-content)}}

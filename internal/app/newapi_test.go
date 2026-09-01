@@ -39,7 +39,7 @@ func TestNewAPIPublicPagesAndStatusContract(t *testing.T) {
 		if len(resp.Cookies()) != 0 || !strings.Contains(resp.Header.Get("Content-Security-Policy"), "script-src 'self'") {
 			t.Fatalf("New API page %s security headers/cookies failed: headers=%#v", path, resp.Header)
 		}
-		if !strings.Contains(string(body), "New API") || !strings.Contains(string(body), "/static/") {
+		if !strings.Contains(string(body), "New API") || !strings.Contains(string(body), "/static/") || !strings.Contains(string(body), "/static/js/oauth-flow.js") {
 			t.Fatalf("New API page %s is missing shell attribution: %s", path, body)
 		}
 		assertPublicResponseClean(t, resp, body)
@@ -82,12 +82,87 @@ func TestNewAPIPublicPagesAndStatusContract(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || !strings.Contains(resp.Header.Get("Content-Type"), "image/svg+xml") || !strings.Contains(string(body), "CC Switch") {
 		t.Fatalf("local CC Switch asset was not served: %d content-type=%q body=%s", resp.StatusCode, resp.Header.Get("Content-Type"), body)
 	}
+	resp, body = doRawJSON(t, client, http.MethodGet, "/static/js/oauth-flow.js", nil, nil)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(resp.Header.Get("Content-Type"), "javascript") || !strings.Contains(string(body), "/api/oauth/state") {
+		t.Fatalf("local OAuth flow asset was not served: %d content-type=%q body=%s", resp.StatusCode, resp.Header.Get("Content-Type"), body)
+	}
 
 	for _, path := range []string{"/admin", "/billing", "/payment", "/wallet", "/channels", "/models", "/users", "/redemption-codes", "/subscriptions", "/system-info", "/system-settings", "/playground", "/setup", "/oauth", "/webhook"} {
 		resp, body := doRawJSON(t, client, http.MethodGet, path, nil, nil)
 		if resp.StatusCode != http.StatusNotFound {
 			t.Fatalf("unsafe New API surface %s was exposed: %d %s", path, resp.StatusCode, body)
 		}
+	}
+}
+
+func TestNewAPIOAuthSimulationIsConfigurableAndRecordsNoProviderCredentials(t *testing.T) {
+	a, cfg, st := newTestApp(t, true)
+	defer st.Close()
+	cfg.ProfilePorts[model.ProductNewAPI] = 3000
+	profile := profiles.Build(cfg)[model.ProductNewAPI]
+	public := &inProcessClient{handler: a.publicHandler(profile), cookies: map[string]string{}}
+
+	resp, statusBody := doRawJSON(t, public, http.MethodGet, "/api/status", nil, nil)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(statusBody), `"oauth_register_enabled":false`) {
+		t.Fatalf("OAuth channels were not disabled by default: %d %s", resp.StatusCode, statusBody)
+	}
+	resp, _ = doJSON(t, public, http.MethodPost, "/api/oauth/state", map[string]string{"provider": "github", "intent": "login", "surface": "register"})
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("disabled OAuth simulation status = %d", resp.StatusCode)
+	}
+
+	admin := &inProcessClient{handler: a.adminHandler(), cookies: map[string]string{}}
+	if resp, _ := doJSON(t, admin, http.MethodPost, cfg.AdminPath+"admin/api/v1/auth/login", map[string]string{"username": "owner", "password": "correct horse battery staple"}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin login status = %d", resp.StatusCode)
+	}
+	resp, policies := doJSON(t, admin, http.MethodGet, cfg.AdminPath+"admin/api/v1/identity-policies", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("identity policy list status = %d", resp.StatusCode)
+	}
+	providers, ok := policies["providers"].([]any)
+	if !ok || len(providers) != 3 {
+		t.Fatalf("identity policy list = %#v", policies["providers"])
+	}
+	for _, item := range providers {
+		if value, ok := item.(map[string]any)["enabled"].(bool); !ok || value {
+			t.Fatalf("identity policy was unexpectedly enabled: %#v", item)
+		}
+	}
+	resp, updated := doJSON(t, admin, http.MethodPatch, cfg.AdminPath+"admin/api/v1/identity-policies/github", map[string]bool{"enabled": true})
+	if resp.StatusCode != http.StatusOK || updated["enabled"] != true {
+		t.Fatalf("identity policy update status = %d %#v", resp.StatusCode, updated)
+	}
+
+	resp, statusBody = doRawJSON(t, public, http.MethodGet, "/api/status", nil, nil)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(statusBody), `"oauth_register_enabled":true`) || !strings.Contains(string(statusBody), `"github_oauth":true`) {
+		t.Fatalf("enabled OAuth status contract failed: %d %s", resp.StatusCode, statusBody)
+	}
+	resp, simulation := doJSON(t, public, http.MethodPost, "/api/oauth/state", map[string]string{"provider": "github", "intent": "login", "surface": "register"})
+	if resp.StatusCode != http.StatusUnauthorized || simulation["success"] != false || simulation["code"] != "OAUTH_UNAVAILABLE" {
+		t.Fatalf("OAuth simulation response = %d %#v", resp.StatusCode, simulation)
+	}
+	resp = public.do(t, http.MethodGet, "/api/oauth/github/start", nil, "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("enabled direct OAuth start was not locally rejected: %d", resp.StatusCode)
+	}
+
+	events, err := st.Events(-1, model.ProductNewAPI, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range events {
+		if event.EventType != "newapi.oauth.simulation" || event.RouteTemplate != "newapi.oauth.simulation" || event.Metadata["oauth_provider"] != "github" || event.Metadata["oauth_network"] != "none" || event.Metadata["oauth_outcome"] != "rejected" {
+			continue
+		}
+		found = true
+		if event.Metadata["oauth_outcome"] != "rejected" || event.Metadata["oauth_surface"] != "register" || event.Score != 0 || strings.Contains(strings.ToLower(event.BodyPreview), "access_token") || strings.Contains(strings.ToLower(event.BodyPreview), "client_secret") {
+			t.Fatalf("OAuth event was not bounded and rejected safely: %+v", event)
+		}
+	}
+	if !found {
+		t.Fatal("OAuth simulation event was not recorded")
 	}
 }
 

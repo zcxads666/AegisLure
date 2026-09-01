@@ -219,6 +219,8 @@ func newAPIRoute(method, path string) string {
 		return "newapi.user.logout"
 	case path == "/api/user/auth/refresh":
 		return "newapi.auth.refresh"
+	case path == "/api/oauth/state":
+		return "newapi.oauth.simulation"
 	case strings.HasPrefix(path, "/api/oauth/"):
 		if strings.HasSuffix(path, "/callback") {
 			return "newapi.oauth.callback"

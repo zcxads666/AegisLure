@@ -121,6 +121,30 @@ type HoneyIdentity struct {
 	RevokedAt   time.Time `json:"revoked_at,omitempty"`
 }
 
+// OAuthChannelPolicy controls the public New API OAuth-shaped entry points.
+// It is deliberately separate from the optional oauth.Broker configuration:
+// enabling a channel only makes the local, synthetic UI available and never
+// authorizes outbound provider traffic or token handling.
+type OAuthChannelPolicy struct {
+	Provider  string    `json:"provider"`
+	Enabled   bool      `json:"enabled"`
+	Mode      string    `json:"mode"`
+	CrossSite string    `json:"cross_site"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
+}
+
+func OAuthChannelProviders() []string {
+	return []string{"github", "discord", "linuxdo"}
+}
+
+func DefaultOAuthChannelPolicies() map[string]OAuthChannelPolicy {
+	return map[string]OAuthChannelPolicy{
+		"github":  {Provider: "github", Mode: "local_only", CrossSite: "disabled_by_default"},
+		"discord": {Provider: "discord", Mode: "local_only", CrossSite: "blocked"},
+		"linuxdo": {Provider: "linuxdo", Mode: "local_only", CrossSite: "pending_approval"},
+	}
+}
+
 type VirtualEffect struct {
 	ID         string            `json:"id"`
 	OwnerScope string            `json:"owner_scope"`
@@ -194,6 +218,7 @@ type State struct {
 	ImportSources              map[string]ImportSource              `json:"import_sources,omitempty"`
 	IndicatorDecisions         map[string]IndicatorDecision         `json:"indicator_decisions,omitempty"`
 	IdentityIndicatorDecisions map[string]IdentityIndicatorDecision `json:"identity_indicator_decisions,omitempty"`
+	OAuthChannelPolicies       map[string]OAuthChannelPolicy        `json:"oauth_channel_policies,omitempty"`
 }
 
 // InteractionChainConfig controls how the local admin view groups the

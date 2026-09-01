@@ -293,6 +293,7 @@ func OpenWithOptions(dir, key string, options Options) (*Store, error) {
 		ImportSources:              make(map[string]model.ImportSource),
 		IndicatorDecisions:         make(map[string]model.IndicatorDecision),
 		IdentityIndicatorDecisions: make(map[string]model.IdentityIndicatorDecision),
+		OAuthChannelPolicies:       model.DefaultOAuthChannelPolicies(),
 	}
 	stateLoaded, err := s.loadStateFromSQLite()
 	if err != nil {
@@ -538,6 +539,25 @@ func (s *Store) ensureMaps() {
 	if s.state.IdentityIndicatorDecisions == nil {
 		s.state.IdentityIndicatorDecisions = make(map[string]model.IdentityIndicatorDecision)
 	}
+	if s.state.OAuthChannelPolicies == nil {
+		s.state.OAuthChannelPolicies = make(map[string]model.OAuthChannelPolicy)
+	}
+	defaults := model.DefaultOAuthChannelPolicies()
+	for _, provider := range model.OAuthChannelProviders() {
+		policy, ok := s.state.OAuthChannelPolicies[provider]
+		if !ok {
+			s.state.OAuthChannelPolicies[provider] = defaults[provider]
+			continue
+		}
+		policy.Provider = provider
+		if policy.Mode == "" {
+			policy.Mode = defaults[provider].Mode
+		}
+		if policy.CrossSite == "" {
+			policy.CrossSite = defaults[provider].CrossSite
+		}
+		s.state.OAuthChannelPolicies[provider] = policy
+	}
 }
 
 func (s *Store) ListImportSources() []model.ImportSource {
@@ -679,6 +699,72 @@ func (s *Store) SetIdentityIndicatorDecision(decision model.IdentityIndicatorDec
 	return s.Update(func(state *model.State) error {
 		decision.UpdatedAt = time.Now().UTC()
 		state.IdentityIndicatorDecisions[decision.IdentityID] = decision
+		return nil
+	})
+}
+
+func (s *Store) ListOAuthChannelPolicies() []model.OAuthChannelPolicy {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	defaults := model.DefaultOAuthChannelPolicies()
+	result := make([]model.OAuthChannelPolicy, 0, len(model.OAuthChannelProviders()))
+	for _, provider := range model.OAuthChannelProviders() {
+		policy, ok := s.state.OAuthChannelPolicies[provider]
+		if !ok {
+			policy = defaults[provider]
+		}
+		policy.Provider = provider
+		if policy.Mode == "" {
+			policy.Mode = defaults[provider].Mode
+		}
+		if policy.CrossSite == "" {
+			policy.CrossSite = defaults[provider].CrossSite
+		}
+		result = append(result, policy)
+	}
+	return result
+}
+
+func (s *Store) GetOAuthChannelPolicy(provider string) (model.OAuthChannelPolicy, bool) {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	defaults := model.DefaultOAuthChannelPolicies()
+	defaultPolicy, supported := defaults[provider]
+	if !supported {
+		return model.OAuthChannelPolicy{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	policy, ok := s.state.OAuthChannelPolicies[provider]
+	if !ok {
+		return defaultPolicy, true
+	}
+	policy.Provider = provider
+	if policy.Mode == "" {
+		policy.Mode = defaultPolicy.Mode
+	}
+	if policy.CrossSite == "" {
+		policy.CrossSite = defaultPolicy.CrossSite
+	}
+	return policy, true
+}
+
+func (s *Store) SetOAuthChannelPolicy(policy model.OAuthChannelPolicy) error {
+	provider := strings.ToLower(strings.TrimSpace(policy.Provider))
+	defaults := model.DefaultOAuthChannelPolicies()
+	defaultPolicy, supported := defaults[provider]
+	if !supported {
+		return errors.New("unsupported OAuth channel")
+	}
+	policy.Provider = provider
+	if policy.Mode == "" {
+		policy.Mode = defaultPolicy.Mode
+	}
+	if policy.CrossSite == "" {
+		policy.CrossSite = defaultPolicy.CrossSite
+	}
+	policy.UpdatedAt = time.Now().UTC()
+	return s.Update(func(state *model.State) error {
+		state.OAuthChannelPolicies[provider] = policy
 		return nil
 	})
 }
