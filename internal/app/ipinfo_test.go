@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zcxads666/AegisLure/internal/config"
 	"github.com/zcxads666/AegisLure/internal/model"
 )
 
@@ -80,6 +81,7 @@ func TestDashboardSourceCountryUsesIPInfoAndKeepsFallbackMetadata(t *testing.T) 
 		_, _ = io.WriteString(w, `{"country_code":"US","country":"United States","continent":"North America"}`)
 	}))
 	defer server.Close()
+	a.ipInfo.setProvider(config.GeoIPProviderIPInfoLite)
 	a.ipInfo.endpoint = server.URL + "/lite/"
 	a.ipInfo.setToken("test-token")
 
@@ -87,6 +89,20 @@ func TestDashboardSourceCountryUsesIPInfoAndKeepsFallbackMetadata(t *testing.T) 
 	countries := analytics["source_countries"].([]map[string]any)
 	if len(countries) != 1 || countries[0]["name"] != "United States" || countries[0]["country_code"] != "US" || countries[0]["geo_source"] != "ipinfo_lite" {
 		t.Fatalf("dashboard IPinfo country aggregation = %#v", countries)
+	}
+}
+
+func TestMaxMindClientDefaultsToLocalAndFallsBackWhenDatabasesAreMissing(t *testing.T) {
+	cfg := &config.Config{DataDir: t.TempDir(), GeoIPProvider: config.GeoIPProviderMaxMind}
+	client := newGeoIPClient(cfg)
+	defer client.close()
+	result := client.resolve("8.8.8.8")
+	if result.Source != "offline" || result.Status != "fallback_maxmind_unavailable" || result.Country != "未知" {
+		t.Fatalf("missing MaxMind databases should use fallback: %#v", result)
+	}
+	view := client.settingsView()
+	if view["provider"] != config.GeoIPProviderMaxMind || view["configured"] != false {
+		t.Fatalf("unexpected default MaxMind settings: %#v", view)
 	}
 }
 
@@ -103,7 +119,7 @@ func TestAdminIPInfoSettingsPersistsAndDoesNotReturnRawToken(t *testing.T) {
 		t.Fatalf("initial IPinfo settings response = %d %s", resp.StatusCode, body)
 	}
 	var initial map[string]any
-	if err := json.Unmarshal(body, &initial); err != nil || initial["configured"] != false || initial["masked_token"] != "" {
+	if err := json.Unmarshal(body, &initial); err != nil || initial["provider"] != config.GeoIPProviderMaxMind || initial["configured"] != false || initial["masked_token"] != "" {
 		t.Fatalf("initial IPinfo settings = %s", body)
 	}
 
@@ -133,5 +149,14 @@ func TestAdminIPInfoSettingsPersistsAndDoesNotReturnRawToken(t *testing.T) {
 	var cleared map[string]any
 	if err := json.Unmarshal(body, &cleared); err != nil || cleared["configured"] != false || cleared["masked_token"] != "" {
 		t.Fatalf("cleared IPinfo settings = %s", body)
+	}
+
+	resp, body = doRawJSON(t, admin, http.MethodPut, a.cfg.AdminPath+"admin/api/v1/ipinfo-lite", map[string]string{"provider": config.GeoIPProviderMaxMind}, nil)
+	if resp.StatusCode != http.StatusOK || bytes.Contains(body, []byte(token)) {
+		t.Fatalf("switched MaxMind settings response = %d %s", resp.StatusCode, body)
+	}
+	var switched map[string]any
+	if err := json.Unmarshal(body, &switched); err != nil || switched["provider"] != config.GeoIPProviderMaxMind || switched["configured"] != false {
+		t.Fatalf("switched MaxMind settings = %s", body)
 	}
 }

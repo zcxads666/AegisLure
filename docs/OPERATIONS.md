@@ -47,20 +47,39 @@ The admin import-source registry stores only a bounded source declaration (`sour
 
 IP review actions are local, manual decisions with a 60-second to 7-day TTL. `status=approved` is required for the `nftables` projection; exports are filtered, bounded and synthetic. `POST /admin/api/v1/exports` creates a transient 15-minute local export job, and the status/download endpoints do not persist the generated document in the event store.
 
-## Optional IPinfo Lite lookup
+## IP geolocation provider
 
-The admin console's Settings page can store an optional IPinfo Lite token in
-the owner-readable runtime config. The backend never returns the raw token to
-the browser; `GET /admin/api/v1/ipinfo-lite` returns only configuration status,
-a masked suffix and bounded timeout/cache metadata, while
-`PUT /admin/api/v1/ipinfo-lite` accepts `{"token":"..."}` or an empty token to
-disable the lookup. Only public IPs are sent to the provider. Loopback,
-private, link-local, multicast, unspecified and documentation ranges are
-classified locally. Missing credentials, provider errors and timeouts fall
-back to the deterministic local label or `未知`; successful responses are
-cached for 24 hours and failures for 5 minutes. See the [IPinfo Lite API
-documentation](https://ipinfo.io/developers//lite-api) for the provider
-endpoint and response fields.
+The default provider is local MaxMind GeoLite2 City + ASN. Put the two
+databases in the deployment data directory's `geoip` subdirectory:
+
+```text
+runtime/data/geoip/GeoLite2-City.mmdb
+runtime/data/geoip/GeoLite2-ASN.mmdb
+```
+
+The container equivalent is
+`/var/lib/aegislure/data/geoip/GeoLite2-City.mmdb` and
+`/var/lib/aegislure/data/geoip/GeoLite2-ASN.mmdb`. Override either path with
+`HP_MAXMIND_CITY_DB` or `HP_MAXMIND_ASN_DB`. Database files are opened once and
+reused for concurrent lookups; replacing them requires a service restart.
+Only public IPs reach the selected provider. Loopback, private, link-local,
+multicast, unspecified and documentation ranges are classified locally. A
+missing database, missing record or lookup error falls back to the deterministic
+local label or `未知`.
+
+The Settings page can switch the provider to IPinfo Lite and save its token.
+The backend never returns the raw token; `GET /admin/api/v1/ipinfo-lite` returns
+the selected provider, database availability, masked token and bounded
+timeout/cache metadata. The same endpoint accepts either the new form
+`{"provider":"maxmind"|"ipinfo_lite","token":"..."}` or the legacy
+token-only form. IPinfo successes are cached for 24 hours and failures for 5
+minutes. Set `HP_GEOIP_PROVIDER=maxmind|ipinfo_lite` to choose the startup
+provider; an environment value takes precedence over the saved setting.
+
+Download GeoLite2 through an authorized MaxMind account and follow its license
+terms. See the [MaxMind GeoLite2 download documentation](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data/),
+the [GeoIP2 Go reader documentation](https://github.com/oschwald/geoip2-golang),
+and the [IPinfo Lite API documentation](https://ipinfo.io/developers//lite-api).
 
 ## Optional OAuth broker
 

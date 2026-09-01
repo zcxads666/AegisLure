@@ -96,7 +96,7 @@ type rateBucket struct {
 
 func New(cfg *config.Config, st *store.Store) *App {
 	a := &App{
-		cfg: cfg, store: st, profiles: profiles.Build(cfg), log: log.New(os.Stdout, "aegislure ", log.LstdFlags|log.LUTC), sessions: make(map[string]Session), anonymous: make(map[string]string), newAPIRawKeys: make(map[string]string), adminSessions: make(map[string]AdminSession), rateBuckets: make(map[string]rateBucket), publicSem: make(chan struct{}, 64), personaRuntime: make(map[string]*personaRuntimeState), profileServers: make(map[string]*http.Server), profilePorts: make(map[string]net.Listener), exports: make(map[string]localExportJob), ipInfo: newIPInfoClient(cfg.IPInfoLiteToken),
+		cfg: cfg, store: st, profiles: profiles.Build(cfg), log: log.New(os.Stdout, "aegislure ", log.LstdFlags|log.LUTC), sessions: make(map[string]Session), anonymous: make(map[string]string), newAPIRawKeys: make(map[string]string), adminSessions: make(map[string]AdminSession), rateBuckets: make(map[string]rateBucket), publicSem: make(chan struct{}, 64), personaRuntime: make(map[string]*personaRuntimeState), profileServers: make(map[string]*http.Server), profilePorts: make(map[string]net.Listener), exports: make(map[string]localExportJob), ipInfo: newGeoIPClient(cfg),
 	}
 	a.ruleEngine = detect.NewRuleEngine()
 	seedBuiltinPacks(a)
@@ -312,6 +312,11 @@ func (a *App) Shutdown(ctx context.Context) error {
 	var first error
 	for _, server := range servers {
 		if err := server.Shutdown(ctx); err != nil && first == nil {
+			first = err
+		}
+	}
+	if a.ipInfo != nil {
+		if err := a.ipInfo.close(); err != nil && first == nil {
 			first = err
 		}
 	}

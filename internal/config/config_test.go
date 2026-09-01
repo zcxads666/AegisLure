@@ -27,6 +27,47 @@ func TestLoadAppliesSecureRuntimeDefaultsAndEnvironmentOverrides(t *testing.T) {
 	if len(cfg.AdminHostAllowlist) != 2 || cfg.AdminHostAllowlist[0] != "admin.example" || cfg.AdminHostAllowlist[1] != "127.0.0.1" {
 		t.Fatalf("host allowlist not applied: %#v", cfg.AdminHostAllowlist)
 	}
+	if cfg.GeoIPProvider != GeoIPProviderMaxMind {
+		t.Fatalf("GeoIP provider default = %q, want %q", cfg.GeoIPProvider, GeoIPProviderMaxMind)
+	}
+	cityPath, asnPath := cfg.GeoIPDatabasePaths()
+	if cityPath != filepath.Join(filepath.Dir(path), "geoip", DefaultMaxMindCityDB) || asnPath != filepath.Join(filepath.Dir(path), "geoip", DefaultMaxMindASNDB) {
+		t.Fatalf("unexpected default GeoIP database paths: %q %q", cityPath, asnPath)
+	}
+}
+
+func TestLoadNormalizesGeoIPProviderAndRuntimeDatabasePaths(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"instance_id":"instance","instance_key":"key"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HP_GEOIP_PROVIDER", "ipinfo-lite")
+	t.Setenv("HP_MAXMIND_CITY_DB", "/srv/geoip/city.mmdb")
+	t.Setenv("HP_MAXMIND_ASN_DB", "/srv/geoip/asn.mmdb")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GeoIPProvider != GeoIPProviderIPInfoLite {
+		t.Fatalf("GeoIP provider normalization = %q", cfg.GeoIPProvider)
+	}
+	cityPath, asnPath := cfg.GeoIPDatabasePaths()
+	if cityPath != "/srv/geoip/city.mmdb" || asnPath != "/srv/geoip/asn.mmdb" {
+		t.Fatalf("runtime database paths = %q %q", cityPath, asnPath)
+	}
+	encoded, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "city.mmdb") || strings.Contains(string(encoded), "asn.mmdb") {
+		t.Fatalf("runtime database paths leaked into config JSON: %s", encoded)
+	}
+}
+
+func TestNormalizeGeoIPRejectsUnknownProvider(t *testing.T) {
+	if err := NormalizeGeoIP(&Config{GeoIPProvider: "unknown"}); err == nil {
+		t.Fatal("unknown GeoIP provider was accepted")
+	}
 }
 
 func TestLoadRejectsInvalidRetentionEnvironmentWithoutDroppingDefaults(t *testing.T) {

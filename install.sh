@@ -89,8 +89,8 @@ docker compose version >/dev/null 2>&1 || { echo "Docker Compose v2 is required"
 docker info >/dev/null 2>&1 || { echo "Docker CLI is installed, but Docker Engine is not reachable; install/start the daemon or set DOCKER_HOST" >&2; exit 1; }
 command -v openssl >/dev/null 2>&1 || { echo "openssl is required" >&2; exit 1; }
 
-mkdir -p runtime/data runtime/secrets
-chmod 700 runtime runtime/data runtime/secrets
+mkdir -p runtime/data runtime/data/geoip runtime/secrets
+chmod 700 runtime runtime/data runtime/data/geoip runtime/secrets
 touch .env
 chmod 600 .env
 

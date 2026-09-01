@@ -31,14 +31,22 @@ request.
   bounded read. Transient indicator export jobs expire after 15 minutes and are
   not copied into the event store.
 
-If the operator explicitly configures an IPinfo Lite token, public source IPs
-may be sent to IPinfo for country/continent/ASN enrichment. Local, private,
-link-local, multicast, unspecified and documentation addresses are classified
-without an outbound lookup. The raw token is kept in the owner-readable
-runtime config and is never returned by the admin API; unset, failed and
-timed-out lookups fall back to `未知` or the deterministic local label. See
-the [IPinfo Lite API documentation](https://ipinfo.io/developers//lite-api)
-for the provider's documented fields and endpoint.
+Public source IP enrichment uses the local MaxMind GeoLite2 City and ASN
+databases by default. The readers are opened from the owner-selected runtime
+paths and reused locally; the database files and their full paths are not
+returned by the admin API. Local, private, link-local, multicast, unspecified
+and documentation addresses are classified without any provider lookup.
+Missing files, missing records and lookup errors fall back to `未知` or the
+deterministic local label.
+
+The operator can explicitly switch the provider in Settings to IPinfo Lite.
+Only then may public source IPs be sent to IPinfo for country/continent/ASN
+enrichment. The raw token is kept in the owner-readable runtime config and is
+never returned by the admin API; the response exposes only a masked suffix and
+bounded status metadata. See the [MaxMind GeoLite2 documentation](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data/),
+the [GeoIP2 Go reader documentation](https://github.com/oschwald/geoip2-golang)
+and the [IPinfo Lite API documentation](https://ipinfo.io/developers//lite-api)
+for provider details.
 
 ## Retention and deletion
 

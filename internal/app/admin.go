@@ -365,7 +365,7 @@ func (a *App) handleAdminAPI(w http.ResponseWriter, r *http.Request, path string
 	switch {
 	case path == "dashboard":
 		a.adminDashboard(w)
-	case path == "ipinfo-lite" && (r.Method == http.MethodGet || r.Method == http.MethodPut):
+	case (path == "ipinfo-lite" || path == "geoip") && (r.Method == http.MethodGet || r.Method == http.MethodPut):
 		a.adminIPInfoSettings(w, r)
 	case path == "import-sources" || strings.HasPrefix(path, "import-sources/"):
 		a.adminImportSourceRoute(w, r, path)

@@ -35,6 +35,9 @@ services:
       HP_DB_USER: ${HP_DB_USER:-aegislure}
       HP_DB_PASSWORD_FILE: ${HP_DB_PASSWORD_FILE:-}
       HP_DB_SSLMODE: ${HP_DB_SSLMODE:-disable}
+      HP_GEOIP_PROVIDER: ${HP_GEOIP_PROVIDER:-}
+      HP_MAXMIND_CITY_DB: ${HP_MAXMIND_CITY_DB:-/var/lib/aegislure/data/geoip/GeoLite2-City.mmdb}
+      HP_MAXMIND_ASN_DB: ${HP_MAXMIND_ASN_DB:-/var/lib/aegislure/data/geoip/GeoLite2-ASN.mmdb}
       HP_PROFILES: ${HP_PROFILES:-ollama,vllm}
       HP_ADMIN_PORT: ${HP_ADMIN_PORT:-28443}
       HP_COOKIE_SECURE: "1"

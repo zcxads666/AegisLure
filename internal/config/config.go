@@ -43,11 +43,21 @@ type Config struct {
 	OllamaKeepAlive      string            `json:"ollama_keep_alive,omitempty"`
 	VLLMDocsEnabled      bool              `json:"vllm_docs_enabled,omitempty"`
 	VLLMServedNames      []string          `json:"vllm_served_model_names,omitempty"`
+	GeoIPProvider        string            `json:"geoip_provider,omitempty"`
 	IPInfoLiteToken      string            `json:"ipinfo_lite_token,omitempty"`
+	MaxMindCityDBPath    string            `json:"-"`
+	MaxMindASNDBPath     string            `json:"-"`
 	ProfilePorts         map[string]int    `json:"profile_ports"`
 	EnabledProfiles      []string          `json:"enabled_profiles"`
 	Scenario             map[string]string `json:"scenario"`
 }
+
+const (
+	GeoIPProviderMaxMind    = "maxmind"
+	GeoIPProviderIPInfoLite = "ipinfo_lite"
+	DefaultMaxMindCityDB    = "GeoLite2-City.mmdb"
+	DefaultMaxMindASNDB     = "GeoLite2-ASN.mmdb"
+)
 
 func Load(path string) (*Config, error) {
 	b, err := os.ReadFile(path)
@@ -70,6 +80,15 @@ func Load(path string) (*Config, error) {
 	if c.DatabaseDriver == "" {
 		c.DatabaseDriver = "sqlite"
 	}
+	if c.GeoIPProvider == "" {
+		// Preserve an explicitly configured IPinfo token from older config
+		// versions; otherwise new and unconfigured instances default locally.
+		if strings.TrimSpace(c.IPInfoLiteToken) != "" {
+			c.GeoIPProvider = GeoIPProviderIPInfoLite
+		} else {
+			c.GeoIPProvider = GeoIPProviderMaxMind
+		}
+	}
 	if c.EventRetentionDays <= 0 {
 		c.EventRetentionDays = 30
 	}
@@ -81,6 +100,9 @@ func Load(path string) (*Config, error) {
 		c.DataDir = filepath.Dir(path)
 	}
 	applyEnv(&c)
+	if err := NormalizeGeoIP(&c); err != nil {
+		return nil, err
+	}
 	if err := NormalizeDatabase(&c); err != nil {
 		return nil, err
 	}
@@ -149,6 +171,7 @@ func Init(path, dataDir string) (*Config, error) {
 		InstanceKey:        instanceKey,
 		DataDir:            dataDir,
 		DatabaseDriver:     "sqlite",
+		GeoIPProvider:      GeoIPProviderMaxMind,
 		PublicBind:         "0.0.0.0",
 		AdminBind:          "0.0.0.0",
 		AdminPort:          port,
@@ -174,6 +197,18 @@ func Init(path, dataDir string) (*Config, error) {
 	}
 	if value := os.Getenv("HP_DB_DRIVER"); value != "" {
 		c.DatabaseDriver = strings.ToLower(strings.TrimSpace(value))
+	}
+	if value := os.Getenv("HP_GEOIP_PROVIDER"); value != "" {
+		c.GeoIPProvider = strings.TrimSpace(value)
+	}
+	if value := os.Getenv("HP_MAXMIND_CITY_DB"); value != "" {
+		c.MaxMindCityDBPath = strings.TrimSpace(value)
+	}
+	if value := os.Getenv("HP_MAXMIND_ASN_DB"); value != "" {
+		c.MaxMindASNDBPath = strings.TrimSpace(value)
+	}
+	if err := NormalizeGeoIP(c); err != nil {
+		return nil, err
 	}
 	if err := Save(path, c); err != nil {
 		return nil, err
@@ -245,6 +280,9 @@ func applyEnv(c *Config) {
 	}
 	if v := os.Getenv("HP_DB_DRIVER"); v != "" {
 		c.DatabaseDriver = strings.ToLower(strings.TrimSpace(v))
+	}
+	if v := os.Getenv("HP_GEOIP_PROVIDER"); v != "" {
+		c.GeoIPProvider = strings.TrimSpace(v)
 	}
 	if v := os.Getenv("HP_DATABASE_URL"); v != "" {
 		c.DatabaseURL = strings.TrimSpace(v)
@@ -320,6 +358,53 @@ func applyEnv(c *Config) {
 	if v := os.Getenv("HP_VLLM_SERVED_MODEL_NAMES"); v != "" {
 		c.VLLMServedNames = splitComma(v)
 	}
+	if v := os.Getenv("HP_MAXMIND_CITY_DB"); v != "" {
+		c.MaxMindCityDBPath = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("HP_MAXMIND_ASN_DB"); v != "" {
+		c.MaxMindASNDBPath = strings.TrimSpace(v)
+	}
+}
+
+// NormalizeGeoIP validates the selected lookup provider. Database paths are
+// runtime-only values so they never enter config backups or API responses.
+func NormalizeGeoIP(c *Config) error {
+	if c == nil {
+		return fmt.Errorf("geoip config is nil")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.GeoIPProvider)) {
+	case "", GeoIPProviderMaxMind:
+		c.GeoIPProvider = GeoIPProviderMaxMind
+	case GeoIPProviderIPInfoLite, "ipinfo", "ipinfo-lite":
+		c.GeoIPProvider = GeoIPProviderIPInfoLite
+	default:
+		return fmt.Errorf("unsupported geoip provider %q", c.GeoIPProvider)
+	}
+	c.MaxMindCityDBPath = strings.TrimSpace(c.MaxMindCityDBPath)
+	c.MaxMindASNDBPath = strings.TrimSpace(c.MaxMindASNDBPath)
+	return nil
+}
+
+// GeoIPDatabasePaths returns the configured MaxMind City and ASN database
+// paths. If no explicit path is configured, the databases live below the
+// deployment data directory.
+func (c *Config) GeoIPDatabasePaths() (string, string) {
+	if c == nil {
+		return "", ""
+	}
+	dataDir := strings.TrimSpace(c.DataDir)
+	if dataDir == "" {
+		dataDir = "data"
+	}
+	cityPath := strings.TrimSpace(c.MaxMindCityDBPath)
+	if cityPath == "" {
+		cityPath = filepath.Join(dataDir, "geoip", DefaultMaxMindCityDB)
+	}
+	asnPath := strings.TrimSpace(c.MaxMindASNDBPath)
+	if asnPath == "" {
+		asnPath = filepath.Join(dataDir, "geoip", DefaultMaxMindASNDB)
+	}
+	return cityPath, asnPath
 }
 
 // NormalizeDatabase resolves the runtime-only database settings. Credentials

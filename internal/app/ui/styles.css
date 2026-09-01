@@ -61,9 +61,18 @@
 .country-row.is-hovered,.honeypot-row.is-hovered{background:rgba(75,157,176,.1)}
 .settings-card-heading{display:flex;align-items:center;justify-content:space-between;gap:1rem}
 .ipinfo-settings-card{max-width:38rem}
+.geoip-save-row{margin-top:1rem}
+.geoip-provider-panel{display:grid;gap:.8rem;margin-top:1rem}
+.geoip-status-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.75rem}
+.geoip-status-grid>div{display:grid;gap:.3rem;padding:.75rem;border:1px solid rgba(49,79,103,.7);border-radius:.6rem;background:#0a1727}
+.geoip-status-grid span{color:#7894aa;font-size:.7rem}
+.geoip-status-grid b{font-size:.8rem;color:#f0c878}
+.geoip-status-grid b.is-ready{color:#67d6b5}
+.geoip-status-grid b.is-missing{color:#ef9b73}
+.geoip-status-grid small{overflow-wrap:anywhere;color:#9db6c8;font-size:.68rem}
 .ipinfo-facts{display:grid;grid-template-columns:auto minmax(0,1fr);gap:.55rem .8rem;margin-top:1rem;padding:.8rem;border:1px solid rgba(49,79,103,.7);border-radius:.6rem;background:#0a1727;color:#7894aa;font-size:.7rem}
 .ipinfo-facts code,.ipinfo-facts b{overflow-wrap:anywhere;color:#c2e9ee;font-size:.68rem;font-weight:500}
 .ipinfo-settings-card a{color:var(--cyan)}
 .actor-geo-row{display:grid;gap:.25rem;margin-top:1rem;padding:.75rem .1rem 0;border-top:1px solid rgba(47,78,102,.45);font-size:.7rem}
 .actor-geo-row span{color:#6f899f}.actor-geo-row b{color:#cfe8ee;font-size:.76rem}.actor-geo-row small{color:#7894a8}
-@media(max-width:440px){.donut-svg{width:8.5rem;height:8.5rem}.donut-center>div{width:6rem;height:6rem}.ipinfo-facts{grid-template-columns:1fr}}
+@media(max-width:440px){.donut-svg{width:8.5rem;height:8.5rem}.donut-center>div{width:6rem;height:6rem}.ipinfo-facts{grid-template-columns:1fr}.geoip-status-grid{grid-template-columns:1fr}}
