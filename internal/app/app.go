@@ -11,6 +11,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -477,7 +478,7 @@ func headerBytes(r *http.Request) int {
 
 func requiredMethod(route string) string {
 	switch route {
-	case "newapi.user.register", "newapi.user.login", "newapi.user.logout", "newapi.auth.refresh", "newapi.oauth.simulation", "newapi.token.create", "newapi.token.key", "newapi.token.batch", "newapi.token.batch-keys", "openai.chat.completions", "openai.completions", "openai.responses", "openai.embeddings", "anthropic.messages", "gemini.generate", "gemini.stream", "ollama.show", "ollama.generate", "ollama.chat", "ollama.embeddings", "ollama.pull", "ollama.push", "ollama.create", "ollama.copy", "vllm.invocations", "vllm.tokenize", "vllm.detokenize", "sglang.generate", "sglang.lora.load", "sglang.weights.update", "sglang.cache.flush", "sglang.weights.get", "localai.models.apply", "localai.models.delete", "localai.audio.transcriptions", "localai.audio.speech", "localai.images.generations":
+	case "newapi.user.register", "newapi.user.login", "newapi.user.logout", "newapi.auth.refresh", "newapi.oauth.simulation", "newapi.token.create", "newapi.token.key", "newapi.token.batch", "newapi.token.batch-keys", "newapi.payment.webhook", "openai.chat.completions", "openai.completions", "openai.responses", "openai.embeddings", "anthropic.messages", "gemini.generate", "gemini.stream", "ollama.show", "ollama.generate", "ollama.chat", "ollama.embeddings", "ollama.pull", "ollama.push", "ollama.create", "ollama.copy", "vllm.invocations", "vllm.tokenize", "vllm.detokenize", "sglang.generate", "sglang.dumper", "sglang.lora.load", "sglang.weights.update", "sglang.cache.flush", "sglang.weights.get", "localai.models.apply", "localai.models.delete", "localai.audio.transcriptions", "localai.audio.speech", "localai.images.generations":
 		return http.MethodPost
 	case "ollama.delete":
 		return http.MethodDelete
@@ -496,7 +497,7 @@ func allowedMethods(route string) string {
 		return method
 	}
 	switch route {
-	case "newapi.spa", "newapi.asset", "newapi.logo", "newapi.status", "newapi.oauth.start", "newapi.oauth.callback", "newapi.token.list", "newapi.token.get", "newapi.token.auto-groups", "newapi.user.status", "newapi.user.models", "newapi.user.groups", "newapi.usage.logs", "newapi.home-content", "newapi.about-content", "newapi.pricing-data", "newapi.perf-summary", "newapi.perf-metrics", "newapi.rankings-data", "newapi.setup", "newapi.notice", "newapi.dashboard-data", "newapi.verification", "ollama.home", "ollama.version", "ollama.tags", "ollama.ps", "openai.models", "openai.model", "gemini.models", "vllm.root", "vllm.health", "vllm.version", "vllm.metrics", "vllm.docs", "vllm.openapi", "sglang.health", "sglang.metrics", "sglang.docs", "sglang.redoc", "sglang.openapi", "sglang.server_info", "localai.home", "localai.health", "localai.metrics", "localai.models.available", "localai.models.installed", "localai.models.task":
+	case "newapi.spa", "newapi.asset", "newapi.logo", "newapi.status", "newapi.oauth.start", "newapi.oauth.callback", "newapi.token.list", "newapi.token.get", "newapi.token.auto-groups", "newapi.user.list", "newapi.user.status", "newapi.user.models", "newapi.user.groups", "newapi.usage.logs", "newapi.home-content", "newapi.about-content", "newapi.pricing-data", "newapi.perf-summary", "newapi.perf-metrics", "newapi.rankings-data", "newapi.setup", "newapi.notice", "newapi.dashboard-data", "newapi.verification", "ollama.home", "ollama.version", "ollama.tags", "ollama.ps", "openai.models", "openai.model", "gemini.models", "vllm.root", "vllm.health", "vllm.version", "vllm.metrics", "vllm.docs", "vllm.openapi", "sglang.health", "sglang.metrics", "sglang.docs", "sglang.redoc", "sglang.openapi", "sglang.server_info", "localai.home", "localai.health", "localai.metrics", "localai.models.available", "localai.models.installed", "localai.models.task":
 		return http.MethodGet
 	case "newapi.user.forgot", "newapi.checkin":
 		return http.MethodGet + ", " + http.MethodPost
@@ -510,6 +511,10 @@ func allowedMethods(route string) string {
 		return http.MethodGet + ", " + http.MethodDelete + ", " + http.MethodPost
 	case "newapi.user.oauth-bindings":
 		return http.MethodGet + ", " + http.MethodDelete
+	case "newapi.user.binding":
+		return http.MethodGet + ", " + http.MethodPost
+	case "newapi.video.proxy":
+		return http.MethodGet + ", " + http.MethodHead
 	case "newapi.token.update":
 		return http.MethodPatch + ", " + http.MethodPut
 	default:
@@ -628,7 +633,11 @@ func (a *App) record(profile profiles.Profile, r *http.Request, body []byte, cw 
 		case "synthetic_stream_started":
 			eventType = "llm.stream.started"
 		case "synthetic_accepted":
-			eventType = "llm.invoke.accepted"
+			if profile.Product == model.ProductNewAPI && obs.AuthOutcome == "leaked_key_reused" {
+				eventType = "newapi.honey_key.reused"
+			} else {
+				eventType = "llm.invoke.accepted"
+			}
 		}
 	}
 	if eventType == "" {
@@ -637,8 +646,8 @@ func (a *App) record(profile profiles.Profile, r *http.Request, body []byte, cw 
 	event := model.Event{
 		EventID: security.MustRandomToken(16), EventType: eventType, ObservedAt: time.Now().UTC(), Product: profile.Product, ProfileID: profile.ID, RouteTemplate: obs.RouteTemplate,
 		Method: r.Method, SourceIP: sourceIP, SourcePort: sourcePort, UserAgent: security.RedactPreview(r.UserAgent(), 256), ContentType: r.Header.Get("Content-Type"), Status: cw.status,
-		RequestBytes: int64(len(body)), ResponseBytes: cw.bytes, DurationMS: duration.Milliseconds(), BodySHA256: digest, BodyPreview: preview, BodyBytesRead: int64(len(body)),
-		HeaderNames: headerNames(r), SessionID: session.ID, InvocationID: obs.InvocationID, CredentialFingerprint: obs.CredentialFingerprint, ModelID: modelID, ModelResolved: modelResolved, InvocationAttempted: obs.InvocationAttempted || obs.InvocationID != "", AuthOutcome: obs.AuthOutcome, ExecutionOutcome: obs.ExecutionOutcome, EffectOutcome: obs.EffectOutcome,
+		RequestBytes: int64(len(body)), ResponseBytes: cw.bytes, DurationMS: duration.Milliseconds(), BodySHA256: digest, BodyPreview: preview, QueryPreview: security.RedactPreview(r.URL.RawQuery, 1024), BodyBytesRead: int64(len(body)),
+		HeaderNames: headerNames(r), OriginClass: requestOriginClass(r), SessionID: session.ID, InvocationID: obs.InvocationID, CredentialFingerprint: obs.CredentialFingerprint, ModelID: modelID, ModelResolved: modelResolved, InvocationAttempted: obs.InvocationAttempted || obs.InvocationID != "", AuthOutcome: obs.AuthOutcome, ExecutionOutcome: obs.ExecutionOutcome, EffectOutcome: obs.EffectOutcome,
 		ResponseObserved: obs.ResponseObserved, InvocationLevel: model.InvocationLevel(level), SimulatedInputTokens: obs.SimulatedInputTokens, SimulatedOutputTokens: obs.SimulatedOutputTokens, SimulatedCost: obs.SimulatedCost, IntentClass: intent, Score: score, Confidence: analysis.Confidence, ReasonCodes: uniqueStrings(reasons), MatchedRuleIDs: uniqueStrings(matchedRuleIDs), Metadata: obs.Metadata,
 	}
 	if event.Score >= 60 {
@@ -712,6 +721,32 @@ func headerNames(r *http.Request) []string {
 		result = append(result, strings.ToLower(name))
 	}
 	return result
+}
+
+func requestOriginClass(r *http.Request) string {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return "absent"
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Hostname() == "" || parsed.Scheme == "" {
+		return "malformed"
+	}
+	requestHost := r.Host
+	if host, _, splitErr := net.SplitHostPort(requestHost); splitErr == nil {
+		requestHost = host
+	} else {
+		requestHost = strings.Trim(requestHost, "[]")
+	}
+	if strings.EqualFold(parsed.Hostname(), requestHost) {
+		return "same_origin"
+	}
+	switch detect.ClassifyURL(origin) {
+	case detect.URLLoopback, detect.URLUnspecified, detect.URLLinkLocal, detect.URLPrivate, detect.URLFile:
+		return "local_target"
+	default:
+		return "cross_site"
+	}
 }
 
 func uniqueStrings(values []string) []string {

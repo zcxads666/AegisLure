@@ -93,22 +93,11 @@ func builtinPacks() []model.ConfigPack {
 		{ID: "sglang-http-safe-v1", Product: model.ProductSGLang, AuthPosture: "no_key", ServerInfo: "honey_key", DangerousEffects: "virtual_only", EffectTTLSec: 900},
 		{ID: "localai-legacy-safe-v1", Product: model.ProductLocalAI, AuthPosture: "legacy-unauth", ModelInstall: "synthetic_task", EffectTTLSec: 90},
 	}}
-	rules := packs.DetectorRulePack{SchemaVersion: 1, Revision: "builtin-rules-v2", DSL: map[string]any{
-		"allowed_types":     []string{"atomic", "sequence", "threshold", "credential_reuse", "campaign"},
-		"sequence_modes":    []string{"ordered", "unordered"},
-		"regex_engine":      "RE2",
-		"code_execution":    false,
-		"chain_aggregation": map[string]any{"default_mode": "session", "default_window": "30m", "allowed_modes": []string{"session", "source_ip", "source_ip_product"}},
-	}, Rules: []packs.DetectorRule{
-		{ID: "SSRF_URL_CLASS_V1", Type: "atomic", ReasonCode: "exploit_probe_ssrf", Score: 45, Confidence: "high", URLClasses: []string{"loopback", "unspecified", "link_local", "private", "file_scheme"}},
-		{ID: "PATH_TRAVERSAL_V1", Type: "atomic", ReasonCode: "path_traversal_probe", Score: 50, Confidence: "high", Where: json.RawMessage(`{"all":[{"field":"method","op":"in","value":["GET","POST"]},{"field":"body_preview","op":"regex","value":"(?i)(?:\\.\\.|%2e%2e|/etc/passwd|proc/self)"}]}`)},
-		{ID: "SERIALIZATION_PROBE_V1", Type: "atomic", ReasonCode: "dangerous_serialization_or_execution_probe", Score: 60, Confidence: "high", Where: json.RawMessage(`{"all":[{"field":"method","op":"eq","value":"POST"},{"field":"body_preview","op":"regex","value":"(?i)(?:pickle|__reduce__|yaml\\.load|deserialize)"}]}`)},
-		{ID: "VLLM_KEY_GAP_BYPASS_V1", Type: "sequence", ReasonCode: "auth_bypass_then_honey_invoke", Score: 60, Within: "10m", Steps: []string{"llm.invoke.rejected", "vllm.invocations accepted", "llm.stream.completed"}},
-		{ID: "HONEY_TOKEN_REUSE_V1", Type: "credential_reuse", ReasonCode: "honey_credential_reuse", Score: 65, Confidence: "high"},
-		{ID: "NEWAPI_NORMAL_USE_V1", Type: "sequence", ReasonCode: "intentional_compute_use", Score: 35, Confidence: "medium", Within: "30m", SequenceMode: "unordered", Steps: []string{"newapi.user.register.success", "newapi.user.login.success", "newapi.checkin.success", "newapi.token.created|newapi.token.key.revealed", "newapi.models.listed", "llm.invoke.accepted"}},
-	}}
+	rules := defaultDetectorRulePack()
 	rulesV1 := rules
 	rulesV1.Revision = "builtin-rules-v1"
+	rulesV2 := rules
+	rulesV2.Revision = "builtin-rules-v2"
 	result := make([]model.ConfigPack, 0, 10)
 	for _, item := range fingerprint.Packs {
 		data := definition(fingerprint)
@@ -118,7 +107,8 @@ func builtinPacks() []model.ConfigPack {
 		builtinConfigPack("seed-2026q3", model.PackKindModel, modelCatalog.Revision, definition(modelCatalog), now),
 		builtinConfigPack("builtin-safe-v1", model.PackKindScenario, scenarios.Revision, definition(scenarios), now),
 		builtinConfigPack("builtin-rules-v1", model.PackKindDetector, rulesV1.Revision, definition(rulesV1), now),
-		builtinConfigPack("builtin-rules-v2", model.PackKindDetector, rules.Revision, definition(rules), now),
+		builtinConfigPack("builtin-rules-v2", model.PackKindDetector, rulesV2.Revision, definition(rulesV2), now),
+		builtinConfigPack("builtin-rules-v3", model.PackKindDetector, rules.Revision, definition(rules), now),
 	)
 	return result
 }

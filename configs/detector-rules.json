@@ -1,13 +1,1491 @@
 {
   "schema_version": 1,
-  "revision": "builtin-rules-v1",
-  "dsl": {"allowed_types": ["atomic", "sequence", "threshold", "credential_reuse", "campaign"], "regex_engine": "RE2", "code_execution": false},
+  "revision": "builtin-rules-v3",
   "rules": [
-    {"id": "SSRF_URL_CLASS_V1", "type": "atomic", "reason_code": "exploit_probe_ssrf", "score": 45, "confidence": "high", "url_classes": ["loopback", "unspecified", "link_local", "private", "file_scheme"]},
-    {"id": "PATH_TRAVERSAL_V1", "type": "atomic", "reason_code": "path_traversal_probe", "score": 50, "confidence": "high"},
-    {"id": "SERIALIZATION_PROBE_V1", "type": "atomic", "reason_code": "dangerous_serialization_or_execution_probe", "score": 60, "confidence": "high"},
-    {"id": "VLLM_KEY_GAP_BYPASS_V1", "type": "sequence", "reason_code": "auth_bypass_then_honey_invoke", "score": 60, "within": "10m", "steps": ["llm.invoke.rejected", "vllm.invocations accepted", "llm.stream.completed"]},
-    {"id": "HONEY_TOKEN_REUSE_V1", "type": "credential_reuse", "reason_code": "honey_credential_reuse", "score": 65, "confidence": "high"},
-    {"id": "NEWAPI_NORMAL_USE_V1", "type": "sequence", "reason_code": "intentional_compute_use", "score": 35, "within": "30m", "steps": ["newapi.user.register.success", "newapi.checkin.success", "newapi.token.created", "llm.invoke.accepted"]}
-  ]
+    {
+      "id": "SSRF_URL_CLASS_V1",
+      "type": "atomic",
+      "reason_code": "exploit_probe_ssrf",
+      "score": 45,
+      "confidence": "high",
+      "url_classes": [
+        "loopback",
+        "unspecified",
+        "link_local",
+        "private",
+        "file_scheme"
+      ]
+    },
+    {
+      "id": "PATH_TRAVERSAL_V1",
+      "type": "atomic",
+      "reason_code": "path_traversal_probe",
+      "score": 50,
+      "confidence": "high",
+      "where": {
+        "all": [
+          {
+            "field": "method",
+            "op": "in",
+            "value": [
+              "GET",
+              "POST"
+            ]
+          },
+          {
+            "field": "body_preview",
+            "op": "regex",
+            "value": "(?i)(?:\\.\\.|%2e%2e|/etc/passwd|proc/self)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "SERIALIZATION_PROBE_V1",
+      "type": "atomic",
+      "reason_code": "dangerous_serialization_or_execution_probe",
+      "score": 60,
+      "confidence": "high",
+      "where": {
+        "all": [
+          {
+            "field": "method",
+            "op": "eq",
+            "value": "POST"
+          },
+          {
+            "field": "body_preview",
+            "op": "regex",
+            "value": "(?i)(?:pickle|__reduce__|yaml\\.load|deserialize)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "VLLM_KEY_GAP_BYPASS_V1",
+      "type": "sequence",
+      "reason_code": "auth_bypass_then_honey_invoke",
+      "score": 60,
+      "confidence": "",
+      "within": "10m",
+      "steps": [
+        "llm.invoke.rejected",
+        "vllm.invocations accepted",
+        "llm.stream.completed"
+      ]
+    },
+    {
+      "id": "HONEY_TOKEN_REUSE_V1",
+      "type": "credential_reuse",
+      "reason_code": "honey_credential_reuse",
+      "score": 65,
+      "confidence": "high"
+    },
+    {
+      "id": "NEWAPI_NORMAL_USE_V1",
+      "type": "sequence",
+      "reason_code": "intentional_compute_use",
+      "score": 35,
+      "confidence": "medium",
+      "within": "30m",
+      "sequence_mode": "unordered",
+      "steps": [
+        "newapi.user.register.success",
+        "newapi.user.login.success",
+        "newapi.checkin.success",
+        "newapi.token.created|newapi.token.key.revealed",
+        "newapi.models.listed",
+        "llm.invoke.accepted"
+      ]
+    },
+    {
+      "id": "NEWAPI_AUTH_SSRF_V1",
+      "type": "atomic",
+      "reason_code": "newapi_auth_ssrf_probe",
+      "score": 55,
+      "confidence": "high",
+      "references": [
+        "GHSA-xxv6-m6fx-vfhh"
+      ],
+      "url_classes": [
+        "loopback",
+        "unspecified",
+        "link_local",
+        "private",
+        "file_scheme"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "new-api"
+          },
+          {
+            "field": "route_template",
+            "op": "in",
+            "value": [
+              "openai.chat.completions",
+              "openai.completions",
+              "openai.responses",
+              "openai.embeddings",
+              "anthropic.messages",
+              "gemini.generate",
+              "gemini.stream"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "NEWAPI_SSRF_REDIRECT_BYPASS_V1",
+      "type": "atomic",
+      "reason_code": "newapi_ssrf_redirect_bypass_probe",
+      "score": 60,
+      "confidence": "high",
+      "references": [
+        "GHSA-9f46-w24h-69w4"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "new-api"
+          },
+          {
+            "field": "route_template",
+            "op": "in",
+            "value": [
+              "openai.chat.completions",
+              "openai.completions",
+              "openai.responses",
+              "openai.embeddings",
+              "anthropic.messages",
+              "gemini.generate",
+              "gemini.stream"
+            ]
+          },
+          {
+            "field": "body_preview",
+            "op": "regex",
+            "value": "(?i)(?:redirect|location|follow_redirect|next_url|return_url|302)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "NEWAPI_UNSPECIFIED_SSRF_V1",
+      "type": "atomic",
+      "reason_code": "newapi_unspecified_address_probe",
+      "score": 60,
+      "confidence": "high",
+      "references": [
+        "GHSA-v5c3-6wvc-pc2q"
+      ],
+      "url_classes": [
+        "unspecified"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "new-api"
+          },
+          {
+            "field": "route_template",
+            "op": "in",
+            "value": [
+              "openai.chat.completions",
+              "openai.completions",
+              "openai.responses",
+              "openai.embeddings",
+              "anthropic.messages",
+              "gemini.generate",
+              "gemini.stream"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "NEWAPI_TOKEN_SEARCH_WILDCARD_DOS_V1",
+      "type": "atomic",
+      "reason_code": "newapi_token_search_wildcard_dos",
+      "score": 60,
+      "confidence": "high",
+      "references": [
+        "GHSA-w6x6-9fp7-fqm4"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "new-api"
+          },
+          {
+            "field": "route_template",
+            "op": "eq",
+            "value": "newapi.token.list"
+          },
+          {
+            "field": "query_preview",
+            "op": "regex",
+            "value": "(?i)(?:^|\u0026)(?:search|keyword)=[^\u0026]*(?:%25|%2a|\\*|_)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "NEWAPI_VIDEO_PROXY_IDOR_V1",
+      "type": "atomic",
+      "reason_code": "newapi_video_proxy_idor_probe",
+      "score": 60,
+      "confidence": "high",
+      "references": [
+        "GHSA-f35r-v9x5-r8mc"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "new-api"
+          },
+          {
+            "field": "route_template",
+            "op": "eq",
+            "value": "newapi.video.proxy"
+          },
+          {
+            "any": [
+              {
+                "field": "query_preview",
+                "op": "regex",
+                "value": "(?i)(?:task|video|media|id)="
+              },
+              {
+                "field": "body_preview",
+                "op": "regex",
+                "value": "(?i)(?:task|video|media|content_id)"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "NEWAPI_USER_LIST_TOKEN_LEAK_V1",
+      "type": "sequence",
+      "reason_code": "newapi_user_list_token_leak",
+      "score": 70,
+      "confidence": "high",
+      "references": [
+        "GHSA-6x2c-phff-wx57"
+      ],
+      "within": "10m",
+      "steps": [
+        "newapi.user.list",
+        "newapi.honey_key.reused"
+      ]
+    },
+    {
+      "id": "NEWAPI_QUOTA_OVERFLOW_V1",
+      "type": "atomic",
+      "reason_code": "newapi_quota_overflow_probe",
+      "score": 65,
+      "confidence": "high",
+      "references": [
+        "GHSA-8r8v-xf7q-rcpr"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "new-api"
+          },
+          {
+            "field": "route_template",
+            "op": "in",
+            "value": [
+              "openai.chat.completions",
+              "openai.completions",
+              "openai.responses",
+              "openai.embeddings",
+              "anthropic.messages",
+              "gemini.generate",
+              "gemini.stream"
+            ]
+          },
+          {
+            "field": "body_preview",
+            "op": "regex",
+            "value": "(?i)(?:max_tokens|max_completion_tokens|best_of|n|maxOutputTokens).{0,64}(?:[1-9][0-9]{6,}|1e\\+?0?6)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "NEWAPI_QUOTA_CONCURRENCY_V1",
+      "type": "sequence",
+      "reason_code": "newapi_quota_concurrency_probe",
+      "score": 60,
+      "confidence": "high",
+      "references": [
+        "GHSA-j6gc-4893-qwmp"
+      ],
+      "within": "2m",
+      "steps": [
+        "llm.invoke.accepted",
+        "newapi.user.setting",
+        "llm.invoke.accepted"
+      ]
+    },
+    {
+      "id": "NEWAPI_PAYMENT_WEBHOOK_BODY_DOS_V1",
+      "type": "atomic",
+      "reason_code": "newapi_payment_webhook_body_dos",
+      "score": 60,
+      "confidence": "high",
+      "references": [
+        "GHSA-v828-m3pf-vq9q"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "new-api"
+          },
+          {
+            "field": "route_template",
+            "op": "eq",
+            "value": "newapi.payment.webhook"
+          },
+          {
+            "field": "request_bytes",
+            "op": "gte",
+            "value": 262144
+          }
+        ]
+      }
+    },
+    {
+      "id": "NEWAPI_BINDING_CSRF_V1",
+      "type": "atomic",
+      "reason_code": "newapi_binding_csrf_probe",
+      "score": 50,
+      "confidence": "high",
+      "references": [
+        "GHSA-26v7-h57m-gh9m"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "new-api"
+          },
+          {
+            "field": "route_template",
+            "op": "in",
+            "value": [
+              "newapi.user.oauth-bindings",
+              "newapi.user.binding"
+            ]
+          },
+          {
+            "field": "method",
+            "op": "in",
+            "value": [
+              "GET",
+              "POST"
+            ]
+          },
+          {
+            "field": "origin_class",
+            "op": "eq",
+            "value": "cross_site"
+          }
+        ]
+      }
+    },
+    {
+      "id": "VLLM_MEDIACONNECTOR_SSRF_V1",
+      "type": "atomic",
+      "reason_code": "vllm_mediaconnector_ssrf_probe",
+      "score": 60,
+      "confidence": "high",
+      "references": [
+        "GHSA-3f6c-7fw2-ppm4",
+        "CVE-2025-6242"
+      ],
+      "url_classes": [
+        "loopback",
+        "unspecified",
+        "link_local",
+        "private",
+        "file_scheme"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "vllm"
+          },
+          {
+            "field": "route_template",
+            "op": "in",
+            "value": [
+              "vllm.invocations",
+              "openai.chat.completions",
+              "openai.completions",
+              "openai.responses",
+              "openai.embeddings"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "VLLM_EMBEDDING_DESERIALIZATION_V1",
+      "type": "atomic",
+      "reason_code": "vllm_embedding_deserialization_probe",
+      "score": 65,
+      "confidence": "high",
+      "references": [
+        "GHSA-mrw7-hf4f-83pf"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "vllm"
+          },
+          {
+            "field": "route_template",
+            "op": "in",
+            "value": [
+              "vllm.invocations",
+              "openai.chat.completions",
+              "openai.completions",
+              "openai.responses",
+              "openai.embeddings"
+            ]
+          },
+          {
+            "field": "body_preview",
+            "op": "regex",
+            "value": "(?i)(?:embedding|serialized|base64|pickle|protobuf).{0,128}(?:tensor|object|payload|deserialize|load)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "VLLM_VIDEO_FRAME_DOS_V1",
+      "type": "atomic",
+      "reason_code": "vllm_video_frame_dos_probe",
+      "score": 60,
+      "confidence": "high",
+      "references": [
+        "GHSA-pq5c-rjhq-qp7p"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "vllm"
+          },
+          {
+            "field": "route_template",
+            "op": "in",
+            "value": [
+              "vllm.invocations",
+              "openai.chat.completions",
+              "openai.completions",
+              "openai.responses",
+              "openai.embeddings"
+            ]
+          },
+          {
+            "field": "body_preview",
+            "op": "regex",
+            "value": "(?is)(?:video|jpeg|frame|multipart|boundary).{0,128}(?:[1-9][0-9]{3,}|array|part|segment)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "VLLM_REQUEST_SIZE_DOS_V1",
+      "type": "atomic",
+      "reason_code": "vllm_large_request_dos_probe",
+      "score": 55,
+      "confidence": "high",
+      "references": [
+        "GHSA-69j4-grxj-j64p"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "vllm"
+          },
+          {
+            "field": "route_template",
+            "op": "in",
+            "value": [
+              "vllm.invocations",
+              "openai.chat.completions",
+              "openai.completions",
+              "openai.responses",
+              "openai.embeddings"
+            ]
+          },
+          {
+            "any": [
+              {
+                "field": "request_bytes",
+                "op": "gte",
+                "value": 262144
+              },
+              {
+                "field": "body_preview",
+                "op": "regex",
+                "value": "(?is)(?:messages?|template|prompt|tokenize).{0,128}(?:[1-9][0-9]{5,}|oversized|large)"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "VLLM_PROMPT_FANOUT_DOS_V1",
+      "type": "atomic",
+      "reason_code": "vllm_prompt_fanout_dos_probe",
+      "score": 55,
+      "confidence": "high",
+      "references": [
+        "GHSA-87x5-vmc3-756j"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "vllm"
+          },
+          {
+            "field": "route_template",
+            "op": "in",
+            "value": [
+              "openai.completions",
+              "vllm.invocations"
+            ]
+          },
+          {
+            "field": "body_preview",
+            "op": "regex",
+            "value": "(?is)(?:prompts?|prompt_list).{0,128}(?:[1-9][0-9]{3,}|\\[[^]]*,[^]]*,[^]]*,)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "VLLM_STRUCTURED_OUTPUT_REGEX_DOS_V1",
+      "type": "atomic",
+      "reason_code": "vllm_structured_output_regex_dos_probe",
+      "score": 60,
+      "confidence": "high",
+      "references": [
+        "GHSA-48jh-3gj7-fg8v"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "vllm"
+          },
+          {
+            "field": "route_template",
+            "op": "in",
+            "value": [
+              "vllm.invocations",
+              "openai.chat.completions",
+              "openai.completions",
+              "openai.responses",
+              "openai.embeddings"
+            ]
+          },
+          {
+            "field": "body_preview",
+            "op": "regex",
+            "value": "(?is)(?:structured_outputs?|response_format|regex|pattern).{0,128}[+*{(\\[]"
+          }
+        ]
+      }
+    },
+    {
+      "id": "VLLM_MULTIMODAL_VIDEO_RCE_V1",
+      "type": "atomic",
+      "reason_code": "vllm_multimodal_video_probe",
+      "score": 70,
+      "confidence": "high",
+      "references": [
+        "GHSA-4r2x-xpjr-7cvv"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "vllm"
+          },
+          {
+            "field": "route_template",
+            "op": "in",
+            "value": [
+              "vllm.invocations",
+              "openai.chat.completions",
+              "openai.completions",
+              "openai.responses",
+              "openai.embeddings"
+            ]
+          },
+          {
+            "field": "body_preview",
+            "op": "regex",
+            "value": "(?is)(?:video|ffmpeg|opencv|avcodec|media).{0,128}(?:image_url|data:|https?://|file:)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "VLLM_AUDIO_RESOURCE_DOS_V1",
+      "type": "atomic",
+      "reason_code": "vllm_audio_resource_probe",
+      "score": 55,
+      "confidence": "high",
+      "references": [
+        "vLLM-2026-audio-resource-advisories"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "vllm"
+          },
+          {
+            "field": "route_template",
+            "op": "in",
+            "value": [
+              "vllm.invocations",
+              "openai.chat.completions",
+              "openai.completions",
+              "openai.responses",
+              "openai.embeddings"
+            ]
+          },
+          {
+            "field": "body_preview",
+            "op": "regex",
+            "value": "(?is)(?:audio|wav|mp3|sample_rate|compression).{0,128}(?:[1-9][0-9]{5,}|gzip|frame|decompress|bomb)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "OLLAMA_DNS_REBINDING_V1",
+      "type": "atomic",
+      "reason_code": "ollama_dns_rebinding_probe",
+      "score": 50,
+      "confidence": "high",
+      "references": [
+        "CVE-2024-28224"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "ollama"
+          },
+          {
+            "field": "origin_class",
+            "op": "eq",
+            "value": "cross_site"
+          }
+        ]
+      }
+    },
+    {
+      "id": "OLLAMA_MODEL_PATH_PROBE_V1",
+      "type": "atomic",
+      "reason_code": "ollama_model_path_probe",
+      "score": 55,
+      "confidence": "high",
+      "references": [
+        "CVE-2024-37032"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "ollama"
+          },
+          {
+            "field": "route_template",
+            "op": "in",
+            "value": [
+              "ollama.pull",
+              "ollama.push",
+              "ollama.create",
+              "ollama.copy",
+              "ollama.delete",
+              "ollama.blob"
+            ]
+          },
+          {
+            "field": "body_preview",
+            "op": "regex",
+            "value": "(?i)(?:digest|blob|sha256|path|\\.\\.|/etc/passwd)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "OLLAMA_GGUF_PARSE_DOS_V1",
+      "type": "atomic",
+      "reason_code": "ollama_gguf_parse_probe",
+      "score": 60,
+      "confidence": "high",
+      "references": [
+        "CVE-2024-39720"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "ollama"
+          },
+          {
+            "field": "route_template",
+            "op": "in",
+            "value": [
+              "ollama.blob",
+              "ollama.create"
+            ]
+          },
+          {
+            "field": "body_preview",
+            "op": "regex",
+            "value": "(?is)gguf.{0,128}(?:header|version|malformed|invalid|magic|0x|size)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "OLLAMA_PULL_GZIP_BOMB_V1",
+      "type": "atomic",
+      "reason_code": "ollama_pull_compression_probe",
+      "score": 60,
+      "confidence": "high",
+      "references": [
+        "CVE-2024-12886"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "ollama"
+          },
+          {
+            "field": "route_template",
+            "op": "eq",
+            "value": "ollama.pull"
+          },
+          {
+            "field": "body_preview",
+            "op": "regex",
+            "value": "(?i)(?:gzip|compression|registry|content-encoding|bomb)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "OLLAMA_MANIFEST_ARRAY_DOS_V1",
+      "type": "atomic",
+      "reason_code": "ollama_manifest_array_probe",
+      "score": 55,
+      "confidence": "high",
+      "references": [
+        "CVE-2025-1975"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "ollama"
+          },
+          {
+            "field": "route_template",
+            "op": "in",
+            "value": [
+              "ollama.pull",
+              "ollama.create",
+              "ollama.push"
+            ]
+          },
+          {
+            "field": "body_preview",
+            "op": "regex",
+            "value": "(?is)manifest.{0,128}(?:layers|items|array|[1-9][0-9]{3,})"
+          }
+        ]
+      }
+    },
+    {
+      "id": "OLLAMA_REGISTRY_TOKEN_EXPOSURE_V1",
+      "type": "atomic",
+      "reason_code": "ollama_registry_token_exposure_probe",
+      "score": 60,
+      "confidence": "high",
+      "references": [
+        "CVE-2025-51471"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "ollama"
+          },
+          {
+            "field": "route_template",
+            "op": "in",
+            "value": [
+              "ollama.pull",
+              "ollama.push"
+            ]
+          },
+          {
+            "field": "body_preview",
+            "op": "regex",
+            "value": "(?i)(?:registry|realm|auth|bearer|token)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "OLLAMA_GGUF_LOADER_DISCLOSURE_V1",
+      "type": "atomic",
+      "reason_code": "ollama_gguf_loader_disclosure_probe",
+      "score": 70,
+      "confidence": "high",
+      "references": [
+        "CVE-2026-7482",
+        "GHSA-x8qc-fggm-mpqg"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "ollama"
+          },
+          {
+            "field": "route_template",
+            "op": "in",
+            "value": [
+              "ollama.create",
+              "ollama.push",
+              "ollama.blob"
+            ]
+          },
+          {
+            "field": "body_preview",
+            "op": "regex",
+            "value": "(?i)(?:gguf|quantiz|push|export|metadata)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "OLLAMA_GGUF_ALLOCATION_DOS_V1",
+      "type": "atomic",
+      "reason_code": "ollama_gguf_allocation_probe",
+      "score": 65,
+      "confidence": "high",
+      "references": [
+        "CVE-2026-65315"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "ollama"
+          },
+          {
+            "field": "route_template",
+            "op": "in",
+            "value": [
+              "ollama.blob",
+              "ollama.create"
+            ]
+          },
+          {
+            "field": "body_preview",
+            "op": "regex",
+            "value": "(?is)(?:gguf|dimension|tensor|array|string).{0,128}(?:[1-9][0-9]{5,}|0x[0-9a-f]{6,}|max|length)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "SGLANG_LORA_DESERIALIZATION_V1",
+      "type": "atomic",
+      "reason_code": "sglang_lora_deserialization_probe",
+      "score": 70,
+      "confidence": "high",
+      "references": [
+        "CVE-2026-15969",
+        "VU#281278"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "sglang"
+          },
+          {
+            "field": "route_template",
+            "op": "eq",
+            "value": "sglang.lora.load"
+          },
+          {
+            "field": "body_preview",
+            "op": "regex",
+            "value": "(?i)(?:base64|pickle|tensor|serialized|object)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "SGLANG_DUMPER_RCE_PROBE_V1",
+      "type": "atomic",
+      "reason_code": "sglang_dumper_probe",
+      "score": 65,
+      "confidence": "high",
+      "references": [
+        "CVE-2026-15971",
+        "VU#281278"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "sglang"
+          },
+          {
+            "field": "route_template",
+            "op": "eq",
+            "value": "sglang.dumper"
+          },
+          {
+            "field": "body_preview",
+            "op": "regex",
+            "value": "(?i)(?:dump|serialize|pickle|worker|command)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "SGLANG_MULTIMODAL_SSRF_V1",
+      "type": "atomic",
+      "reason_code": "sglang_multimodal_ssrf_probe",
+      "score": 60,
+      "confidence": "high",
+      "references": [
+        "CVE-2026-15974",
+        "VU#281278"
+      ],
+      "url_classes": [
+        "loopback",
+        "unspecified",
+        "link_local",
+        "private",
+        "file_scheme"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "sglang"
+          },
+          {
+            "field": "route_template",
+            "op": "in",
+            "value": [
+              "sglang.generate",
+              "openai.chat.completions",
+              "openai.completions",
+              "openai.responses",
+              "openai.embeddings"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "SGLANG_WEIGHT_UPDATE_DESERIALIZATION_V1",
+      "type": "atomic",
+      "reason_code": "sglang_weight_update_probe",
+      "score": 70,
+      "confidence": "high",
+      "references": [
+        "CVE-2026-15976",
+        "VU#281278"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "sglang"
+          },
+          {
+            "field": "route_template",
+            "op": "eq",
+            "value": "sglang.weights.update"
+          },
+          {
+            "field": "body_preview",
+            "op": "regex",
+            "value": "(?i)(?:model_path|huggingface|\\.bin|torch|load|weights)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "SGLANG_SERVER_INFO_ENUM_V1",
+      "type": "atomic",
+      "reason_code": "sglang_server_info_enum",
+      "score": 40,
+      "confidence": "medium",
+      "references": [
+        "CVE-2026-15977",
+        "VU#281278"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "sglang"
+          },
+          {
+            "field": "route_template",
+            "op": "eq",
+            "value": "sglang.server_info"
+          },
+          {
+            "field": "status",
+            "op": "gte",
+            "value": 200
+          }
+        ]
+      }
+    },
+    {
+      "id": "SGLANG_SERVER_INFO_KEY_REUSE_V1",
+      "type": "atomic",
+      "reason_code": "sglang_server_info_key_reuse",
+      "score": 70,
+      "confidence": "high",
+      "references": [
+        "CVE-2026-15977",
+        "VU#281278"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "sglang"
+          },
+          {
+            "field": "route_template",
+            "op": "in",
+            "value": [
+              "sglang.server_info",
+              "sglang.generate",
+              "openai.chat.completions",
+              "openai.completions",
+              "openai.responses",
+              "openai.embeddings"
+            ]
+          },
+          {
+            "field": "auth_outcome",
+            "op": "eq",
+            "value": "leaked_key_reused"
+          }
+        ]
+      }
+    },
+    {
+      "id": "SGLANG_WEIGHT_EXFILTRATION_V1",
+      "type": "atomic",
+      "reason_code": "sglang_weight_exfiltration_probe",
+      "score": 70,
+      "confidence": "high",
+      "references": [
+        "CVE-2026-15978",
+        "VU#281278"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "sglang"
+          },
+          {
+            "field": "route_template",
+            "op": "in",
+            "value": [
+              "sglang.weights.get",
+              "sglang.weights.update"
+            ]
+          },
+          {
+            "field": "body_preview",
+            "op": "regex",
+            "value": "(?i)(?:weight|rank|broadcast|nccl|tensor|transfer)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "SGLANG_ZMQ_PICKLE_PROBE_V1",
+      "type": "atomic",
+      "reason_code": "sglang_zmq_pickle_probe",
+      "score": 70,
+      "confidence": "high",
+      "references": [
+        "CVE-2026-3059",
+        "CVE-2026-3060",
+        "VU#665416"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "sglang"
+          },
+          {
+            "field": "route_template",
+            "op": "eq",
+            "value": "sglang.zmq"
+          },
+          {
+            "field": "body_preview",
+            "op": "regex",
+            "value": "(?i)(?:zmq|pickle|serialized|frame|broker)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "LOCALAI_AUDIO_COMMAND_INJECTION_V1",
+      "type": "atomic",
+      "reason_code": "localai_audio_command_injection_probe",
+      "score": 70,
+      "confidence": "high",
+      "references": [
+        "CVE-2024-2029",
+        "GHSA-wx43-g55g-2jf4"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "localai"
+          },
+          {
+            "field": "route_template",
+            "op": "eq",
+            "value": "localai.audio.transcriptions"
+          },
+          {
+            "field": "body_preview",
+            "op": "regex",
+            "value": "(?is)(?:filename|audio|wav|mp3).{0,128}(?:;|\\||\u0026\u0026|\\$\\(|\\.\\./|/bin/sh|ffmpeg)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "LOCALAI_MODEL_DELETE_TRAVERSAL_V1",
+      "type": "atomic",
+      "reason_code": "localai_model_delete_traversal_probe",
+      "score": 60,
+      "confidence": "high",
+      "references": [
+        "CVE-2024-5182",
+        "GHSA-cpcx-r2gq-x893"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "localai"
+          },
+          {
+            "field": "route_template",
+            "op": "eq",
+            "value": "localai.models.delete"
+          },
+          {
+            "field": "body_preview",
+            "op": "regex",
+            "value": "(?i)(?:\\.\\.|%2e%2e|/etc/passwd|proc/self)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "LOCALAI_MODEL_APPLY_SSRF_V1",
+      "type": "atomic",
+      "reason_code": "localai_model_apply_ssrf_probe",
+      "score": 60,
+      "confidence": "high",
+      "references": [
+        "CVE-2024-6095",
+        "GHSA-fgv5-qx89-qjrh"
+      ],
+      "url_classes": [
+        "loopback",
+        "unspecified",
+        "link_local",
+        "private",
+        "file_scheme"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "localai"
+          },
+          {
+            "field": "route_template",
+            "op": "eq",
+            "value": "localai.models.apply"
+          }
+        ]
+      }
+    },
+    {
+      "id": "LOCALAI_ARCHIVE_TRAVERSAL_V1",
+      "type": "atomic",
+      "reason_code": "localai_archive_traversal_probe",
+      "score": 65,
+      "confidence": "high",
+      "references": [
+        "CVE-2024-6868"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "localai"
+          },
+          {
+            "field": "route_template",
+            "op": "eq",
+            "value": "localai.models.apply"
+          },
+          {
+            "field": "body_preview",
+            "op": "regex",
+            "value": "(?is)(?:tar|zip|archive|entry|filename).{0,128}(?:\\.\\.|%2e%2e|slip|/etc/passwd)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "LOCALAI_BACKEND_EXECUTION_V1",
+      "type": "atomic",
+      "reason_code": "localai_backend_execution_probe",
+      "score": 70,
+      "confidence": "high",
+      "references": [
+        "CVE-2024-6983"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "localai"
+          },
+          {
+            "field": "route_template",
+            "op": "eq",
+            "value": "localai.models.apply"
+          },
+          {
+            "field": "body_preview",
+            "op": "regex",
+            "value": "(?i)(?:backend|executable|ld_preload|shell|command|\\.so|\\.dll)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "LOCALAI_LEGACY_CSRF_V1",
+      "type": "atomic",
+      "reason_code": "localai_legacy_csrf_probe",
+      "score": 50,
+      "confidence": "high",
+      "references": [
+        "CVE-2024-3135",
+        "CVE-2024-5616"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "localai"
+          },
+          {
+            "field": "route_template",
+            "op": "in",
+            "value": [
+              "localai.models.apply",
+              "localai.models.delete"
+            ]
+          },
+          {
+            "field": "origin_class",
+            "op": "eq",
+            "value": "cross_site"
+          }
+        ]
+      }
+    },
+    {
+      "id": "LOCALAI_SEARCH_XSS_V1",
+      "type": "atomic",
+      "reason_code": "localai_search_xss_probe",
+      "score": 55,
+      "confidence": "high",
+      "references": [
+        "CVE-2024-9900"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "localai"
+          },
+          {
+            "field": "route_template",
+            "op": "eq",
+            "value": "localai.models.available"
+          },
+          {
+            "field": "query_preview",
+            "op": "regex",
+            "value": "(?i)(?:\u003cscript|\u003csvg|onerror|%3c|%3e|javascript:)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "LOCALAI_RBAC_ENUMERATION_V1",
+      "type": "atomic",
+      "reason_code": "localai_rbac_route_enumeration",
+      "score": 40,
+      "confidence": "medium",
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "localai"
+          },
+          {
+            "field": "route_template",
+            "op": "in",
+            "value": [
+              "localai.models.apply",
+              "localai.models.delete"
+            ]
+          },
+          {
+            "any": [
+              {
+                "field": "auth_outcome",
+                "op": "eq",
+                "value": "missing"
+              },
+              {
+                "field": "auth_outcome",
+                "op": "eq",
+                "value": "invalid"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "dsl": {
+    "allowed_types": [
+      "atomic",
+      "sequence",
+      "threshold",
+      "credential_reuse",
+      "campaign"
+    ],
+    "chain_aggregation": {
+      "allowed_modes": [
+        "session",
+        "source_ip",
+        "source_ip_product"
+      ],
+      "default_mode": "session",
+      "default_window": "30m"
+    },
+    "code_execution": false,
+    "regex_engine": "RE2",
+    "sequence_modes": [
+      "ordered",
+      "unordered"
+    ]
+  }
 }

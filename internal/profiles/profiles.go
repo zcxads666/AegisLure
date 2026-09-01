@@ -288,6 +288,14 @@ func newAPIRoute(method, path string) string {
 		return "newapi.user.sessions"
 	case path == "/api/user/oauth/bindings" || strings.HasPrefix(path, "/api/user/oauth/bindings/"):
 		return "newapi.user.oauth-bindings"
+	case method == "GET" && (path == "/api/user" || path == "/api/user/"):
+		return "newapi.user.list"
+	case strings.HasPrefix(path, "/api/video/") || strings.HasPrefix(path, "/api/videos/") || strings.Contains(path, "/video/"):
+		return "newapi.video.proxy"
+	case strings.HasPrefix(path, "/api/") && strings.Contains(path, "/webhook"):
+		return "newapi.payment.webhook"
+	case path == "/api/user/bind" || path == "/api/user/binding" || strings.HasSuffix(path, "/bind") || strings.HasSuffix(path, "/binding"):
+		return "newapi.user.binding"
 	case path == "/api/reset_password" || path == "/api/user/forgot-password" || path == "/api/user/forget-password":
 		return "newapi.user.forgot"
 	case path == "/api/user/2fa/status" || path == "/api/user/2fa/setup" || path == "/api/user/2fa/enable" || path == "/api/user/2fa/disable" || path == "/api/user/2fa/backup_codes":
@@ -446,6 +454,8 @@ func sglangRoute(method, path string) string {
 		return "sglang.openapi"
 	case path == "/server_info":
 		return "sglang.server_info"
+	case path == "/dumper" || strings.HasPrefix(path, "/dumper/"):
+		return "sglang.dumper"
 	case path == "/generate":
 		return "sglang.generate"
 	case path == "/load_lora_adapter_from_tensors":

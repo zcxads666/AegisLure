@@ -40,7 +40,7 @@ var allowedRuleFields = map[string]bool{
 	"event_id": true, "event_type": true, "product": true, "profile_id": true,
 	"route_template": true, "method": true, "source_ip": true, "source_port": true,
 	"status": true, "request_bytes": true, "response_bytes": true, "duration_ms": true,
-	"body_sha256": true, "body_preview": true, "model_id": true, "invocation_attempted": true,
+	"body_sha256": true, "body_preview": true, "query_preview": true, "header_names": true, "origin_class": true, "model_id": true, "invocation_attempted": true,
 	"auth_outcome": true, "execution_outcome": true, "effect_outcome": true, "response_observed": true,
 	"invocation_level": true, "intent_class": true, "score": true, "confidence": true,
 }
@@ -126,6 +126,7 @@ type DetectorRule struct {
 	ReasonCode   string          `json:"reason_code"`
 	Score        int             `json:"score"`
 	Confidence   string          `json:"confidence"`
+	References   []string        `json:"references,omitempty"`
 	Within       string          `json:"within,omitempty"`
 	SequenceMode string          `json:"sequence_mode,omitempty"`
 	Steps        []string        `json:"steps,omitempty"`
@@ -310,6 +311,14 @@ func ValidateDetectorRulePack(pack DetectorRulePack) error {
 		}
 		if len(rule.Steps) > 16 || len(rule.URLClasses) > 16 {
 			return fmt.Errorf("detector rule %q exceeds bounded complexity", rule.ID)
+		}
+		if len(rule.References) > 8 {
+			return fmt.Errorf("detector rule %q has too many references", rule.ID)
+		}
+		for _, reference := range rule.References {
+			if reference == "" || len(reference) > 128 || strings.ContainsAny(reference, "\r\n") {
+				return fmt.Errorf("invalid detector reference in %q", rule.ID)
+			}
 		}
 		for _, step := range append(append([]string{}, rule.Steps...), rule.URLClasses...) {
 			if len(step) == 0 || len(step) > 128 || strings.ContainsAny(step, "\r\n") {

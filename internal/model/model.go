@@ -48,8 +48,10 @@ type Event struct {
 	DurationMS            int64             `json:"duration_ms"`
 	BodySHA256            string            `json:"body_sha256,omitempty"`
 	BodyPreview           string            `json:"body_preview,omitempty"`
+	QueryPreview          string            `json:"query_preview,omitempty"`
 	BodyBytesRead         int64             `json:"body_bytes_read,omitempty"`
 	HeaderNames           []string          `json:"header_names,omitempty"`
+	OriginClass           string            `json:"origin_class,omitempty"`
 	SessionID             string            `json:"session_id,omitempty"`
 	InvocationID          string            `json:"invocation_id,omitempty"`
 	CredentialFingerprint string            `json:"credential_fingerprint,omitempty"`

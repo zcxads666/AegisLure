@@ -481,6 +481,47 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 			return
 		}
 		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]string{"key": newAPIKeySuffix(raw)}})
+	case "newapi.user.list":
+		user, ok := a.requireHoneyUser(w, session)
+		if !ok {
+			return
+		}
+		_, raw, canaryOK := a.ensureNewAPIUserListCanary(user.ID)
+		if !canaryOK {
+			a.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"success": false, "message": "user list unavailable"})
+			return
+		}
+		entry := newAPIUserView(user)
+		// These are intentionally synthetic, process-local canary values. They
+		// resemble fields historical clients exposed without returning a real
+		// account credential or any other user's data.
+		entry["access_token"] = raw
+		entry["api_key"] = raw
+		entry["token"] = raw
+		obs.ExtraScore += 40
+		obs.ExtraReasons = append(obs.ExtraReasons, "newapi_user_list_honey_token_exposure")
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{"items": []map[string]any{entry}, "total": 1}})
+	case "newapi.video.proxy":
+		obs.ExtraScore += 20
+		obs.ExtraReasons = append(obs.ExtraReasons, "newapi_video_proxy_virtual_content")
+		w.Header().Set("Content-Type", "video/mp4")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte{0, 0, 0, 24, 'f', 't', 'y', 'p', 'm', 'p', '4', '2', 0, 0, 0, 0, 'm', 'p', '4', '2', 0, 0, 0, 0, 'm', 'p', '4', '2'})
+	case "newapi.payment.webhook":
+		if int64(len(body)) >= 256*1024 {
+			obs.ExtraScore += 25
+			obs.ExtraReasons = append(obs.ExtraReasons, "newapi_payment_webhook_bounded_body")
+			a.writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"success": false, "message": "request body too large"})
+			return
+		}
+		a.writeJSON(w, http.StatusAccepted, map[string]any{"success": true})
+	case "newapi.user.binding":
+		if _, ok := a.requireHoneyUser(w, session); !ok {
+			return
+		}
+		obs.ExtraScore += 20
+		obs.ExtraReasons = append(obs.ExtraReasons, "newapi_binding_virtual_state_change_rejected")
+		a.writeJSON(w, http.StatusForbidden, map[string]any{"success": false, "message": "binding request rejected"})
 	case "newapi.token.batch":
 		user, ok := a.requireHoneyUser(w, session)
 		if !ok {
@@ -896,15 +937,20 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 
 func (a *App) newAPIInvoke(w *captureWriter, r *http.Request, body []byte, session Session, obs *Observation) {
 	token, auth := a.newAPIHoneyAuth(r, obs.RouteTemplate)
-	if auth == "valid_honey_key" {
+	leakedUserListKey := auth == "valid_honey_key" && token.Name == newAPIUserListCanaryName
+	if leakedUserListKey {
+		auth = "leaked_key_reused"
+		obs.ExtraReasons = append(obs.ExtraReasons, "newapi_user_list_honey_token_reused")
+	}
+	if auth == "valid_honey_key" || leakedUserListKey {
 		obs.CredentialFingerprint = token.Hash
 	}
-	if auth != "valid_honey_key" {
+	if auth != "valid_honey_key" && !leakedUserListKey {
 		a.startInvocation(obs, auth, false)
 		a.writeNewAPIProtocolError(w, obs.RouteTemplate, http.StatusUnauthorized, "Incorrect API key provided", "invalid_request_error")
 		return
 	}
-	if session.UserID != "" && token.HoneyUserID != session.UserID {
+	if session.UserID != "" && token.HoneyUserID != session.UserID && !leakedUserListKey {
 		obs.AuthOutcome = "invalid"
 		a.startInvocation(obs, "invalid", false)
 		a.writeNewAPIProtocolError(w, obs.RouteTemplate, http.StatusUnauthorized, "API key is not available to this session", "invalid_request_error")
@@ -957,11 +1003,13 @@ func (a *App) newAPIInvoke(w *captureWriter, r *http.Request, body []byte, sessi
 	obs.ExtraReasons = append(obs.ExtraReasons, "newapi_synthetic_compute_use")
 	a.startInvocation(obs, auth, true)
 	cost := int64(maxInt(1, len(body)/4))
-	if _, err := a.store.ConsumeQuota(token.HoneyUserID, token.ID, obs.InvocationID, cost); err != nil {
-		obs.ExecutionOutcome = "rejected_before_dispatch"
-		obs.ExtraReasons = append(obs.ExtraReasons, "newapi_virtual_quota_exhausted")
-		a.writeNewAPIProtocolError(w, obs.RouteTemplate, http.StatusPaymentRequired, "insufficient quota", "insufficient_quota")
-		return
+	if token.Name != newAPIUserListCanaryName {
+		if _, err := a.store.ConsumeQuota(token.HoneyUserID, token.ID, obs.InvocationID, cost); err != nil {
+			obs.ExecutionOutcome = "rejected_before_dispatch"
+			obs.ExtraReasons = append(obs.ExtraReasons, "newapi_virtual_quota_exhausted")
+			a.writeNewAPIProtocolError(w, obs.RouteTemplate, http.StatusPaymentRequired, "insufficient quota", "insufficient_quota")
+			return
+		}
 	}
 	switch obs.RouteTemplate {
 	case "anthropic.messages":
@@ -2029,6 +2077,10 @@ func (a *App) handleSGLang(w *captureWriter, r *http.Request, profile profiles.P
 			obs.ExtraReasons = append(obs.ExtraReasons, "post_call_effect_verification")
 		}
 		a.writeJSON(w, http.StatusOK, info)
+	case "sglang.dumper":
+		obs.ExtraScore += 20
+		obs.ExtraReasons = append(obs.ExtraReasons, "sglang_dumper_virtual_worker_error")
+		a.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"detail": "worker unavailable"})
 	case "openai.models":
 		a.writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": profiles.OpenAIModelCardsForCatalog(a.cfg.InstanceKey, a.catalogForSession(model.ProductSGLang, "guest", session), "sglang")})
 	case "sglang.generate", "openai.chat.completions", "openai.completions", "openai.responses", "openai.embeddings":

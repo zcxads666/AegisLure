@@ -13,6 +13,8 @@ import (
 	"github.com/zcxads666/AegisLure/internal/security"
 )
 
+const newAPIUserListCanaryName = "user-list-canary"
+
 // New API uses numeric public identifiers. AegisLure keeps its honey records
 // keyed by opaque internal IDs, so the public number is a deterministic,
 // non-reversible projection rather than a second persisted identity. Keep the
@@ -94,6 +96,29 @@ func newAPIAuthBundle(user model.HoneyUser, session Session) map[string]any {
 		"user":              newAPIUserView(user),
 		"session":           newAPISessionView(session),
 	}
+}
+
+// ensureNewAPIUserListCanary creates one process-local honey credential for the
+// synthetic user-list exposure. Only its keyed fingerprint is durable; the
+// raw value is kept in memory so a leaked value can be recognized if it is
+// reused during this process.
+func (a *App) ensureNewAPIUserListCanary(userID string) (model.HoneyToken, string, bool) {
+	for _, token := range a.store.ListTokens(userID) {
+		if token.Name != newAPIUserListCanaryName {
+			continue
+		}
+		raw := a.newAPIRawKey(token.ID)
+		if raw != "" {
+			return token, raw, true
+		}
+	}
+	raw := "sk-root-" + security.MustRandomToken(24)
+	token := model.HoneyToken{ID: "ht_" + security.MustRandomToken(8), HoneyUserID: userID, Hash: security.Fingerprint(a.cfg.InstanceKey, raw), PrefixHint: raw[:12], Name: newAPIUserListCanaryName, UnlimitedQuota: true, CreatedAt: time.Now().UTC()}
+	if err := a.store.AddToken(token); err != nil {
+		return model.HoneyToken{}, "", false
+	}
+	a.rememberNewAPIRawKey(token.ID, raw)
+	return token, raw, true
 }
 
 func newAPIPublicTokenView(token model.HoneyToken) map[string]any {

@@ -195,7 +195,15 @@ func matchRule(rule packs.DetectorRule, events []model.Event) bool {
 		return false
 	default:
 		for _, event := range events {
-			if matchesCondition(rule.Where, event) || matchesURLClass(rule, event) {
+			conditionMatch := matchesCondition(rule.Where, event)
+			urlClassMatch := matchesURLClass(rule, event)
+			if len(rule.URLClasses) > 0 && rule.Where != nil {
+				if conditionMatch && urlClassMatch {
+					return true
+				}
+				continue
+			}
+			if conditionMatch || urlClassMatch {
 				return true
 			}
 		}
@@ -320,6 +328,9 @@ func matchesStep(step string, event model.Event) bool {
 		if len(parts) == 2 && strings.EqualFold(parts[0], strings.ToLower(event.Product)) && strings.Contains(strings.ToLower(event.RouteTemplate), parts[1]) {
 			return true
 		}
+		if len(parts) == 2 && strings.Contains(strings.ToLower(event.RouteTemplate), parts[0]) && strings.Contains(strings.ToLower(event.ExecutionOutcome), parts[1]) {
+			return true
+		}
 	}
 	return strings.Contains(strings.ToLower(event.EventType+" "+event.RouteTemplate+" "+event.ExecutionOutcome), step)
 }
@@ -424,6 +435,12 @@ func eventField(event model.Event, field string) any {
 		return event.BodySHA256
 	case "body_preview":
 		return event.BodyPreview
+	case "query_preview":
+		return event.QueryPreview
+	case "header_names":
+		return strings.Join(event.HeaderNames, ",")
+	case "origin_class":
+		return event.OriginClass
 	case "model_id":
 		return event.ModelID
 	case "invocation_attempted":
