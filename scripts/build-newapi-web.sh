@@ -37,32 +37,20 @@ replace_text() {
     perl -0pi -e 's/\Q$ENV{AEGISLURE_OLD_TEXT}\E/$ENV{AEGISLURE_NEW_TEXT}/g' "$file"
 }
 
-# Keep the marketing surface truthful for a single-node synthetic tenant.
-replace_text "$stage_root/src/features/home/components/sections/stats.tsx" \
-  "{ end: 50, suffix: '+', label: t('upstream services integrated') },\n    { end: 100, suffix: '+', label: t('model billing support') },\n    { end: 50, suffix: '+', label: t('compatible API routes') },\n    { end: 10, suffix: '+', label: t('scheduling controls') }," \
-  "{ end: 3, suffix: '', label: t('local synthetic protocols') },\n    { end: 1, suffix: '', label: t('single-node tenant') },\n    { end: 4, suffix: '', label: t('local dashboard surfaces') },\n    { end: 0, suffix: '', label: t('external channels enabled') },"
-replace_text "$stage_root/src/features/home/components/sections/how-it-works.tsx" \
-  "Add your API keys, set up channels and configure access permissions" \
-  "Create a scoped API key and choose a catalog model"
-replace_text "$stage_root/src/features/home/components/sections/how-it-works.tsx" \
-  "Connect through OpenAI, Claude, Gemini, and other compatible API routes" \
-  "Call the local synthetic endpoint with OpenAI, Claude, or Gemini-compatible formats"
-replace_text "$stage_root/src/features/home/components/sections/how-it-works.tsx" \
-  "Track usage, costs and performance with real-time analytics" \
-  "Review local quota and request events in the usage logs"
-replace_text "$stage_root/src/features/home/components/sections/cta.tsx" \
-  "Deploy your own gateway and start routing requests through your configured upstream services." \
-  "Start with a local synthetic response, then inspect the recorded usage event."
+# Keep restricted account actions on pages that are available to the public
+# tenant, while preserving the upstream page copy and layout.
 replace_text "$stage_root/src/features/dashboard/components/overview/overview-dashboard.tsx" \
-  "gpt-4.1-mini" "gpt-5.6-sol"
+  "title: t('Add credits')" "title: t('Profile')"
 replace_text "$stage_root/src/features/dashboard/components/overview/overview-dashboard.tsx" \
-  "Start routing traffic" "Get a synthetic response"
+  "description: t('Keep enough balance before production traffic')" \
+  "description: t('Personal settings and profile management.')"
 replace_text "$stage_root/src/features/dashboard/components/overview/overview-dashboard.tsx" \
-  "Add credits" "Review virtual quota"
+  "title: t('Send a request')" "title: t('Usage Logs')"
 replace_text "$stage_root/src/features/dashboard/components/overview/overview-dashboard.tsx" \
-  "Keep enough balance before production traffic" "Review the virtual quota before making requests"
+  "description: t('Verify routing with Playground or your client')" \
+  "description: t('Review your recent requests')"
 replace_text "$stage_root/src/features/dashboard/components/overview/overview-dashboard.tsx" \
-  "Verify routing with Playground or your client" "Send a request from your client"
+  "'Start routing traffic'" "'Send a request'"
 replace_text "$stage_root/src/features/dashboard/components/overview/overview-dashboard.tsx" \
   "'/wallet'" "'/profile'"
 replace_text "$stage_root/src/features/dashboard/components/overview/overview-dashboard.tsx" \
@@ -71,51 +59,6 @@ replace_text "$stage_root/src/features/dashboard/components/overview/summary-car
   "render={<Link to='/wallet' />}" "render={<Link to='/profile' />}"
 replace_text "$stage_root/src/features/dashboard/components/overview/summary-cards.tsx" \
   "{t('Wallet')}" "{t('Profile')}"
-replace_text "$stage_root/src/features/home/components/sections/features.tsx" \
-  "Transparent Billing" "Local Usage Metering"
-replace_text "$stage_root/src/features/home/components/sections/features.tsx" \
-  "Pay-as-you-go with real-time usage monitoring" "Synthetic usage records with quota accounting"
-replace_text "$stage_root/src/features/home/components/sections/features.tsx" \
-  "Team Collaboration" "Single-node Isolation"
-replace_text "$stage_root/src/features/home/components/sections/features.tsx" \
-  "Multi-user management with flexible permission allocation" "One local tenant with no administrative surface"
-replace_text "$stage_root/src/features/home/components/sections/features.tsx" \
-  "Lightning Fast" "Deterministic Responses"
-replace_text "$stage_root/src/features/home/components/sections/features.tsx" \
-  "Optimized network architecture ensures millisecond response times" "Bounded local responses with stable latency"
-replace_text "$stage_root/src/features/home/components/sections/features.tsx" \
-  "Secure & Reliable" "Local Isolation"
-replace_text "$stage_root/src/features/home/components/sections/features.tsx" \
-  "Enterprise-grade security with comprehensive permission management" "Single-node storage with scoped credentials"
-replace_text "$stage_root/src/features/home/components/sections/features.tsx" \
-  "Global Coverage" "Single-node Boundary"
-replace_text "$stage_root/src/features/home/components/sections/features.tsx" \
-  "Multi-region deployment for stable global access" "One local instance; no multi-region routing"
-replace_text "$stage_root/src/features/home/components/sections/features.tsx" \
-  "Developer Friendly" "Protocol Compatible"
-replace_text "$stage_root/src/features/home/components/sections/features.tsx" \
-  "Compatible API routes for common AI application workflows" "OpenAI-compatible local routes for common client workflows"
-replace_text "$stage_root/src/features/home/components/sections/features.tsx" \
-  "High Performance" "Bounded Runtime"
-replace_text "$stage_root/src/features/home/components/sections/features.tsx" \
-  "Support for high concurrency with automatic load balancing" "Request limits and deterministic synthetic execution"
-
-# The gateway feature tiles are also inherited from the upstream marketing
-# page. Keep the original layout, but make each label describe this local
-# synthetic tenant instead of routing, billing, or pass-through services.
-replace_text "$stage_root/src/features/home/constants.ts" \
-  "'Cost Tracking'," "'Usage Records',"
-replace_text "$stage_root/src/features/home/constants.ts" \
-  "'Budgets'," "'Virtual Quota',"
-replace_text "$stage_root/src/features/home/constants.ts" \
-  "'Load Balancing'," "'Local Routing',"
-replace_text "$stage_root/src/features/home/constants.ts" \
-  "'Rate Limiting'," "'Request Bounds',"
-replace_text "$stage_root/src/features/home/constants.ts" \
-  "'Prompt Caching'," "'Deterministic Output',"
-replace_text "$stage_root/src/features/home/constants.ts" \
-  "'Pass-Through'," "'No Pass-Through',"
-
 # The upstream mobile drawer hard-codes a wallet link. Remove that link and
 # its now-unused icon from the staged copy.
 mobile_drawer="$stage_root/src/components/layout/components/mobile-drawer.tsx"
@@ -129,9 +72,9 @@ echo "Building New API web commit $source_commit"
   pnpm build
 )
 
-# Payment/vendor artwork is not part of the standalone tenant. The build
-# output is still the complete upstream-derived UI, with unsafe navigation
-# hidden by the override and rejected by the Go profile router.
+# Payment/vendor artwork is not part of the embedded build. The output is
+# still the complete upstream-derived UI, with restricted navigation hidden
+# by the override and rejected by the Go profile router.
 find "$stage_root/dist" -type f \( \
   -name 'pay-apple.png' -o -name 'pay-card.png' -o -name 'pay-google.png' \
   -o -name 'waffo-logo-light.svg' -o -name 'waffo-logo-dark.svg' \
@@ -145,9 +88,7 @@ find "$artifact_root" -type f \( -name '*.css' -o -name '*.html' -o -name '*.js'
   -exec perl -pi -e 's/[ \t]+$//' {} +
 cat > "$artifact_root/SOURCE.txt" <<EOF
 New API web source commit: $source_commit
-Source checkout: $source_root
-Standalone overrides: $script_dir/newapi-overrides
-Built by: $script_dir/build-newapi-web.sh
+Source: https://github.com/QuantumNous/new-api
 EOF
 
 echo "Embedded artifact written to $artifact_root"

@@ -72,7 +72,7 @@ func newAPISessionView(session Session) map[string]any {
 	}
 	userAgent := session.UserAgent
 	if userAgent == "" {
-		userAgent = "AegisLure local session"
+		userAgent = "New API session"
 	}
 	return map[string]any{
 		"sid":            session.ID,
@@ -241,7 +241,7 @@ func newAPIPricingView(catalog []profiles.CatalogEntry) map[string]any {
 			}
 		}
 		if vendorID == 0 {
-			vendors = append(vendors, map[string]any{"id": len(vendors) + 1, "name": provider, "description": "Local synthetic catalog"})
+			vendors = append(vendors, map[string]any{"id": len(vendors) + 1, "name": provider, "description": "Model catalog"})
 			vendorID = len(vendors)
 		}
 		if !seenVendors[provider] {
@@ -270,7 +270,7 @@ func newAPIPricingView(catalog []profiles.CatalogEntry) map[string]any {
 		"data":               data,
 		"vendors":            vendors,
 		"group_ratio":        map[string]any{"default": 1},
-		"usable_group":       map[string]any{"default": map[string]any{"desc": "Standalone virtual group", "ratio": 1}},
+		"usable_group":       map[string]any{"default": map[string]any{"desc": "Default group", "ratio": 1}},
 		"supported_endpoint": map[string]string{"openai": "OpenAI-compatible", "anthropic": "Anthropic Messages", "gemini": "Gemini"},
 		"auto_groups":        []string{},
 	}
@@ -302,9 +302,9 @@ func newAPIUsageLog(event model.Event, user model.HoneyUser) map[string]any {
 		"user_id":             newAPIPublicID(user.ID),
 		"created_at":          created,
 		"type":                2,
-		"content":             "Synthetic response; no upstream model was contacted.",
+		"content":             "API request completed.",
 		"username":            user.UsernameHint,
-		"token_name":          "local honey key",
+		"token_name":          "API key",
 		"model_name":          event.ModelID,
 		"quota":               event.SimulatedCost,
 		"prompt_tokens":       event.SimulatedInputTokens,
@@ -315,7 +315,7 @@ func newAPIUsageLog(event model.Event, user model.HoneyUser) map[string]any {
 		"channel_name":        "",
 		"token_id":            0,
 		"group":               "default",
-		"other":               "{\"billing_source\":\"local-synthetic\"}",
+		"other":               "{}",
 		"request_id":          event.InvocationID,
 		"upstream_request_id": "",
 	}

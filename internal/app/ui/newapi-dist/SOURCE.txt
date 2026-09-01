@@ -1,4 +1,2 @@
 New API web source commit: cd20f7c2
-Source checkout: /Volumes/1/code/newapi/web
-Standalone overrides: /Volumes/1/code/AegisLure/AegisLure/scripts/newapi-overrides
-Built by: /Volumes/1/code/AegisLure/AegisLure/scripts/build-newapi-web.sh
+Source: https://github.com/QuantumNous/new-api

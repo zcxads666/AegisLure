@@ -33,7 +33,7 @@ export function ProfileSettingsCard({
   return (
     <TitledCard
       title={t('Settings')}
-      description={t('Local account preferences')}
+      description={t('Personal settings and profile management.')}
       icon={<Link2 className='h-4 w-4' />}
       iconTone='info'
       disableHoverEffect
@@ -41,11 +41,9 @@ export function ProfileSettingsCard({
       <div className='bg-muted/20 flex items-start gap-3 rounded-xl border p-3 text-sm'>
         <ShieldCheck className='text-success mt-0.5 h-4 w-4 shrink-0' />
         <div className='space-y-1'>
-          <p className='font-medium'>{t('External bindings disabled')}</p>
+          <p className='font-medium'>{t('Account preferences')}</p>
           <p className='text-muted-foreground text-xs leading-relaxed'>
-            {t(
-              'Email, OAuth, notifications, and webhook integrations are unavailable in this standalone tenant.'
-            )}
+            {t('Review your account preferences and security settings.')}
           </p>
         </div>
       </div>

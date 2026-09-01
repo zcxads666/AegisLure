@@ -216,17 +216,11 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		}
 		a.writeJSON(w, http.StatusAccepted, map[string]any{"success": true, "message": "If the account exists, password recovery instructions are available."})
 	case "newapi.status":
-		catalog := a.catalogForSession(model.ProductNewAPI, "guest", session)
 		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{
 			"status":                     true,
-			"service":                    "new-api",
-			"version":                    "0.11.3-standalone",
+			"version":                    "v0.0.0",
 			"system_name":                "New API",
 			"logo":                       "/logo.png",
-			"protocol":                   "openai-compatible",
-			"models":                     len(catalog),
-			"streaming":                  true,
-			"upstream_enabled":           false,
 			"password_login_enabled":     true,
 			"password_register_enabled":  true,
 			"register_enabled":           true,
@@ -249,8 +243,8 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 			"docs_link":                  "/docs",
 			"HeaderNavModules":           `{"home":true,"console":true,"pricing":{"enabled":true,"requireAuth":false},"rankings":{"enabled":true,"requireAuth":false},"docs":true,"about":true}`,
 			"SidebarModulesAdmin":        `{"chat":{"enabled":false},"console":{"enabled":true,"detail":true,"token":true,"log":true,"midjourney":false,"task":false},"personal":{"enabled":true,"topup":false,"personal":true},"admin":{"enabled":false}}`,
-			"footer_html":                `Frontend design and development by New API contributors. <a href="https://github.com/QuantumNous/new-api" rel="noreferrer">New API source code</a> · <a href="https://github.com/zcxads666/AegisLure" rel="noreferrer">AegisLure source</a>`,
-			"notice":                     "Standalone virtual tenant: responses are synthetic and never reach an upstream model.",
+			"footer_html":                `Frontend design and development by New API contributors.`,
+			"notice":                     "",
 		}})
 	case "newapi.checkin":
 		user, ok := a.requireHoneyUser(w, session)
@@ -646,7 +640,6 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		data["token_count"] = len(tokens)
 		data["checked_in"] = user.CheckinDay == today
 		data["checkin_day"] = user.CheckinDay
-		data["virtual_only"] = true
 		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": data})
 	case "newapi.user.update":
 		user, ok := a.requireHoneyUser(w, session)
@@ -654,7 +647,7 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 			return
 		}
 		if r.Method == http.MethodDelete {
-			a.writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "account deletion is disabled for this standalone tenant"})
+			a.writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "Not found"})
 			return
 		}
 		value, valid := decodeJSONObject(body)
@@ -701,7 +694,7 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		if _, ok := a.requireHoneyUser(w, session); !ok {
 			return
 		}
-		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{"default": map[string]any{"desc": "Standalone virtual group", "ratio": 1}}})
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{"default": map[string]any{"desc": "Default group", "ratio": 1}}})
 	case "newapi.user.setting":
 		if _, ok := a.requireHoneyUser(w, session); !ok {
 			return
@@ -717,7 +710,7 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		if _, ok := a.requireHoneyUser(w, session); !ok {
 			return
 		}
-		a.writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "system access tokens are disabled for this standalone tenant"})
+		a.writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "Not found"})
 	case "newapi.user.sessions":
 		if _, ok := a.requireHoneyUser(w, session); !ok {
 			return
@@ -743,29 +736,29 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 			a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": []any{}})
 			return
 		}
-		a.writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "external account bindings are disabled"})
+		a.writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "Not found"})
 	case "newapi.verification":
 		// Deliberately uniform and side-effect free: no email or verification
 		// provider is configured in the single-node bait.
-		a.writeJSON(w, http.StatusAccepted, map[string]any{"success": true, "message": "If applicable, a verification code is available in this standalone simulation."})
+		a.writeJSON(w, http.StatusAccepted, map[string]any{"success": true, "message": "If applicable, a verification code is available."})
 	case "newapi.home-content":
 		// An empty custom-home response makes the real bundled New API home
 		// sections render, while avoiding an iframe or remote content source.
 		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": ""})
 	case "newapi.about-content":
-		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "", "data": "A local, single-node New API-compatible honeypot.\n\nAll model responses are synthetic and all account, quota and key data are virtual.\n\nFrontend design and development by New API contributors.\n\nSource: https://github.com/QuantumNous/new-api"})
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "", "data": ""})
 	case "newapi.pricing-data":
 		a.writeJSON(w, http.StatusOK, newAPIPricingView(a.catalogForSession(model.ProductNewAPI, "guest", session)))
 	case "newapi.rankings-data":
 		a.writeJSON(w, http.StatusOK, newAPIRankingsView())
 	case "newapi.setup":
 		if r.Method != http.MethodGet {
-			a.writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "setup is disabled for this standalone tenant"})
+			a.writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "Not found"})
 			return
 		}
 		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{"status": true}})
 	case "newapi.notice":
-		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": "Standalone virtual tenant: responses are synthetic and never reach an upstream model."})
+		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": ""})
 	case "newapi.dashboard-data":
 		if _, ok := a.requireHoneyUser(w, session); !ok {
 			return

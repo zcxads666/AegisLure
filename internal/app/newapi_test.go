@@ -46,11 +46,20 @@ func TestNewAPIPublicPagesAndStatusContract(t *testing.T) {
 	}
 
 	resp, body := doRawJSON(t, client, http.MethodGet, "/api/status", nil, nil)
-	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"protocol":"openai-compatible"`) || !strings.Contains(string(body), `"upstream_enabled":false`) || !strings.Contains(string(body), `"email_verification":false`) || !strings.Contains(string(body), `"footer_html"`) {
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"system_name":"New API"`) || !strings.Contains(string(body), `"email_verification":false`) || !strings.Contains(string(body), `"footer_html"`) || strings.Contains(string(body), "AegisLure") {
 		t.Fatalf("public New API status failed: %d %s", resp.StatusCode, body)
 	}
 	if len(resp.Cookies()) != 0 {
 		t.Fatalf("public New API status set a cookie: %#v", resp.Cookies())
+	}
+
+	resp, body = doRawJSON(t, client, http.MethodGet, "/api/about", nil, nil)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"data":""`) {
+		t.Fatalf("public New API about content was not left unconfigured: %d %s", resp.StatusCode, body)
+	}
+	resp, body = doRawJSON(t, client, http.MethodGet, "/api/notice", nil, nil)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"data":""`) {
+		t.Fatalf("public New API notice was not empty: %d %s", resp.StatusCode, body)
 	}
 
 	for _, path := range []string{"/admin", "/billing", "/payment", "/wallet", "/channels", "/models", "/users", "/redemption-codes", "/subscriptions", "/system-info", "/system-settings", "/playground", "/setup", "/oauth", "/webhook"} {
