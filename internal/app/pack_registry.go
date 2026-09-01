@@ -30,8 +30,8 @@ func loadPersistedRuleEngine(a *App) {
 	}
 	var globalPack model.ConfigPack
 	globalFound := false
-	for _, pack := range a.store.ListPacks(model.PackKindDetector) {
-		if pack.Lifecycle != model.PackActive || len(pack.Definition) == 0 {
+	for _, pack := range a.store.ListActivePacks(model.PackKindDetector) {
+		if len(pack.Definition) == 0 {
 			continue
 		}
 		if !globalFound || pack.UpdatedAt.After(globalPack.UpdatedAt) || (pack.UpdatedAt.Equal(globalPack.UpdatedAt) && (pack.Revision > globalPack.Revision || pack.Revision == globalPack.Revision && pack.ID > globalPack.ID)) {
@@ -189,6 +189,19 @@ func (a *App) handleAdminPackAPI(w http.ResponseWriter, r *http.Request, path st
 		}
 		return true
 	}
+	if len(parts) == 4 && parts[2] == "rules" && kind == model.PackKindDetector {
+		switch r.Method {
+		case http.MethodGet:
+			a.adminRuleDetail(w, kind, parts[1], parts[3])
+		case http.MethodPatch, http.MethodPut:
+			a.adminRuleUpdate(w, r, parts[1], parts[3])
+		case http.MethodDelete:
+			a.adminRuleDelete(w, r, parts[1], parts[3])
+		default:
+			a.writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		}
+		return true
+	}
 	if len(parts) == 3 && parts[2] == "models" && kind == model.PackKindModel {
 		if r.Method == http.MethodGet {
 			a.adminCatalogModels(w, kind, parts[1])
@@ -234,10 +247,7 @@ func packSummary(pack model.ConfigPack) map[string]any {
 func (a *App) activePack(kind string) (model.ConfigPack, bool) {
 	var result model.ConfigPack
 	found := false
-	for _, pack := range a.store.ListPacks(kind) {
-		if pack.Lifecycle != model.PackActive {
-			continue
-		}
+	for _, pack := range a.store.ListActivePacks(kind) {
 		if !found || pack.UpdatedAt.After(result.UpdatedAt) || (pack.UpdatedAt.Equal(result.UpdatedAt) && (pack.Revision > result.Revision || pack.Revision == result.Revision && pack.ID > result.ID)) {
 			result, found = pack, true
 		}
@@ -301,10 +311,7 @@ func (a *App) adminPackStrategies(chainConfig model.InteractionChainConfig) []ma
 }
 
 func (a *App) fingerprintPackForProduct(product string) (model.ConfigPack, bool) {
-	for _, pack := range a.store.ListPacks(model.PackKindFingerprint) {
-		if pack.Lifecycle != model.PackActive {
-			continue
-		}
+	for _, pack := range a.store.ListActivePacks(model.PackKindFingerprint) {
 		var document packs.FingerprintPackDocument
 		if json.Unmarshal(pack.Definition, &document) != nil {
 			continue
@@ -538,7 +545,8 @@ func (a *App) adminRuleList(w http.ResponseWriter, kind, id string) {
 		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"pack_id": id, "revision": document.Revision, "rules": document.Rules, "count": len(document.Rules), "data_only": true})
+	pack, _ := a.store.GetPack(kind, id)
+	a.writeJSON(w, http.StatusOK, map[string]any{"pack_id": id, "revision": document.Revision, "lifecycle": pack.Lifecycle, "rules": document.Rules, "count": len(document.Rules), "data_only": true})
 }
 
 func (a *App) detectorDefinition(kind, id string) (packs.DetectorRulePack, error) {
@@ -598,23 +606,169 @@ func (a *App) adminRuleAdd(w http.ResponseWriter, r *http.Request, id string) {
 		}
 	}
 	document.Rules = append(document.Rules, rule)
+	if err := packs.ValidateDetectorRulePack(document); err != nil {
+		a.writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		return
+	}
 	previousRevision := document.Revision
-	document.Revision = document.Revision + "-edit-" + security.MustRandomToken(4)
-	definition, _ := json.Marshal(document)
-	pack, _ := a.store.GetPack(model.PackKindDetector, id)
-	pack.Revision = document.Revision
+	document.Revision = nextPackRevision(document.Revision, "edit")
+	pack, ok := a.store.GetPack(model.PackKindDetector, id)
+	if !ok {
+		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "detector pack not found"})
+		return
+	}
+	stored, err := a.saveDetectorRuleDraft(pack, document, previousRevision)
+	if err != nil {
+		a.writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	a.recordAudit(r, "rule.create", model.PackKindDetector+"/"+id, "success", map[string]string{"revision": stored.Revision, "rule_id": rule.ID})
+	a.writeJSON(w, http.StatusCreated, map[string]any{"pack": packSummary(stored), "rule": rule})
+}
+
+func (a *App) adminRuleDetail(w http.ResponseWriter, kind, packID, ruleID string) {
+	document, err := a.detectorDefinition(kind, packID)
+	if err != nil {
+		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	pack, _ := a.store.GetPack(kind, packID)
+	for _, rule := range document.Rules {
+		if rule.ID == ruleID {
+			a.writeJSON(w, http.StatusOK, map[string]any{"pack_id": packID, "revision": document.Revision, "lifecycle": pack.Lifecycle, "rule": rule, "data_only": true})
+			return
+		}
+	}
+	a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "rule not found"})
+}
+
+func (a *App) adminRuleUpdate(w http.ResponseWriter, r *http.Request, packID, ruleID string) {
+	if !sameOriginRequest(r) {
+		a.writeJSON(w, http.StatusForbidden, map[string]string{"error": "cross-site request rejected"})
+		return
+	}
+	body, tooLarge := readBoundedBody(r, 32*1024)
+	if tooLarge {
+		a.writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "rule too large"})
+		return
+	}
+	var rule packs.DetectorRule
+	if err := decodeStrictValue(body, &rule); err != nil {
+		a.writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "invalid detector rule"})
+		return
+	}
+	if rule.ID == "" {
+		rule.ID = ruleID
+	} else if rule.ID != ruleID {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "rule id cannot be changed"})
+		return
+	}
+	if err := detect.ValidateRuleForRuntime(rule); err != nil {
+		a.writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		return
+	}
+	document, err := a.detectorDefinition(model.PackKindDetector, packID)
+	if err != nil {
+		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	found := false
+	for index := range document.Rules {
+		if document.Rules[index].ID == ruleID {
+			document.Rules[index] = rule
+			found = true
+			break
+		}
+	}
+	if !found {
+		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "rule not found"})
+		return
+	}
+	if err := packs.ValidateDetectorRulePack(document); err != nil {
+		a.writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		return
+	}
+	pack, ok := a.store.GetPack(model.PackKindDetector, packID)
+	if !ok {
+		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "detector pack not found"})
+		return
+	}
+	previousRevision := document.Revision
+	document.Revision = nextPackRevision(document.Revision, "edit")
+	stored, err := a.saveDetectorRuleDraft(pack, document, previousRevision)
+	if err != nil {
+		a.writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	a.recordAudit(r, "rule.update", model.PackKindDetector+"/"+packID, "success", map[string]string{"revision": stored.Revision, "rule_id": rule.ID})
+	a.writeJSON(w, http.StatusOK, map[string]any{"pack": packSummary(stored), "rule": rule})
+}
+
+func (a *App) adminRuleDelete(w http.ResponseWriter, r *http.Request, packID, ruleID string) {
+	if !sameOriginRequest(r) {
+		a.writeJSON(w, http.StatusForbidden, map[string]string{"error": "cross-site request rejected"})
+		return
+	}
+	document, err := a.detectorDefinition(model.PackKindDetector, packID)
+	if err != nil {
+		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	index := -1
+	for candidate, rule := range document.Rules {
+		if rule.ID == ruleID {
+			index = candidate
+			break
+		}
+	}
+	if index < 0 {
+		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "rule not found"})
+		return
+	}
+	if len(document.Rules) == 1 {
+		a.writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "detector rule pack must contain at least one rule"})
+		return
+	}
+	document.Rules = append(document.Rules[:index], document.Rules[index+1:]...)
+	if err := packs.ValidateDetectorRulePack(document); err != nil {
+		a.writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		return
+	}
+	pack, ok := a.store.GetPack(model.PackKindDetector, packID)
+	if !ok {
+		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "detector pack not found"})
+		return
+	}
+	previousRevision := document.Revision
+	document.Revision = nextPackRevision(document.Revision, "delete")
+	stored, err := a.saveDetectorRuleDraft(pack, document, previousRevision)
+	if err != nil {
+		a.writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	a.recordAudit(r, "rule.delete", model.PackKindDetector+"/"+packID, "success", map[string]string{"revision": stored.Revision, "rule_id": ruleID})
+	a.writeJSON(w, http.StatusOK, map[string]any{"pack": packSummary(stored), "deleted_rule_id": ruleID})
+}
+
+func (a *App) saveDetectorRuleDraft(pack model.ConfigPack, document packs.DetectorRulePack, previousRevision string) (model.ConfigPack, error) {
+	definition, err := json.Marshal(document)
+	if err != nil {
+		return model.ConfigPack{}, err
+	}
 	pack.PreviousRevision = previousRevision
+	pack.Revision = document.Revision
 	pack.Lifecycle = model.PackDraft
 	pack.Definition = definition
 	pack.Signature = security.Fingerprint(a.cfg.InstanceKey, string(definition))
 	pack.CreatedAt = time.Time{}
 	if err := a.store.UpsertPack(pack); err != nil {
-		a.writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
-		return
+		return model.ConfigPack{}, err
 	}
-	stored, _ := a.store.GetPack(model.PackKindDetector, id)
-	a.recordAudit(r, "rule.create", model.PackKindDetector+"/"+id, "success", map[string]string{"revision": stored.Revision, "rule_id": rule.ID})
-	a.writeJSON(w, http.StatusCreated, map[string]any{"pack": packSummary(stored), "rule": rule})
+	stored, ok := a.store.GetPack(model.PackKindDetector, pack.ID)
+	if !ok {
+		return model.ConfigPack{}, errors.New("detector rule revision was not stored")
+	}
+	return stored, nil
 }
 
 func (a *App) adminRuleValidate(w http.ResponseWriter, r *http.Request, ruleID string) {

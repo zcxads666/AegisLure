@@ -74,6 +74,78 @@ func TestAdminDetectorPackLifecycleAndHotLoad(t *testing.T) {
 	}
 }
 
+func TestAdminDetectorRuleCRUD(t *testing.T) {
+	a, cfg, st := newTestApp(t, true)
+	defer st.Close()
+	admin := &inProcessClient{handler: a.adminHandler(), cookies: map[string]string{}}
+	if resp, _ := doJSON(t, admin, http.MethodPost, cfg.AdminPath+"admin/api/v1/auth/login", map[string]string{"username": "owner", "password": "correct horse battery staple"}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin login status = %d", resp.StatusCode)
+	}
+	definition := map[string]any{
+		"schema_version": 1,
+		"revision":       "crud-r1",
+		"rules": []any{
+			map[string]any{"id": "CRUD_ONE", "type": "atomic", "reason_code": "first_probe", "score": 20, "confidence": "low"},
+			map[string]any{"id": "CRUD_TWO", "type": "atomic", "reason_code": "second_probe", "score": 30, "confidence": "medium"},
+		},
+	}
+	packPath := cfg.AdminPath + "admin/api/v1/rule-packs/crud-pack"
+	resp, created := doJSON(t, admin, http.MethodPost, cfg.AdminPath+"admin/api/v1/rule-packs", map[string]any{"id": "crud-pack", "definition": definition})
+	if resp.StatusCode != http.StatusCreated || created["pack"] == nil {
+		t.Fatalf("create detector pack = %d %#v", resp.StatusCode, created)
+	}
+	resp, _ = doJSON(t, admin, http.MethodPost, packPath+":activate", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("activate detector pack = %d", resp.StatusCode)
+	}
+
+	resp, listed := doJSON(t, admin, http.MethodGet, packPath+"/rules", nil)
+	if resp.StatusCode != http.StatusOK || listed["count"] != float64(2) || listed["lifecycle"] != model.PackActive {
+		t.Fatalf("list detector rules = %d %#v", resp.StatusCode, listed)
+	}
+	resp, detail := doJSON(t, admin, http.MethodGet, packPath+"/rules/CRUD_ONE", nil)
+	if resp.StatusCode != http.StatusOK || detail["rule"] == nil {
+		t.Fatalf("get detector rule = %d %#v", resp.StatusCode, detail)
+	}
+
+	resp, added := doJSON(t, admin, http.MethodPost, packPath+"/rules", map[string]any{"id": "CRUD_THREE", "type": "atomic", "reason_code": "third_probe", "score": 40, "confidence": "high"})
+	if resp.StatusCode != http.StatusCreated || added["pack"] == nil {
+		t.Fatalf("create detector rule = %d %#v", resp.StatusCode, added)
+	}
+	if active, ok := a.activePack(model.PackKindDetector); !ok || active.ID != "crud-pack" || active.Revision != "crud-r1" {
+		t.Fatalf("active detector revision was hidden by draft: %#v %v", active, ok)
+	}
+	resp, updated := doJSON(t, admin, http.MethodPatch, packPath+"/rules/CRUD_ONE", map[string]any{"id": "CRUD_ONE", "type": "atomic", "reason_code": "first_probe_revised", "score": 55, "confidence": "high", "where": map[string]any{"field": "status", "op": "gte", "value": 400}})
+	if resp.StatusCode != http.StatusOK || updated["pack"] == nil || updated["rule"].(map[string]any)["score"] != float64(55) {
+		t.Fatalf("update detector rule = %d %#v", resp.StatusCode, updated)
+	}
+	resp, detail = doJSON(t, admin, http.MethodGet, packPath+"/rules/CRUD_ONE", nil)
+	if resp.StatusCode != http.StatusOK || detail["lifecycle"] != model.PackDraft || detail["rule"].(map[string]any)["reason_code"] != "first_probe_revised" {
+		t.Fatalf("updated detector rule detail = %d %#v", resp.StatusCode, detail)
+	}
+
+	resp, deleted := doJSON(t, admin, http.MethodDelete, packPath+"/rules/CRUD_TWO", nil)
+	if resp.StatusCode != http.StatusOK || deleted["deleted_rule_id"] != "CRUD_TWO" {
+		t.Fatalf("delete detector rule = %d %#v", resp.StatusCode, deleted)
+	}
+	resp, listed = doJSON(t, admin, http.MethodGet, packPath+"/rules", nil)
+	if resp.StatusCode != http.StatusOK || listed["count"] != float64(2) || listed["lifecycle"] != model.PackDraft {
+		t.Fatalf("list edited detector rules = %d %#v", resp.StatusCode, listed)
+	}
+	resp, _ = doJSON(t, admin, http.MethodDelete, packPath+"/rules/CRUD_ONE", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("delete second detector rule = %d", resp.StatusCode)
+	}
+	resp, rejected := doJSON(t, admin, http.MethodDelete, packPath+"/rules/CRUD_THREE", nil)
+	if resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(rejected["error"].(string), "at least one") {
+		t.Fatalf("reject deleting last detector rule = %d %#v", resp.StatusCode, rejected)
+	}
+	resp, _ = doJSON(t, admin, http.MethodPatch, packPath+"/rules/CRUD_THREE", map[string]any{"id": "OTHER_ID", "type": "atomic", "reason_code": "bad_rename", "score": 1})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("reject detector rule rename = %d", resp.StatusCode)
+	}
+}
+
 func TestAdminModelAndAllPackBindingsApplyToTheLocalProfile(t *testing.T) {
 	a, cfg, st := newTestApp(t, true)
 	defer st.Close()

@@ -777,6 +777,36 @@ func (s *Store) ListPacks(kind string) []model.ConfigPack {
 	return result
 }
 
+// ListActivePacks returns every active revision, including an older active
+// revision hidden by a newer Draft revision with the same pack ID. Callers
+// that need the last-known-good runtime configuration must use this view
+// instead of ListPacks, which intentionally collapses each pack ID to its
+// latest revision.
+func (s *Store) ListActivePacks(kind string) []model.ConfigPack {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]model.ConfigPack, 0)
+	for _, pack := range s.state.Packs {
+		if kind != "" && pack.Kind != kind || pack.Lifecycle != model.PackActive {
+			continue
+		}
+		result = append(result, pack)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Kind != result[j].Kind {
+			return result[i].Kind < result[j].Kind
+		}
+		if result[i].UpdatedAt.Equal(result[j].UpdatedAt) {
+			if result[i].Revision == result[j].Revision {
+				return result[i].ID < result[j].ID
+			}
+			return result[i].Revision < result[j].Revision
+		}
+		return result[i].UpdatedAt.Before(result[j].UpdatedAt)
+	})
+	return result
+}
+
 func (s *Store) GetPack(kind, id string) (model.ConfigPack, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

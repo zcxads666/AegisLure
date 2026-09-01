@@ -323,6 +323,57 @@ function strategyPackSummary(strategy) {
   return Object.entries(strategy?.packs || {}).map(([kind, pack]) => `${kind}: ${pack.revision || pack.id}${pack.bound ? ' · bound' : ''}`)
 }
 
+function ruleFormState(rule) {
+  return {
+    id: rule?.id || '',
+    type: rule?.type || 'atomic',
+    reason_code: rule?.reason_code || '',
+    score: String(rule?.score ?? 0),
+    confidence: rule?.confidence || 'medium',
+    within: rule?.within || '',
+    sequence_mode: rule?.sequence_mode || 'ordered',
+    steps: (rule?.steps || []).join('\n'),
+    url_classes: (rule?.url_classes || []).join('\n'),
+    where: rule?.where ? JSON.stringify(rule.where, null, 2) : '',
+  }
+}
+
+function ruleLines(value) {
+  return String(value || '').split(/\r?\n/).map((item) => item.trim()).filter(Boolean)
+}
+
+function parseRuleForm(form) {
+  const id = form.id.trim()
+  const reasonCode = form.reason_code.trim()
+  const score = Number(form.score)
+  if (!id) throw new Error('规则 ID 不能为空。')
+  if (!reasonCode) throw new Error('命中原因不能为空。')
+  if (!Number.isInteger(score) || score < 0 || score > 100) throw new Error('风险分必须是 0 到 100 的整数。')
+  const result = { id, type: form.type, reason_code: reasonCode, score, confidence: form.confidence }
+  if (form.within.trim()) result.within = form.within.trim()
+  if (form.type === 'sequence') {
+    result.sequence_mode = form.sequence_mode || 'ordered'
+    result.steps = ruleLines(form.steps)
+  }
+  const urlClasses = ruleLines(form.url_classes)
+  if (urlClasses.length) result.url_classes = urlClasses
+  if (form.where.trim()) {
+    try { result.where = JSON.parse(form.where) } catch (_) { throw new Error('字段 / 正则配置必须是有效 JSON。') }
+  }
+  return result
+}
+
+function RuleEditorModal({ rule, editing, busy, onClose, onSave }) {
+  const [form, setForm] = useState(() => ruleFormState(rule))
+  const [message, setMessage] = useState('')
+  const update = (key, value) => setForm((current) => ({ ...current, [key]: value }))
+  const submit = async (event) => {
+    event.preventDefault(); setMessage('')
+    try { await onSave(parseRuleForm(form)) } catch (error) { setMessage(error.message || '规则保存失败。') }
+  }
+  return html`<${Modal} title=${editing ? '编辑规则' : '新增规则'} eyebrow="Detector rule CRUD" onClose=${onClose} wide=${true}><form class="stack-form" onSubmit=${submit}><div class="rule-form-grid"><${TextInput} label="规则 ID" placeholder="例如 CUSTOM_ROUTE_V1" value=${form.id} onInput=${(value) => update('id', value)} maxLength="128" disabled=${editing} required=${true} /><label class="select-field"><span>规则类型</span><select value=${form.type} onChange=${(event) => update('type', event.target.value)}><option value="atomic">atomic · 单事件</option><option value="sequence">sequence · 事件序列</option><option value="threshold">threshold · 阈值</option><option value="credential_reuse">credential_reuse · 凭据复用</option><option value="campaign">campaign · 活动关联</option></select></label><${TextInput} label="命中原因" placeholder="例如 suspicious_route_probe" value=${form.reason_code} onInput=${(value) => update('reason_code', value)} maxLength="128" required=${true} /><${TextInput} label="风险分" type="number" min="0" max="100" value=${form.score} onInput=${(value) => update('score', value)} required=${true} /><label class="select-field"><span>置信度</span><select value=${form.confidence} onChange=${(event) => update('confidence', event.target.value)}><option value="low">low · 低</option><option value="medium">medium · 中</option><option value="high">high · 高</option></select></label><${TextInput} label="时间窗口（可选）" placeholder="例如 10m 或 1h" value=${form.within} onInput=${(value) => update('within', value)} maxLength="32" /></div><div class="rule-form-grid"><label class="text-field rule-form-wide"><span>事件步骤（每行一个，仅 sequence 使用）</span><textarea rows="5" value=${form.steps} onInput=${(event) => update('steps', event.target.value)} placeholder="newapi.user.login.success\nllm.invoke.accepted"></textarea></label><label class="text-field rule-form-wide"><span>URL 分类（每行一个，可选）</span><textarea rows="5" value=${form.url_classes} onInput=${(event) => update('url_classes', event.target.value)} placeholder="loopback\nprivate"></textarea></label>${form.type === 'sequence' ? html`<label class="select-field"><span>序列匹配</span><select value=${form.sequence_mode} onChange=${(event) => update('sequence_mode', event.target.value)}><option value="ordered">ordered · 有序</option><option value="unordered">unordered · 无序</option></select></label>` : null}</div><label class="text-field"><span>字段 / 正则配置（JSON，可选）</span><textarea rows="8" value=${form.where} onInput=${(event) => update('where', event.target.value)} placeholder='{"field":"route_template","op":"eq","value":"ollama.home"}'></textarea></label><div class="button-group"><button class="button button-primary" type="submit" disabled=${busy}>${busy ? '保存中…' : editing ? '保存修改' : '新增规则'}</button><button class="button button-secondary" type="button" onClick=${onClose} disabled=${busy}>取消</button></div>${message ? html`<div class="form-message error">${message}</div>` : null}</form><p class="modal-copy">规则会先保存为 Draft revision；完成验证并点击“启用规则”后，才会替换当前运行中的规则。</p><//>`
+}
+
 function PacksPage({ packs, policies, onRefresh }) {
   const revisions = packs ? [['Fingerprint pack', packs.fingerprint_revision, '来源指纹与协议特征'], ['Model catalog', packs.model_catalog_revision, '安全模型目录与别名'], ['Scenario pack', packs.scenario_revision, '场景与响应契约'], ['Detector rules', packs.detector_revision, '风险检测规则']] : []
   const aggregation = packs?.chain_aggregation || { mode: 'session', window_seconds: 1800, max_events: 200 }
@@ -332,8 +383,15 @@ function PacksPage({ packs, policies, onRefresh }) {
   const [selectedProduct, setSelectedProduct] = useState('')
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState('')
+  const [editor, setEditor] = useState(null)
+  const [ruleState, setRuleState] = useState(null)
+  const [rulesLoading, setRulesLoading] = useState(false)
+  const [ruleBusy, setRuleBusy] = useState(false)
+  const [ruleMessage, setRuleMessage] = useState('')
+  const [ruleMessageError, setRuleMessageError] = useState(false)
   const strategies = packs?.strategies || []
   const selected = strategies.find((item) => item.product === selectedProduct) || strategies[0]
+  const selectedPackID = selected?.rule_pack?.id || ''
   useEffect(() => {
     setMode(aggregation.mode || 'session')
     setWindowSeconds(aggregation.window_seconds || 1800)
@@ -342,6 +400,17 @@ function PacksPage({ packs, policies, onRefresh }) {
   useEffect(() => {
     if (selectedProduct === '' || !strategies.some((item) => item.product === selectedProduct)) setSelectedProduct(strategies[0]?.product || '')
   }, [selectedProduct, strategies])
+  useEffect(() => {
+    let active = true
+    if (!selectedPackID) { setRuleState(null); setRulesLoading(false); return () => {} }
+    setRulesLoading(true); setRuleMessage(''); setRuleMessageError(false)
+    request(`rule-packs/${encodeURIComponent(selectedPackID)}/rules`).then((result) => {
+      if (active) setRuleState(result)
+    }).catch((error) => {
+      if (active) { setRuleState(null); setRuleMessage(error.message || '规则读取失败。'); setRuleMessageError(true) }
+    }).finally(() => { if (active) setRulesLoading(false) })
+    return () => { active = false }
+  }, [selectedPackID])
   const saveAggregation = async () => {
     setSaving(true); setMessage('')
     try {
@@ -349,7 +418,42 @@ function PacksPage({ packs, policies, onRefresh }) {
       setMessage('交互链路聚合配置已保存。'); await onRefresh()
     } catch (error) { setMessage(error.message || '配置保存失败。') } finally { setSaving(false) }
   }
-  return html`<div class="page-stack"><${PageHeader} eyebrow="Configuration registry" title="规则与策略" description="查看每个蜜罐当前生效的策略、规则和请求匹配条件；配置变更只影响本地聚合与检测行为。" actions=${html`<${Button} icon="refresh" onClick=${onRefresh}>刷新配置<//>`} /><div class="pack-grid">${revisions.map((revision) => html`<article class="pack-card"><div class="pack-icon">${icon('layers', 19)}</div><div><p>${revision[0]}</p><h3>${revision[1] || 'unknown'}</h3><small>${revision[2]}</small></div><${Badge} tone="success" dot=${true}>Active<//></article>`)}</div><${Panel} eyebrow="Interaction aggregation" title="交互链路聚合方式"><div class="config-form"><label class="select-field"><span>聚合键</span><select value=${mode} onChange=${(event) => setMode(event.target.value)}>${(packs?.allowed_chain_modes || ['session', 'source_ip', 'source_ip_product']).map((value) => html`<option value=${value}>${value === 'session' ? '同一会话' : value === 'source_ip' ? '同一来源 IP（跨会话）' : '同一来源 IP + 蜜罐'}</option>`)}</select></label><label class="config-field"><span>时间窗口（秒）</span><input type="number" min="60" max="86400" value=${windowSeconds} onInput=${(event) => setWindowSeconds(event.target.value)} /></label><label class="config-field"><span>最多事件数</span><input type="number" min="10" max="1000" value=${maxEvents} onInput=${(event) => setMaxEvents(event.target.value)} /></label><button class="button button-primary" type="button" onClick=${saveAggregation} disabled=${saving}>${saving ? '保存中…' : '保存聚合配置'}</button></div>${message ? html`<div class="form-message ${message.includes('失败') ? 'error' : 'success'}">${message}</div>` : null}<p class="panel-footnote">默认按同一会话聚合；窗口和数量上限均由后端校验，事件正文仍只保留受限脱敏预览。</p><//><${Panel} eyebrow="Honeypot strategy matrix" title="各蜜罐当前策略"><div class="strategy-grid">${strategies.map((strategy) => html`<article class=${cn('strategy-card', selected?.product === strategy.product && 'is-selected')}><div class="strategy-card-head"><div><${Badge} tone="blue">${profileLabel(strategy.product)}<//><h3>${strategy.scenario || 'default'}</h3><small>${strategy.profile_id || 'profile'} · ${strategy.version || 'version unknown'}</small></div><strong>${formatNumber(strategy.rule_count || 0)} 条规则</strong></div><div class="strategy-pack-list">${strategyPackSummary(strategy).map((item) => html`<code>${item}</code>`)}</div><button class="outline-button" type="button" onClick=${() => setSelectedProduct(strategy.product)}>查看规则</button></article>`)}</div><//><${Panel} eyebrow="Detector rules" title=${selected ? `${profileLabel(selected.product)} · 请求匹配规则` : '请求匹配规则'} action=${strategies.length ? html`<label class="select-field inline-select"><span>蜜罐</span><select value=${selected?.product || ''} onChange=${(event) => setSelectedProduct(event.target.value)}>${strategies.map((strategy) => html`<option value=${strategy.product}>${profileLabel(strategy.product)}</option>`)}</select></label>` : null}>${selected?.rules?.length ? html`<div class="rule-list">${selected.rules.map((rule) => html`<article class="rule-card"><div class="rule-card-head"><div><code>${rule.id}</code><h3>${rule.reason_code}</h3></div><div class="rule-badges"><${Badge} tone="blue">${rule.type}<//><${Badge} tone=${rule.confidence === 'high' ? 'danger' : 'warning'}>${rule.score} 分<//></div></div><p class="rule-summary">${ruleMatchSummary(rule)}</p>${rule.within ? html`<small class="rule-window">窗口：${rule.within}</small>` : null}${rule.where ? html`<details class="rule-detail"><summary>查看字段 / 正则配置</summary><pre class="data-view">${JSON.stringify(rule.where, null, 2)}</pre></details>` : null}</article>`)}</div>` : html`<${EmptyState} title="当前没有可展示的规则" description="该蜜罐没有解析到生效的 detector pack。" />`}<//><${Panel} eyebrow="Release lifecycle" title="规则包发布阶段"><div class="lifecycle">${(packs?.lifecycle || ['Draft', 'Validate', 'UnitTest', 'Replay', 'Shadow', 'Canary', 'Active', 'Rollback']).map((stage, index) => html`<div class=${cn('lifecycle-step', stage === 'Active' && 'is-active')}><span>${stage === 'Active' ? icon('check', 13) : index + 1}</span><b>${stage}</b>${index < 7 ? html`<i></i>` : null}</div>`)}</div><//><${Panel} eyebrow="Identity posture" title="身份策略"><div class="policy-table"><div class="policy-row policy-head"><span>Provider</span><span>Mode</span><span>跨站状态</span><span>状态</span></div>${(policies?.providers || []).map((policy) => html`<div class="policy-row"><b>${policy.provider}</b><span>${policy.mode}</span><span>${policy.cross_site}</span><${Badge} tone=${policy.cross_site === 'blocked' || policy.cross_site === 'disabled_by_default' ? 'success' : 'warning'}>${policy.cross_site === 'blocked' ? 'Blocked' : 'Local only'}<//></div>`)}</div><div class="notice notice-info">${icon('shield', 16)}当前 baseline 默认不启用跨站 OAuth；生产部署仍应通过 VPN 或可信反向代理保护管理端口。</div><//></div>`
+  const refreshRules = async () => {
+    if (!selectedPackID) return null
+    const result = await request(`rule-packs/${encodeURIComponent(selectedPackID)}/rules`)
+    setRuleState(result)
+    return result
+  }
+  const saveRule = async (rule) => {
+    if (!selectedPackID) throw new Error('当前蜜罐没有可编辑的规则包。')
+    setRuleBusy(true); setRuleMessage(''); setRuleMessageError(false)
+    try {
+      const editing = editor?.mode === 'edit'
+      const endpoint = `rule-packs/${encodeURIComponent(selectedPackID)}/rules${editing ? `/${encodeURIComponent(rule.id)}` : ''}`
+      await request(endpoint, { method: editing ? 'PATCH' : 'POST', body: JSON.stringify(rule) })
+      await refreshRules(); setEditor(null); setRuleMessage(editing ? '规则已更新，当前为 Draft revision。' : '规则已新增，当前为 Draft revision。'); await onRefresh()
+    } finally { setRuleBusy(false) }
+  }
+  const deleteRule = async (rule) => {
+    if (!window.confirm(`确定删除规则“${rule.id}”吗？删除后会生成 Draft revision。`)) return
+    setRuleBusy(true); setRuleMessage(''); setRuleMessageError(false)
+    try {
+      await request(`rule-packs/${encodeURIComponent(selectedPackID)}/rules/${encodeURIComponent(rule.id)}`, { method: 'DELETE' })
+      await refreshRules(); await onRefresh(); setRuleMessage(`规则 ${rule.id} 已删除，当前为 Draft revision。`)
+    } catch (error) { setRuleMessage(error.message || '规则删除失败。'); setRuleMessageError(true) } finally { setRuleBusy(false) }
+  }
+  const runRulePackAction = async (action) => {
+    if (!selectedPackID) return
+    setRuleBusy(true); setRuleMessage(''); setRuleMessageError(false)
+    try {
+      await request(`rule-packs/${encodeURIComponent(selectedPackID)}:${action}`, { method: 'POST' })
+      await refreshRules(); await onRefresh(); setRuleMessage(action === 'validate' ? '规则包验证通过。' : '规则包已启用。')
+    } catch (error) { setRuleMessage(error.message || `${action === 'validate' ? '规则验证' : '规则启用'}失败。`); setRuleMessageError(true) } finally { setRuleBusy(false) }
+  }
+  const rules = ruleState?.pack_id === selectedPackID ? (ruleState.rules || []) : (selected?.rules || [])
+  const ruleRevision = ruleState?.pack_id === selectedPackID ? ruleState.revision : selected?.rule_pack?.revision
+  const ruleLifecycle = ruleState?.pack_id === selectedPackID ? ruleState.lifecycle : selected?.rule_pack?.lifecycle || 'Active'
+  return html`<div class="page-stack"><${PageHeader} eyebrow="Configuration registry" title="规则与策略" description="查看每个蜜罐当前生效的策略、规则和请求匹配条件；规则支持新增、编辑、删除，修改会先进入 Draft revision。" actions=${html`<${Button} icon="refresh" onClick=${onRefresh}>刷新配置<//>`} /><div class="pack-grid">${revisions.map((revision) => html`<article class="pack-card"><div class="pack-icon">${icon('layers', 19)}</div><div><p>${revision[0]}</p><h3>${revision[1] || 'unknown'}</h3><small>${revision[2]}</small></div><${Badge} tone="success" dot=${true}>Active<//></article>`)}</div><${Panel} eyebrow="Interaction aggregation" title="交互链路聚合方式"><div class="config-form"><label class="select-field"><span>聚合键</span><select value=${mode} onChange=${(event) => setMode(event.target.value)}>${(packs?.allowed_chain_modes || ['session', 'source_ip', 'source_ip_product']).map((value) => html`<option value=${value}>${value === 'session' ? '同一会话' : value === 'source_ip' ? '同一来源 IP（跨会话）' : '同一来源 IP + 蜜罐'}</option>`)}</select></label><label class="config-field"><span>时间窗口（秒）</span><input type="number" min="60" max="86400" value=${windowSeconds} onInput=${(event) => setWindowSeconds(event.target.value)} /></label><label class="config-field"><span>最多事件数</span><input type="number" min="10" max="1000" value=${maxEvents} onInput=${(event) => setMaxEvents(event.target.value)} /></label><button class="button button-primary" type="button" onClick=${saveAggregation} disabled=${saving}>${saving ? '保存中…' : '保存聚合配置'}</button></div>${message ? html`<div class="form-message ${message.includes('失败') ? 'error' : 'success'}">${message}</div>` : null}<p class="panel-footnote">默认按同一会话聚合；窗口和数量上限均由后端校验，事件正文仍只保留受限脱敏预览。</p><//><${Panel} eyebrow="Honeypot strategy matrix" title="各蜜罐当前策略"><div class="strategy-grid">${strategies.map((strategy) => html`<article class=${cn('strategy-card', selected?.product === strategy.product && 'is-selected')}><div class="strategy-card-head"><div><${Badge} tone="blue">${profileLabel(strategy.product)}<//><h3>${strategy.scenario || 'default'}</h3><small>${strategy.profile_id || 'profile'} · ${strategy.version || 'version unknown'}</small></div><strong>${formatNumber(strategy.product === selected?.product && ruleState?.pack_id === selectedPackID ? rules.length : strategy.rule_count || 0)} 条规则</strong></div><div class="strategy-pack-list">${strategyPackSummary(strategy).map((item) => html`<code>${item}</code>`)}</div><button class="outline-button" type="button" onClick=${() => setSelectedProduct(strategy.product)}>编辑规则</button></article>`)}</div><//><${Panel} eyebrow="Detector rules" title=${selected ? `${profileLabel(selected.product)} · 请求匹配规则` : '请求匹配规则'} action=${strategies.length ? html`<div class="button-group"><label class="select-field inline-select"><span>蜜罐</span><select value=${selected?.product || ''} onChange=${(event) => setSelectedProduct(event.target.value)}>${strategies.map((strategy) => html`<option value=${strategy.product}>${profileLabel(strategy.product)}</option>`)}</select></label>${selectedPackID ? html`<${Button} variant="primary" size="sm" icon="plus" onClick=${() => { setRuleMessage(''); setRuleMessageError(false); setEditor({ mode: 'create', rule: null }) }} disabled=${ruleBusy}>新增规则<//>` : null}</div>` : null}>${selectedPackID ? html`<div class="rule-pack-toolbar"><span>规则包 <code>${selectedPackID}</code> · <code>${ruleRevision || 'unknown revision'}</code></span><${Badge} tone=${ruleLifecycle === 'Active' ? 'success' : 'warning'} dot=${true}>${ruleLifecycle || 'Unknown'}<//><small>修改后先验证，再启用；Draft 不会立即替换运行中的规则。</small></div>` : null}${ruleMessage ? html`<div class=${cn('form-message', ruleMessageError && 'error', !ruleMessageError && 'success')}>${ruleMessage}</div>` : null}${rulesLoading ? html`<${LoadingState} label="加载规则…" />` : rules.length ? html`<div class="rule-list">${rules.map((rule) => html`<article class="rule-card" key=${rule.id}><div class="rule-card-head"><div><code>${rule.id}</code><h3>${rule.reason_code}</h3></div><div class="rule-badges"><${Badge} tone="blue">${rule.type}<//><${Badge} tone=${rule.confidence === 'high' ? 'danger' : 'warning'}>${rule.score} 分<//></div></div><p class="rule-summary">${ruleMatchSummary(rule)}</p>${rule.within ? html`<small class="rule-window">窗口：${rule.within}</small>` : null}${rule.where ? html`<details class="rule-detail"><summary>查看字段 / 正则配置</summary><pre class="data-view">${JSON.stringify(rule.where, null, 2)}</pre></details>` : null}<div class="rule-card-actions"><button class="outline-button" type="button" onClick=${() => { setRuleMessage(''); setRuleMessageError(false); setEditor({ mode: 'edit', rule }) }} disabled=${ruleBusy}>编辑</button><button class="text-button rule-delete" type="button" onClick=${() => deleteRule(rule)} disabled=${ruleBusy}>删除</button></div></article>`)}</div>` : html`<${EmptyState} title="当前没有可展示的规则" description="该蜜罐没有解析到 detector pack。" />`}${selectedPackID && ruleLifecycle !== 'Active' ? html`<div class="rule-lifecycle-actions"><span>当前 revision 尚未生效</span><div class="button-group"><${Button} size="sm" variant="secondary" onClick=${() => runRulePackAction('validate')} disabled=${ruleBusy}>验证规则<//><${Button} size="sm" variant="primary" onClick=${() => runRulePackAction('activate')} disabled=${ruleBusy}>启用规则<//></div></div>` : null}<//><${Panel} eyebrow="Release lifecycle" title="规则包发布阶段"><div class="lifecycle">${(packs?.lifecycle || ['Draft', 'Validate', 'UnitTest', 'Replay', 'Shadow', 'Canary', 'Active', 'Rollback']).map((stage, index) => html`<div class=${cn('lifecycle-step', stage === 'Active' && 'is-active')}><span>${stage === 'Active' ? icon('check', 13) : index + 1}</span><b>${stage}</b>${index < 7 ? html`<i></i>` : null}</div>`)}</div><//><${Panel} eyebrow="Identity posture" title="身份策略"><div class="policy-table"><div class="policy-row policy-head"><span>Provider</span><span>Mode</span><span>跨站状态</span><span>状态</span></div>${(policies?.providers || []).map((policy) => html`<div class="policy-row"><b>${policy.provider}</b><span>${policy.mode}</span><span>${policy.cross_site}</span><${Badge} tone=${policy.cross_site === 'blocked' || policy.cross_site === 'disabled_by_default' ? 'success' : 'warning'}>${policy.cross_site === 'blocked' ? 'Blocked' : 'Local only'}<//></div>`)}</div><div class="notice notice-info">${icon('shield', 16)}当前 baseline 默认不启用跨站 OAuth；生产部署仍应通过 VPN 或可信反向代理保护管理端口。</div><//></div>${editor ? html`<${RuleEditorModal} rule=${editor.rule} editing=${editor.mode === 'edit'} busy=${ruleBusy} onClose=${() => setEditor(null)} onSave=${saveRule} />` : null}`
 }
 
 function SettingsPage({ username, onRotateEntry }) {
