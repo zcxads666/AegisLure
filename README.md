@@ -2,7 +2,7 @@
 
 AI/LLM 服务蜜罐与 IP 风险情报平台。
 
-AegisLure 提供五类安全的 clean-room 协议仿真：New API、vLLM、Ollama、SGLang 和 LocalAI。它记录产品识别、模型目录浏览、认证结果、合成调用、响应消费和虚拟效果验证，但不会运行模型、执行 prompt 工具、解析攻击者上传的模型/媒体、访问 URL 或连接真实供应商。
+AegisLure 提供五类安全的 clean-room 协议仿真：New API、vLLM、Ollama、SGLang 和 LocalAI。它记录产品识别、模型目录浏览、认证结果、合成调用、响应消费和虚拟效果验证，但不会运行模型、执行 prompt 工具、解析攻击者上传的模型/媒体、访问 URL 或连接真实模型供应商；管理员可在管理设置中显式配置 IPinfo Lite，用于公网 IP 地理情报查询。
 
 ## 当前版本
 
@@ -15,6 +15,7 @@ AegisLure 提供五类安全的 clean-room 协议仿真：New API、vLLM、Ollam
 - New API 风格的 guest → 注册 → 签到 → honey key → 合成调用 → 日志链；内置自包含公共前端，覆盖首页、模型、能力说明、文档、登录/注册、虚拟令牌、调用日志和账户页，并保留 OpenAI、Claude Messages、Gemini GenerateContent 的本地协议识别面；
 - 可选、默认关闭的 GitHub/Discord/LinuxDO 官方 OAuth broker：只保存稳定 subject HMAC，支持本地身份解除关联/删除；
 - Argon2id 管理员密码（最低 8 字符）、恢复码、隐藏路径、事件/IP JSON/CSV/plain 导出；
+- 可选的 IPinfo Lite 公网 IP 查询：key 只保存在后端运行配置，成功/失败均有缓存，未配置或查询失败时回退到本地地址分类和“未知”；
 - 本地只读 PromptPot/T-Pot source registry、幂等 JSONL 导入、IP/身份人工审批和 TTL 导出任务；
 - Compose 安全基线、随机管理端口/入口、TLS/Host 限制、事件保留、`install.sh`、`hpctl`、备份/恢复和离线 SPDX SBOM。
 - Ollama/vLLM persona compatibility suite：PowerShell 指纹检查脚本位于 `scripts/check-ai.ps1`，覆盖公共 Header、错误格式、模型列表、metrics 和 anti-leak 规则；macOS 可运行 `scripts/check-ai-mac.sh` 做同等检查。

@@ -47,6 +47,21 @@ The admin import-source registry stores only a bounded source declaration (`sour
 
 IP review actions are local, manual decisions with a 60-second to 7-day TTL. `status=approved` is required for the `nftables` projection; exports are filtered, bounded and synthetic. `POST /admin/api/v1/exports` creates a transient 15-minute local export job, and the status/download endpoints do not persist the generated document in the event store.
 
+## Optional IPinfo Lite lookup
+
+The admin console's Settings page can store an optional IPinfo Lite token in
+the owner-readable runtime config. The backend never returns the raw token to
+the browser; `GET /admin/api/v1/ipinfo-lite` returns only configuration status,
+a masked suffix and bounded timeout/cache metadata, while
+`PUT /admin/api/v1/ipinfo-lite` accepts `{"token":"..."}` or an empty token to
+disable the lookup. Only public IPs are sent to the provider. Loopback,
+private, link-local, multicast, unspecified and documentation ranges are
+classified locally. Missing credentials, provider errors and timeouts fall
+back to the deterministic local label or `未知`; successful responses are
+cached for 24 hours and failures for 5 minutes. See the [IPinfo Lite API
+documentation](https://ipinfo.io/developers//lite-api) for the provider
+endpoint and response fields.
+
 ## Optional OAuth broker
 
 OAuth is disabled when no config file is present. To enable it, copy `configs/oauth.example.json` to `runtime/secrets/oauth.json`, replace the provider credentials and exact HTTPS callback URLs, set mode `0600`, and restart. The process also accepts an explicit `HP_OAUTH_CONFIG` path. The loader rejects symlinks, group/world-readable files, unknown fields, custom endpoints and non-minimal scopes; provider tokens and authorization codes are memory-only.

@@ -365,6 +365,8 @@ func (a *App) handleAdminAPI(w http.ResponseWriter, r *http.Request, path string
 	switch {
 	case path == "dashboard":
 		a.adminDashboard(w)
+	case path == "ipinfo-lite" && (r.Method == http.MethodGet || r.Method == http.MethodPut):
+		a.adminIPInfoSettings(w, r)
 	case path == "import-sources" || strings.HasPrefix(path, "import-sources/"):
 		a.adminImportSourceRoute(w, r, path)
 	case path == "exports" && r.Method == http.MethodPost:
@@ -744,7 +746,7 @@ func (a *App) adminDashboard(w http.ResponseWriter) {
 	if len(recent) > 8 {
 		recent = recent[:8]
 	}
-	analytics := buildDashboardAnalytics(events, indicators, now)
+	analytics := a.buildDashboardAnalytics(events, indicators, now)
 	enabled := append([]string{}, a.cfg.EnabledProfiles...)
 	a.writeJSON(w, http.StatusOK, map[string]any{
 		"service": "AegisLure", "synthetic_only": true, "generated_at": now,

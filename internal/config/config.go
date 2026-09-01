@@ -31,6 +31,7 @@ type Config struct {
 	OllamaKeepAlive    string            `json:"ollama_keep_alive,omitempty"`
 	VLLMDocsEnabled    bool              `json:"vllm_docs_enabled,omitempty"`
 	VLLMServedNames    []string          `json:"vllm_served_model_names,omitempty"`
+	IPInfoLiteToken    string            `json:"ipinfo_lite_token,omitempty"`
 	ProfilePorts       map[string]int    `json:"profile_ports"`
 	EnabledProfiles    []string          `json:"enabled_profiles"`
 	Scenario           map[string]string `json:"scenario"`

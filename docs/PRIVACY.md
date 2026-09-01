@@ -29,6 +29,15 @@ request.
   bounded read. Transient indicator export jobs expire after 15 minutes and are
   not copied into the event store.
 
+If the operator explicitly configures an IPinfo Lite token, public source IPs
+may be sent to IPinfo for country/continent/ASN enrichment. Local, private,
+link-local, multicast, unspecified and documentation addresses are classified
+without an outbound lookup. The raw token is kept in the owner-readable
+runtime config and is never returned by the admin API; unset, failed and
+timed-out lookups fall back to `未知` or the deterministic local label. See
+the [IPinfo Lite API documentation](https://ipinfo.io/developers//lite-api)
+for the provider's documented fields and endpoint.
+
 ## Retention and deletion
 
 Event retention defaults to 30 days and 100,000 rows. Configure

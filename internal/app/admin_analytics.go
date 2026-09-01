@@ -57,34 +57,55 @@ func dashboardTimeSeries(events []model.Event, now time.Time, bucketCount int, b
 	}
 }
 
-func buildDashboardAnalytics(events []model.Event, indicators []model.Indicator, now time.Time) map[string]any {
+func (a *App) buildDashboardAnalytics(events []model.Event, indicators []model.Indicator, now time.Time) map[string]any {
 	return map[string]any{
 		"risk_activity": map[string]any{
 			"day":   dashboardTimeSeries(events, now, 12, 2*time.Hour, "15:04"),
 			"week":  dashboardTimeSeries(events, now, 7, 24*time.Hour, "01/02"),
 			"month": dashboardTimeSeries(events, now, 30, 24*time.Hour, "01/02"),
 		},
-		"source_countries":          dashboardCountryShares(indicators),
+		"source_countries":          a.dashboardCountryShares(indicators),
 		"honeypot_distribution":     dashboardHoneypotShares(events),
 		"risk_trigger_distribution": dashboardRiskTriggerShares(events),
 	}
 }
 
-func dashboardCountryShares(indicators []model.Indicator) []map[string]any {
+func (a *App) dashboardCountryShares(indicators []model.Indicator) []map[string]any {
+	rawIPs := make([]string, 0, len(indicators))
+	seen := make(map[string]bool)
+	for _, indicator := range indicators {
+		if indicator.Score < dashboardRiskThreshold || seen[indicator.IP] {
+			continue
+		}
+		seen[indicator.IP] = true
+		rawIPs = append(rawIPs, indicator.IP)
+	}
+	locations := a.lookupIPInfo(rawIPs)
 	counts := make(map[string]int)
 	ipsByCountry := make(map[string]map[string]bool)
+	metadataByCountry := make(map[string]ipInfoResult)
 	total := 0
 	for _, indicator := range indicators {
 		if indicator.Score < dashboardRiskThreshold {
 			continue
 		}
-		country := sourceCountryLabel(indicator.IP)
+		location, ok := locations[indicator.IP]
+		if !ok {
+			location = fallbackIPInfo(indicator.IP, "fallback_limit")
+		}
+		country := location.Country
+		if country == "" {
+			country = sourceCountryLabel(indicator.IP)
+		}
 		counts[country]++
 		total++
 		if ipsByCountry[country] == nil {
 			ipsByCountry[country] = make(map[string]bool)
 		}
 		ipsByCountry[country][indicator.IP] = true
+		if _, ok := metadataByCountry[country]; !ok {
+			metadataByCountry[country] = location
+		}
 	}
 	result := make([]map[string]any, 0, len(counts))
 	for country, count := range counts {
@@ -94,11 +115,13 @@ func dashboardCountryShares(indicators []model.Indicator) []map[string]any {
 		}
 		sort.Strings(ips)
 		result = append(result, map[string]any{
-			"key":        country,
-			"name":       country,
-			"count":      count,
-			"percentage": sharePercentage(count, total),
-			"ips":        ips,
+			"key": country, "name": country, "count": count,
+			"percentage": sharePercentage(count, total), "ips": ips,
+			"country_code":   metadataByCountry[country].CountryCode,
+			"continent":      metadataByCountry[country].Continent,
+			"continent_code": metadataByCountry[country].ContinentCode,
+			"geo_source":     metadataByCountry[country].Source,
+			"geo_status":     metadataByCountry[country].Status,
 		})
 	}
 	sortShareList(result)
