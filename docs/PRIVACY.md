@@ -20,9 +20,11 @@ request.
   and completion time to the application. It does not return raw provider IDs,
   email addresses, handles, passwords or tokens. The broker config contains
   client credentials and must be protected as a secret.
-- SQLite WAL is authoritative. `events.jsonl` and `state.json` are bounded
-  compatibility/backup mirrors. Imported events include source/schema/file/
-  offset/hash provenance so local migration data can be audited.
+- SQLite WAL is the default authority. PostgreSQL is an alternative authority
+  for a new single-node deployment. SQLite `events.jsonl` and `state.json` are
+  bounded compatibility mirrors; PostgreSQL does not read or write those
+  mirrors. Imported events include source/schema/file/offset/hash provenance so
+  local imported data can be audited.
 - Import-source declarations contain only an installation-owned alias and
   allowlisted schema/product metadata. The admin API cannot use that alias to
   browse a host path; the explicit local `hpctl import` command performs the
@@ -43,8 +45,8 @@ for the provider's documented fields and endpoint.
 Event retention defaults to 30 days and 100,000 rows. Configure
 `event_retention_days` and `event_max_entries`, or the equivalent
 `HP_EVENT_RETENTION_DAYS` and `HP_EVENT_MAX_ENTRIES` environment variables.
-Pruning removes expired/over-limit SQLite event rows and imported provenance;
-the event mirror is rewritten from the retained authoritative rows.
+Pruning removes expired/over-limit event rows and imported provenance in the
+selected backend; the SQLite event mirror is rewritten from retained rows.
 
 An administrator can inspect safe identity metadata at
 `<admin_path>/admin/api/v1/identities`, revoke an association with

@@ -1,8 +1,10 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -51,5 +53,80 @@ func TestNormalizePortPoolsKeepsBaseAndRejectsOutOfRangeCandidates(t *testing.T)
 	}
 	if len(cfg.PortPools["ollama"]) != 2 {
 		t.Fatalf("unexpected normalized candidate count: %#v", cfg.PortPools["ollama"])
+	}
+}
+
+func TestLoadNormalizesPostgresComponentsWithoutSerializingCredentials(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"instance_id":"instance","instance_key":"key"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	passwordPath := filepath.Join(t.TempDir(), "postgres-password")
+	if err := os.WriteFile(passwordPath, []byte("p@ss word\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HP_DB_DRIVER", "postgres")
+	t.Setenv("HP_DB_HOST", "db.internal")
+	t.Setenv("HP_DB_PORT", "5433")
+	t.Setenv("HP_DB_NAME", "honey")
+	t.Setenv("HP_DB_USER", "sensor")
+	t.Setenv("HP_DB_PASSWORD_FILE", passwordPath)
+	t.Setenv("HP_DB_SSLMODE", "require")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DatabaseDriver != "postgres" || !strings.Contains(cfg.DatabaseURL, "db.internal:5433/honey") || !strings.Contains(cfg.DatabaseURL, "sslmode=require") {
+		t.Fatalf("unexpected normalized postgres config: %#v", cfg)
+	}
+	if !strings.Contains(cfg.DatabaseURL, "p%40ss%20word") {
+		t.Fatalf("database password was not URL encoded: %q", cfg.DatabaseURL)
+	}
+	encoded, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "p@ss") || strings.Contains(string(encoded), "db.internal") {
+		t.Fatalf("runtime postgres credentials leaked into config JSON: %s", encoded)
+	}
+}
+
+func TestNormalizeDatabaseRejectsMissingPasswordAndInvalidSSLMode(t *testing.T) {
+	missingPassword := &Config{DatabaseDriver: "postgres", DatabaseHost: "db"}
+	if err := NormalizeDatabase(missingPassword); err == nil {
+		t.Fatal("missing PostgreSQL password was accepted")
+	}
+	invalidSSL := &Config{DatabaseDriver: "postgres", DatabaseURL: "postgres://user:pass@db/name?sslmode=bogus"}
+	if err := NormalizeDatabase(invalidSSL); err == nil {
+		t.Fatal("invalid PostgreSQL sslmode was accepted")
+	}
+}
+
+func TestLoadReadsPostgresURLFileWithPriority(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"instance_id":"instance","instance_key":"key"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	urlPath := filepath.Join(t.TempDir(), "database-url")
+	if err := os.WriteFile(urlPath, []byte("postgresql://file-user:file-pass@db.internal:5432/aegislure?sslmode=require\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HP_DB_DRIVER", "postgres")
+	t.Setenv("HP_DATABASE_URL", "postgres://direct-user:direct-pass@wrong.example/aegislure")
+	t.Setenv("HP_DATABASE_URL_FILE", urlPath)
+	t.Setenv("HP_DB_PASSWORD_FILE", "")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DatabaseURL != "postgresql://file-user:file-pass@db.internal:5432/aegislure?sslmode=require" {
+		t.Fatalf("database URL file did not take priority: %q", cfg.DatabaseURL)
+	}
+	encoded, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "file-pass") || strings.Contains(string(encoded), "db.internal") {
+		t.Fatalf("database URL file contents leaked into config JSON: %s", encoded)
 	}
 }

@@ -9,11 +9,30 @@ if command -v go >/dev/null 2>&1; then
   exec go run ./cmd/hpctl "$@"
 fi
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  compose_args=(-f docker-compose.yml)
+  mode="${HP_DB_DRIVER:-}"
+  if [[ -z "$mode" && -f .env ]]; then
+    mode="$(awk -F= '/^HP_DB_DRIVER=/ { print $2; exit }' .env)"
+  fi
+  profile_args=()
+  mode_lower="$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$mode_lower" == "postgres" || "$mode_lower" == "postgresql" ]]; then
+    compose_args+=(-f docker-compose.pg.yml)
+    external_url="${HP_DATABASE_URL:-}"
+    external_url_file="${HP_DATABASE_URL_FILE:-}"
+    if [[ -f .env ]]; then
+      [[ -n "$external_url" ]] || external_url="$(awk -F= '/^HP_DATABASE_URL=/ { print substr($0, index($0, "=")+1); exit }' .env)"
+      [[ -n "$external_url_file" ]] || external_url_file="$(awk -F= '/^HP_DATABASE_URL_FILE=/ { print substr($0, index($0, "=")+1); exit }' .env)"
+    fi
+    if [[ -z "$external_url" && -z "$external_url_file" ]]; then
+      profile_args+=(--profile bundled-pg)
+    fi
+  fi
   case "${1:-}" in
-    start) exec docker compose up -d ;;
-    stop) exec docker compose stop ;;
-    restart) exec docker compose restart ;;
-    *) exec docker compose run --rm --no-deps --entrypoint /usr/local/bin/hpctl aegislure "$@" ;;
+    start) exec docker compose "${compose_args[@]}" "${profile_args[@]}" up -d ;;
+    stop) exec docker compose "${compose_args[@]}" "${profile_args[@]}" stop ;;
+    restart) exec docker compose "${compose_args[@]}" "${profile_args[@]}" restart ;;
+    *) exec docker compose "${compose_args[@]}" "${profile_args[@]}" run --rm --no-deps --entrypoint /usr/local/bin/hpctl aegislure "$@" ;;
   esac
 fi
 echo "Docker Compose or Go is required" >&2

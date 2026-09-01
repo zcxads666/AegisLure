@@ -1,7 +1,7 @@
 SHELL := /usr/bin/env bash
 SBOM_OUTPUT ?= sbom.spdx.json
 
-.PHONY: fmt test vet build sbom tools run compose-build
+.PHONY: fmt test vet build sbom tools run compose-build compose-config compose-pg-config
 
 tools:
 	./scripts/install-tools.sh
@@ -26,3 +26,9 @@ run:
 
 compose-build:
 	source scripts/env.sh && docker compose build
+
+compose-config:
+	docker compose -f docker-compose.yml config --quiet
+
+compose-pg-config:
+	docker compose -f docker-compose.yml -f docker-compose.pg.yml --profile bundled-pg config --quiet

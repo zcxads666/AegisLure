@@ -9,7 +9,7 @@ AegisLure 提供五类安全的 clean-room 协议仿真：New API、vLLM、Ollam
 当前仓库实现的是可断网运行的 Standalone 单机 baseline：
 
 - Go HTTP 服务，同时承载启用的 profile 和隐藏管理入口；
-- SQLite WAL 权威存储、JSONL 兼容镜像、虚拟账户/令牌/额度和风险聚合；多机 Hive/传输仍属于后续发布门；
+- SQLite WAL 默认权威存储，亦可用 PostgreSQL 作为新部署的权威后端；SQLite 保留有界 JSONL/state 兼容镜像，两个后端首次启动都会幂等加载内置规则、审计条件、身份策略和模型目录；不提供 SQLite → PostgreSQL 迁移或双写；
 - `exact/contains/starts_with/ends_with` 探活规则的安全契约；
 - vLLM `secured/legacy-gap/no-key` 语义、Ollama 原生/ OpenAI 兼容接口、SGLang HTTP 管理面和 LocalAI 模型管理面；
 - New API 风格的 guest → 注册 → 签到 → honey key → 合成调用 → 日志链；内置自包含公共前端，覆盖首页、模型、能力说明、文档、登录/注册、虚拟令牌、调用日志和账户页，并保留 OpenAI、Claude Messages、Gemini GenerateContent 的本地协议识别面；
@@ -20,7 +20,7 @@ AegisLure 提供五类安全的 clean-room 协议仿真：New API、vLLM、Ollam
 - Compose 安全基线、随机管理端口/入口、TLS/Host 限制、事件保留、`install.sh`、`hpctl`、备份/恢复和离线 SPDX SBOM。
 - Ollama/vLLM persona compatibility suite：PowerShell 指纹检查脚本位于 `scripts/check-ai.ps1`，覆盖公共 Header、错误格式、模型列表、metrics 和 anti-leak 规则；macOS 可运行 `scripts/check-ai-mac.sh` 做同等检查。
 
-`runtime/`、`data/` 和密钥不进入 Git。当前管理初始化不使用 Bootstrap code 或 TOTP；这是为了降低操作门槛，生产部署仍应把隐藏入口放在 VPN/可信网络后。OAuth broker 已作为可选单机能力实现，但默认关闭，且只允许固定官方端点。正式发布前仍需完成正式证书、主机防火墙/VPN、no-egress 与 OAuth 出站抓包验收、不可变镜像签名、备份恢复演练、外部渗透和 2–4 周稳定性观察；PostgreSQL/Hive、审计哈希远端复制和 sensor 联动属于本请求明确排除的联机设计。
+`runtime/`、`data/` 和密钥不进入 Git。当前管理初始化不使用 Bootstrap code 或 TOTP；这是为了降低操作门槛，生产部署仍应把隐藏入口放在 VPN/可信网络后。OAuth broker 已作为可选单机能力实现，但默认关闭，且只允许固定官方端点。正式发布前仍需完成正式证书、主机防火墙/VPN、no-egress 与 OAuth 出站抓包验收、不可变镜像签名、备份恢复演练、外部渗透和 2–4 周稳定性观察；多机 Hive、审计哈希远端复制和 sensor 联动属于本请求明确排除的联机设计。
 
 ## 本地运行
 
@@ -99,6 +99,24 @@ source scripts/env.sh
 ./hpctl status
 ```
 
+SQLite 是默认模式；PG 模式会启动内部隔离的 PostgreSQL 16，或使用环境中的
+`HP_DATABASE_URL` 连接托管 PostgreSQL。PG 模式的密码只从
+`HP_POSTGRES_PASSWORD_FILE` 指定的 Docker secret 文件读取：
+
+```bash
+./install.sh --mode sqlite --version v0.1.0
+./install.sh --mode postgres --version v0.1.0
+```
+
+远程安装器先下载并校验固定 Release 的 manifest、SHA-256 和 GHCR 不可变 digest：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zcxads666/AegisLure/main/install-remote.sh \
+  | bash -s -- --mode sqlite --version v0.1.0
+curl -fsSL https://raw.githubusercontent.com/zcxads666/AegisLure/main/install-remote.sh \
+  | bash -s -- --mode postgres --version last
+```
+
 当 Docker daemon 位于独立的 WSL/VM 网络命名空间、Docker 发布端口无法转发到
 Windows 时，可以用同一份 `runtime` 数据直接在 WSL 宿主运行：
 
@@ -115,7 +133,7 @@ Windows 的 Hyper-V 防火墙规则中允许对应 TCP 端口。WSL NAT 模式�
 `wsl.exe -- hostname -I` 得到的 WSL 地址；该地址不一定是 Windows 以太网卡地址，不能把它
 与 Windows 主机 IP 混用。Docker Compose 部署仍可单独使用。
 
-`compose.yaml` 为五个 profile 各暴露默认端口加 7 个候选端口（共 40 个公开 profile 映射）和一个随机高位管理端口。实际是否监听由 `HP_PROFILES` 决定，未启用的候选端口不会返回应用响应。容器采用非 root、只读 rootfs、tmpfs、drop-all-capabilities、no-new-privileges、资源上限和隔离网络；没有 Docker socket、host PID/network、GPU 或模型卷。端口计划由 `hpctl ports plan/apply` 生成并校验签名；apply 后需显式重启 Compose 服务。
+`docker-compose.yml` 为五个 profile 各暴露默认端口加 7 个候选端口（共 40 个公开 profile 映射）和一个随机高位管理端口。实际是否监听由 `HP_PROFILES` 决定，未启用的候选端口不会返回应用响应。PG 部署额外叠加 `docker-compose.pg.yml`；内部数据库只能通过隔离网络访问，不发布主机端口。应用和长期运行的 PostgreSQL 容器采用非 root、只读 rootfs、tmpfs、drop-all-capabilities、no-new-privileges、资源上限和隔离网络；PG 仅有一个 profile-gated 的一次性 root volume-ownership bootstrap，完成后数据库仍以 `postgres` 用户运行。没有 Docker socket、host PID/network、GPU 或模型卷。端口计划由 `hpctl ports plan/apply` 生成并校验签名；apply 后需显式重启 Compose 服务。
 
 ## 安全边界
 

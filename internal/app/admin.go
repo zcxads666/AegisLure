@@ -455,11 +455,13 @@ func (a *App) adminHealth(w http.ResponseWriter) {
 		listeners[name] = map[string]any{"ready": ready, "state": state, "expected_port": expectedPort, "actual_port": actualPort, "revision": a.portRevisionLocked(name, actualPort)}
 	}
 	a.serverMu.RUnlock()
+	databaseConnected := a.store.DatabaseConnected()
+	allReady = allReady && databaseConnected
 	status := http.StatusOK
 	if !allReady {
 		status = http.StatusServiceUnavailable
 	}
-	a.writeJSON(w, status, map[string]any{"healthy": allReady, "admin_ready": adminReady, "listeners": listeners, "expected_profiles": a.cfg.EnabledProfiles, "synthetic_only": true})
+	a.writeJSON(w, status, map[string]any{"healthy": allReady, "admin_ready": adminReady, "listeners": listeners, "expected_profiles": a.cfg.EnabledProfiles, "database_driver": a.store.DatabaseDriver(), "database_target": a.store.DatabaseTarget(), "database_connected": databaseConnected})
 }
 
 func (a *App) adminIdentities(w http.ResponseWriter) {

@@ -9,8 +9,11 @@ particular host's firewall, packet capture, image registry or multi-week soak.
 Run from the repository root:
 
 ```bash
-env GOPROXY=off GOSUMDB=off go test ./...
-env GOPROXY=off GOSUMDB=off go vet ./...
+go test ./...
+go vet ./...
+go build -trimpath ./cmd/aegislure ./cmd/hpctl
+docker compose -f docker-compose.yml config --quiet
+docker compose -f docker-compose.yml -f docker-compose.pg.yml --profile bundled-pg config --quiet
 make sbom
 ```
 
@@ -18,6 +21,12 @@ make sbom
 SPDX 2.3 JSON inventory without resolving modules from the network. Review the
 resulting `sbom.spdx.json` together with [NOTICE](../NOTICE) and the exact
 source revision.
+
+The version-tag/manual workflow publishes `linux/amd64` and `linux/arm64` to
+`ghcr.io/zcxads666/aegislure`, enables registry SBOM/provenance attestations,
+and uploads a fixed-version bundle, SHA-256 file and release manifest. The
+repository does not contain a production signing key; signing and verification
+remain deployment-owner gates.
 
 When the host has the required tools, run the Ollama/vLLM compatibility suite:
 
@@ -56,7 +65,9 @@ replace packet capture or an isolated adversarial test.
 
 ## Scope boundary
 
-Standalone v1 does not include sensor enrollment, mTLS fleet control,
-PostgreSQL Hive, durable cross-node ACK, global identity reputation or remote
-blocklist propagation. Those are Distributed v2 requirements and must not be
-represented as completed by a local importer or SQLite backup.
+Standalone v1 includes SQLite by default and a selectable PostgreSQL backend for
+new single-node deployments. It does not include SQLite → PostgreSQL migration,
+double write, sensor enrollment, mTLS fleet control, PostgreSQL Hive, durable
+cross-node ACK, global identity reputation or remote blocklist propagation.
+Those are Distributed v2 requirements and must not be represented as completed
+by a local importer or same-backend logical backup.

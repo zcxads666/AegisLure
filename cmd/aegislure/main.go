@@ -28,6 +28,8 @@ func main() {
 	}
 	_ = os.Setenv("HP_CONFIG", *configPath)
 	st, err := store.OpenWithOptions(cfg.DataDir, cfg.InstanceKey, store.Options{
+		Driver:         cfg.DatabaseDriver,
+		DatabaseURL:    cfg.DatabaseURL,
 		MaxEvents:      cfg.EventMaxEntries,
 		EventRetention: time.Duration(cfg.EventRetentionDays) * 24 * time.Hour,
 	})

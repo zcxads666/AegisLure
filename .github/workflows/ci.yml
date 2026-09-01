@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: aegislure
+          POSTGRES_USER: aegislure
+          POSTGRES_PASSWORD: ci-postgres-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U aegislure -d aegislure"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: true
+
+      - name: Shell syntax
+        run: bash -n install.sh install-remote.sh hpctl scripts/test-docker.sh
+
+      - name: Test
+        run: go test ./...
+
+      - name: PostgreSQL store integration
+        env:
+          AEGISLURE_TEST_POSTGRES_URL: postgres://aegislure:ci-postgres-password@127.0.0.1:5432/aegislure?sslmode=disable
+        run: go test ./internal/store -run 'Test(Postgres|RebindPostgres)'
+
+      - name: PostgreSQL application seed integration
+        env:
+          AEGISLURE_TEST_POSTGRES_URL: postgres://aegislure:ci-postgres-password@127.0.0.1:5432/aegislure?sslmode=disable
+        run: go test ./internal/app -run TestPostgresStartsWithCompleteBuiltinRulePack
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build binaries
+        run: go build -trimpath ./cmd/aegislure ./cmd/hpctl
+
+      - name: Prepare Compose secret fixture
+        run: |
+          mkdir -p runtime/secrets
+          umask 077
+          printf '%s\n' ci-only-compose-secret > runtime/secrets/postgres_password
+
+      - name: Validate SQLite Compose
+        run: docker compose -f docker-compose.yml config --quiet
+
+      - name: Validate PostgreSQL Compose
+        run: docker compose -f docker-compose.yml -f docker-compose.pg.yml --profile bundled-pg config --quiet
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build container
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: false
+          tags: aegislure:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

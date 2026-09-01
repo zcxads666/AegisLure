@@ -14,9 +14,9 @@ Internet
    └── random admin port + exact random path → authenticated control API
 ```
 
-The current binary combines the first-stage `hp-edge`, `hp-core`, `hp-collector`, `hp-controller` and `hp-admin-gateway` responsibilities so it can run on a single small node. SQLite WAL is the authoritative local store; `events.jsonl` and `state.json` remain bounded compatibility/backup mirrors. The code keeps product routing, event storage, detection and admin paths separated behind package boundaries so they can become processes in Distributed v2 without changing the event contract.
+The current binary combines the first-stage `hp-edge`, `hp-core`, `hp-collector`, `hp-controller` and `hp-admin-gateway` responsibilities so it can run on a single small node. SQLite WAL is the default authoritative local store; PostgreSQL is an alternative authoritative backend for a new single-node deployment. SQLite's `events.jsonl` and `state.json` remain bounded compatibility mirrors, while PostgreSQL keeps the same logical data in its schema. The code keeps product routing, event storage, detection and admin paths separated behind package boundaries so they can become processes in Distributed v2 without changing the event contract.
 
-The Standalone v1 boundary is deliberately complete without a center node: profile listeners, the admin gateway, OAuth broker (disabled unless configured), detector packs, retention, backup/restore and upgrade/rollback control all operate from the local installation. PostgreSQL, Hive, sensors, mTLS enrollment and durable cross-node ACKs are not hidden dependencies of this binary.
+The Standalone v1 boundary is deliberately complete without a center node: profile listeners, the admin gateway, OAuth broker (disabled unless configured), detector packs, retention, backend-aware backup/restore and upgrade/rollback control all operate from the local installation. PostgreSQL here is only a selectable local persistence backend; Hive, sensors, mTLS enrollment and durable cross-node ACKs are not hidden dependencies of this binary.
 
 ## Four configuration contracts
 
@@ -47,9 +47,9 @@ The service never emits a `real_inference` outcome. All accepted model work is d
 
 ## Local persistence and release controls
 
-- `aegislure.sqlite` is opened in WAL mode with foreign keys enabled. `state.json` and `events.jsonl` are compatibility mirrors, not competing sources of truth.
+- SQLite opens `aegislure.sqlite` in WAL mode with foreign keys enabled. PostgreSQL uses `pgx/v5`, an explicit schema and database transactions. `state.json` and `events.jsonl` are SQLite compatibility mirrors, not competing sources of truth; PostgreSQL does not read them.
 - Event retention defaults to 30 days and 100,000 rows. Operators can set `event_retention_days`/`event_max_entries` in the runtime config or use `HP_EVENT_RETENTION_DAYS`/`HP_EVENT_MAX_ENTRIES`; values are bounded by the config loader.
-- `hpctl backup` creates a bounded ZIP containing the config, a SQLite snapshot, and the two mirrors. `hpctl restore` accepts only those members, validates a staged SQLite copy, applies per-file/total limits, and replaces runtime files atomically.
+- `hpctl backup` creates a bounded, checksummed logical snapshot containing config, state, retained events, audit chain and import provenance. `hpctl restore` requires the snapshot backend to match the destination backend and applies it transactionally; it never performs SQLite → PostgreSQL migration or double write.
 - OAuth is an opt-in broker boundary. Its credentials are loaded from an owner-readable-only local file, endpoints are fixed to the official provider hosts, state/PKCE/nonce are short-lived, and provider tokens are not persisted in local state, logs or backups.
 - Local indicator decisions, import-source lifecycle and identity review state are
   persisted in the same WAL-backed state transaction. Approval, challenge and
@@ -69,4 +69,4 @@ The service never emits a `real_inference` outcome. All accepted model work is d
 
 ## Explicitly excluded Distributed v2
 
-Sensor enrollment, mTLS certificate lifecycle, signed desired state, durable ACK/replay, PostgreSQL Hive, cross-node activity correlation, RDAP/ASN enrichment and reviewed global blocklists remain online/distributed design work. They are intentionally excluded from the single-machine implementation and must not be enabled by interpreting local JSONL import as distributed transport.
+Sensor enrollment, mTLS certificate lifecycle, signed desired state, durable ACK/replay, PostgreSQL Hive, cross-node activity correlation, RDAP/ASN enrichment and reviewed global blocklists remain online/distributed design work. They are intentionally excluded from the single-machine implementation and must not be enabled by interpreting local JSONL import or local PostgreSQL as distributed transport.

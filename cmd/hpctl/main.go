@@ -3,7 +3,9 @@ package main
 import (
 	"archive/zip"
 	"bufio"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -109,6 +111,8 @@ func loadConfig(fs *flag.FlagSet) *config.Config {
 
 func storeOptions(cfg *config.Config) store.Options {
 	return store.Options{
+		Driver:         cfg.DatabaseDriver,
+		DatabaseURL:    cfg.DatabaseURL,
 		MaxEvents:      cfg.EventMaxEntries,
 		EventRetention: time.Duration(cfg.EventRetentionDays) * 24 * time.Hour,
 	}
@@ -135,7 +139,10 @@ func statusCommand(args []string) {
 	if cfg.RequireAdminTLS || fileExists(certPath) && fileExists(keyPath) {
 		scheme = "https"
 	}
-	result := map[string]any{"instance_id": cfg.InstanceID, "admin_port": cfg.AdminPort, "admin_path_configured": cfg.AdminPath != "", "admin_url": fmt.Sprintf("%s://127.0.0.1:%d%s", scheme, cfg.AdminPort, cfg.AdminPath), "require_admin_tls": cfg.RequireAdminTLS, "enabled_profiles": cfg.EnabledProfiles, "admin_initialized": st.Admin().Initialized, "data_dir": cfg.DataDir, "database_path": st.DatabasePath(), "sqlite_wal": true}
+	result := map[string]any{"instance_id": cfg.InstanceID, "admin_port": cfg.AdminPort, "admin_path_configured": cfg.AdminPath != "", "admin_url": fmt.Sprintf("%s://127.0.0.1:%d%s", scheme, cfg.AdminPort, cfg.AdminPath), "require_admin_tls": cfg.RequireAdminTLS, "enabled_profiles": cfg.EnabledProfiles, "admin_initialized": st.Admin().Initialized, "data_dir": cfg.DataDir, "database_driver": st.DatabaseDriver(), "database_target": st.DatabaseTarget(), "database_connected": st.DatabaseConnected(), "sqlite_wal": st.DatabaseDriver() == store.DriverSQLite}
+	if st.DatabaseDriver() == store.DriverSQLite {
+		result["database_path"] = st.DatabasePath()
+	}
 	_ = st.Close()
 	printJSON(result)
 }
@@ -265,7 +272,14 @@ func runDockerCompose(projectDir string, args []string, image string) {
 		}
 		projectDir = absolute
 	}
-	command := exec.Command("docker", append([]string{"compose"}, args...)...)
+	composeArgs := []string{"compose", "-f", "docker-compose.yml"}
+	if projectUsesPostgres(projectDir) {
+		composeArgs = append(composeArgs, "-f", "docker-compose.pg.yml")
+		if !projectUsesExternalPostgres(projectDir) {
+			composeArgs = append(composeArgs, "--profile", "bundled-pg")
+		}
+	}
+	command := exec.Command("docker", append(composeArgs, args...)...)
 	command.Dir = projectDir
 	command.Stdin = os.Stdin
 	command.Stdout = os.Stdout
@@ -276,6 +290,49 @@ func runDockerCompose(projectDir string, args []string, image string) {
 	if err := command.Run(); err != nil {
 		fatal(fmt.Errorf("docker compose %v: %w", args, err))
 	}
+}
+
+func projectUsesPostgres(projectDir string) bool {
+	if normalizeBackendName(os.Getenv("HP_DB_DRIVER")) == store.DriverPostgres {
+		return true
+	}
+	if value := dotenvValue(filepath.Join(projectDir, ".env"), "HP_DB_DRIVER"); normalizeBackendName(value) == store.DriverPostgres {
+		return true
+	}
+	for _, path := range []string{filepath.Join(projectDir, "runtime", "config.json"), filepath.Join(projectDir, "config.json")} {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var cfg config.Config
+		if json.Unmarshal(b, &cfg) == nil && normalizeBackendName(cfg.DatabaseDriver) == store.DriverPostgres {
+			return true
+		}
+	}
+	return false
+}
+
+func projectUsesExternalPostgres(projectDir string) bool {
+	for _, key := range []string{"HP_DATABASE_URL", "HP_DATABASE_URL_FILE"} {
+		if strings.TrimSpace(os.Getenv(key)) != "" || strings.TrimSpace(dotenvValue(filepath.Join(projectDir, ".env"), key)) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func dotenvValue(path, key string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	prefix := key + "="
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	return ""
 }
 
 var imageReferencePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/@:-]*@sha256:[a-fA-F0-9]{64}$`)
@@ -394,20 +451,36 @@ func backupCommand(args []string) {
 		fatal(err)
 	}
 	defer st.Close()
-	stage, err := os.MkdirTemp(cfg.DataDir, ".aegislure-backup-")
+	snapshot, err := st.ExportSnapshot()
 	if err != nil {
 		fatal(err)
 	}
-	defer os.RemoveAll(stage)
-	databaseSnapshot := filepath.Join(stage, "aegislure.sqlite")
-	if err := st.BackupTo(databaseSnapshot); err != nil {
-		fatal(err)
+	snapshotBytes, err := json.MarshalIndent(snapshot, "", "  ")
+	if err != nil {
+		fatal(fmt.Errorf("encode backup snapshot: %w", err))
 	}
-	files := []string{*configPath, databaseSnapshot, filepath.Join(cfg.DataDir, "state.json"), filepath.Join(cfg.DataDir, "events.jsonl")}
+	configBytes, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		fatal(fmt.Errorf("encode backup config: %w", err))
+	}
 	for _, inputPath := range []string{*configPath, filepath.Join(cfg.DataDir, "state.json"), filepath.Join(cfg.DataDir, "events.jsonl")} {
 		if sameFilePath(*output, inputPath) {
 			fatal(errors.New("backup output must differ from runtime files"))
 		}
+	}
+	manifest := backupManifest{
+		Format:    "aegislure-logical-snapshot-v1",
+		Backend:   snapshot.Backend,
+		CreatedAt: snapshot.CreatedAt,
+		Files: map[string]backupFileManifest{
+			"config.json":   manifestForBytes(configBytes),
+			"snapshot.json": manifestForBytes(snapshotBytes),
+		},
+		Counts: map[string]int{"events": len(snapshot.Events), "audit": len(snapshot.Audit), "external_event_refs": len(snapshot.ExternalEventRefs)},
+	}
+	manifestBytes, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		fatal(fmt.Errorf("encode backup manifest: %w", err))
 	}
 	archive, err := os.OpenFile(*output, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
 	if err != nil {
@@ -415,8 +488,15 @@ func backupCommand(args []string) {
 	}
 	defer archive.Close()
 	zw := zip.NewWriter(archive)
-	for _, name := range files {
-		if err := addFile(zw, name); err != nil && !os.IsNotExist(err) {
+	for _, item := range []struct {
+		name string
+		data []byte
+	}{
+		{name: "config.json", data: configBytes},
+		{name: "snapshot.json", data: snapshotBytes},
+		{name: "manifest.json", data: manifestBytes},
+	} {
+		if err := addBytes(zw, item.name, item.data); err != nil {
 			fatal(err)
 		}
 	}
@@ -426,7 +506,25 @@ func backupCommand(args []string) {
 	if err := archive.Sync(); err != nil {
 		fatal(err)
 	}
-	fmt.Printf("backup=%s\n", *output)
+	fmt.Printf("backup=%s\nbackend=%s\nevents=%d\naudit=%d\n", *output, snapshot.Backend, len(snapshot.Events), len(snapshot.Audit))
+}
+
+type backupFileManifest struct {
+	SHA256    string `json:"sha256"`
+	SizeBytes int    `json:"size_bytes"`
+}
+
+type backupManifest struct {
+	Format    string                        `json:"format"`
+	Backend   string                        `json:"backend"`
+	CreatedAt time.Time                     `json:"created_at"`
+	Files     map[string]backupFileManifest `json:"files"`
+	Counts    map[string]int                `json:"counts"`
+}
+
+func manifestForBytes(data []byte) backupFileManifest {
+	digest := sha256.Sum256(data)
+	return backupFileManifest{SHA256: hex.EncodeToString(digest[:]), SizeBytes: len(data)}
 }
 
 func restoreCommand(args []string) {
@@ -451,7 +549,7 @@ func restoreCommand(args []string) {
 		fatal(err)
 	}
 	defer os.RemoveAll(stage)
-	allowed := map[string]bool{"config.json": true, "aegislure.sqlite": true, "state.json": true, "events.jsonl": true}
+	allowed := map[string]bool{"config.json": true, "aegislure.sqlite": true, "state.json": true, "events.jsonl": true, "manifest.json": true, "snapshot.json": true}
 	seenEntries := make(map[string]bool, len(allowed))
 	var total int64
 	for _, file := range archive.File {
@@ -483,10 +581,27 @@ func restoreCommand(args []string) {
 		}
 		total += written
 	}
+	if seenEntries["snapshot.json"] {
+		restoreLogicalSnapshot(stage, *configPath, *dataDir)
+		return
+	}
 	stagedConfig := filepath.Join(stage, "config.json")
+	if sourceBackend, exists, err := rawConfigBackend(stagedConfig); err != nil {
+		fatal(err)
+	} else if exists && sourceBackend != store.DriverSQLite {
+		fatal(errors.New("legacy backup format supports SQLite only; create a logical backup for PostgreSQL"))
+	}
+	if currentBackend, exists, err := rawConfigBackend(*configPath); err != nil {
+		fatal(err)
+	} else if exists && currentBackend != store.DriverSQLite {
+		fatal(fmt.Errorf("refusing cross-backend restore: destination is %s, legacy backup is sqlite", currentBackend))
+	}
 	cfg, err := config.Load(stagedConfig)
 	if err != nil {
 		fatal(fmt.Errorf("invalid backup config: %w", err))
+	}
+	if normalizeBackendName(cfg.DatabaseDriver) != store.DriverSQLite {
+		fatal(errors.New("legacy backup restore is SQLite-only; select SQLite explicitly for the destination"))
 	}
 	if cfg.InstanceKey == "" || cfg.InstanceID == "" || cfg.AdminPath == "" {
 		fatal(errors.New("backup config is incomplete"))
@@ -564,6 +679,119 @@ func restoreCommand(args []string) {
 		fatal(err)
 	}
 	fmt.Printf("restored_config=%s\nrestored_data_dir=%s\n", *configPath, *dataDir)
+}
+
+func restoreLogicalSnapshot(stage, configPath, dataDir string) {
+	manifestBytes, err := os.ReadFile(filepath.Join(stage, "manifest.json"))
+	if err != nil {
+		fatal(fmt.Errorf("logical backup manifest is required: %w", err))
+	}
+	var manifest backupManifest
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil || manifest.Format != "aegislure-logical-snapshot-v1" {
+		fatal(errors.New("invalid logical backup manifest"))
+	}
+	snapshotBytes, err := os.ReadFile(filepath.Join(stage, "snapshot.json"))
+	if err != nil {
+		fatal(err)
+	}
+	for _, name := range []string{"config.json", "snapshot.json"} {
+		data, readErr := os.ReadFile(filepath.Join(stage, name))
+		if readErr != nil {
+			fatal(readErr)
+		}
+		expected, ok := manifest.Files[name]
+		if !ok || manifestForBytes(data) != expected {
+			fatal(fmt.Errorf("backup checksum mismatch for %s", name))
+		}
+	}
+	var snapshot store.Snapshot
+	if err := json.Unmarshal(snapshotBytes, &snapshot); err != nil {
+		fatal(fmt.Errorf("invalid logical backup snapshot: %w", err))
+	}
+	if snapshot.Backend != manifest.Backend || len(snapshot.Events) != manifest.Counts["events"] || len(snapshot.Audit) != manifest.Counts["audit"] || len(snapshot.ExternalEventRefs) != manifest.Counts["external_event_refs"] {
+		fatal(errors.New("logical backup manifest does not match snapshot"))
+	}
+	var backupCfg config.Config
+	configBytes, err := os.ReadFile(filepath.Join(stage, "config.json"))
+	if err != nil || json.Unmarshal(configBytes, &backupCfg) != nil {
+		fatal(errors.New("invalid backup config"))
+	}
+	backend := normalizeBackendName(backupCfg.DatabaseDriver)
+	if backend == "" {
+		backend = store.DriverSQLite
+	}
+	if backend != normalizeBackendName(snapshot.Backend) {
+		fatal(errors.New("backup config and snapshot database backends differ"))
+	}
+	if currentBackend, exists, err := rawConfigBackend(configPath); err != nil {
+		fatal(err)
+	} else if exists && currentBackend != backend {
+		fatal(fmt.Errorf("refusing cross-backend restore: destination is %s, backup is %s", currentBackend, backend))
+	}
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		fatal(err)
+	}
+	backupCfg.DataDir = dataDir
+	stagedConfig := filepath.Join(stage, "restore-config.json")
+	if err := config.Save(stagedConfig, &backupCfg); err != nil {
+		fatal(err)
+	}
+	targetCfg, err := config.Load(stagedConfig)
+	if err != nil {
+		fatal(fmt.Errorf("load destination database settings: %w", err))
+	}
+	if normalizeBackendName(targetCfg.DatabaseDriver) != backend {
+		fatal(fmt.Errorf("destination database backend is %s, backup is %s", targetCfg.DatabaseDriver, backend))
+	}
+	targetCfg.DataDir = dataDir
+	st, err := store.OpenWithOptions(targetCfg.DataDir, targetCfg.InstanceKey, storeOptions(targetCfg))
+	if err != nil {
+		fatal(fmt.Errorf("open destination store: %w", err))
+	}
+	if err := st.RestoreSnapshot(snapshot); err != nil {
+		_ = st.Close()
+		fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		fatal(err)
+	}
+	if err := config.Save(configPath, targetCfg); err != nil {
+		fatal(err)
+	}
+	fmt.Printf("restored_config=%s\nrestored_data_dir=%s\nbackend=%s\n", configPath, dataDir, backend)
+}
+
+func normalizeBackendName(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "sqlite":
+		if strings.TrimSpace(value) == "" {
+			return ""
+		}
+		return store.DriverSQLite
+	case "postgres", "postgresql":
+		return store.DriverPostgres
+	default:
+		return strings.ToLower(strings.TrimSpace(value))
+	}
+}
+
+func rawConfigBackend(path string) (string, bool, error) {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	var cfg config.Config
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		return "", false, fmt.Errorf("read destination config: %w", err)
+	}
+	backend := normalizeBackendName(cfg.DatabaseDriver)
+	if backend == "" {
+		backend = store.DriverSQLite
+	}
+	return backend, true, nil
 }
 
 func copyFileAtomic(source, destination string, mode os.FileMode) error {
@@ -698,6 +926,18 @@ func addFile(zw *zip.Writer, path string) error {
 		return err
 	}
 	_, err = io.Copy(w, io.LimitReader(f, info.Size()))
+	return err
+}
+
+func addBytes(zw *zip.Writer, name string, data []byte) error {
+	if filepath.Base(filepath.ToSlash(name)) != filepath.ToSlash(name) || len(data) > 64*1024*1024 {
+		return errors.New("unsafe or oversized backup entry")
+	}
+	w, err := zw.Create(name)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(data)
 	return err
 }
 

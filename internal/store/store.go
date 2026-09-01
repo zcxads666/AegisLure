@@ -2,6 +2,7 @@ package store
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/csv"
@@ -9,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,17 +18,25 @@ import (
 	"sync"
 	"time"
 
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/zcxads666/AegisLure/internal/config"
 	"github.com/zcxads666/AegisLure/internal/model"
 	_ "modernc.org/sqlite"
+)
+
+const (
+	DriverSQLite   = "sqlite"
+	DriverPostgres = "postgres"
 )
 
 type Store struct {
 	mu             sync.RWMutex
 	dir            string
 	key            string
+	driver         string
 	db             *sql.DB
 	dbPath         string
+	dbTarget       string
 	state          model.State
 	eventSeq       uint64
 	maxEvents      int
@@ -35,9 +45,13 @@ type Store struct {
 }
 
 type Options struct {
+	Driver         string
+	DatabaseURL    string
 	MaxEvents      int
 	EventRetention time.Duration
 	MirrorMaxBytes int64
+	ConnectRetries int
+	ConnectDelay   time.Duration
 }
 
 const (
@@ -47,9 +61,9 @@ const (
 	maxQuotaLedgerEntries = 100000
 )
 
-// Close releases the SQLite handle. The on-disk database remains the
-// authoritative standalone store and can be reopened after a clean or
-// interrupted process exit.
+// Close releases the database handle. SQLite and PostgreSQL are both
+// authoritative stores; SQLite additionally maintains bounded compatibility
+// mirrors for the standalone backup/import workflow.
 func (s *Store) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -65,6 +79,33 @@ func (s *Store) DatabasePath() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.dbPath
+}
+
+func (s *Store) DatabaseDriver() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.driver
+}
+
+// DatabaseTarget is safe for status/health output and never includes a
+// database username, password, query parameters or other credentials.
+func (s *Store) DatabaseTarget() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.dbTarget
+}
+
+// DatabaseConnected performs a bounded liveness check without exposing the
+// connection string or any credential-bearing error text to callers.
+func (s *Store) DatabaseConnected() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.db == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return s.db.PingContext(ctx) == nil
 }
 
 type auditDigestInput struct {
@@ -123,8 +164,11 @@ func (s *Store) AppendAudit(entry model.AuditEntry) error {
 	if s.db == nil {
 		return errors.New("store is closed")
 	}
+	if s.driver == DriverPostgres {
+		return s.appendAuditPostgresLocked(entry)
+	}
 	var previous sql.NullString
-	if err := s.db.QueryRow(`SELECT entry_hash FROM audit_log ORDER BY sequence DESC LIMIT 1`).Scan(&previous); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := s.db.QueryRow(s.bind(`SELECT entry_hash FROM audit_log ORDER BY sequence DESC LIMIT 1`)).Scan(&previous); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("read audit chain head: %w", err)
 	}
 	entry.PrevHash = previous.String
@@ -140,9 +184,44 @@ func (s *Store) AppendAudit(entry model.AuditEntry) error {
 		}
 		metadataJSON = string(encoded)
 	}
-	_, err := s.db.Exec(`INSERT INTO audit_log(id,actor,action,target,result,metadata_json,prev_hash,entry_hash,created_at) VALUES(?,?,?,?,?,?,?,?,?)`, entry.ID, entry.Actor, entry.Action, entry.Target, entry.Result, metadataJSON, entry.PrevHash, entry.EntryHash, entry.CreatedAt.Format(time.RFC3339Nano))
+	_, err := s.db.Exec(s.bind(`INSERT INTO audit_log(id,actor,action,target,result,metadata_json,prev_hash,entry_hash,created_at) VALUES(?,?,?,?,?,?,?,?,?)`), entry.ID, entry.Actor, entry.Action, entry.Target, entry.Result, metadataJSON, entry.PrevHash, entry.EntryHash, entry.CreatedAt.Format(time.RFC3339Nano))
 	if err != nil {
 		return fmt.Errorf("append audit entry: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) appendAuditPostgresLocked(entry model.AuditEntry) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin audit entry: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtext('aegislure:audit-chain'))`); err != nil {
+		return fmt.Errorf("lock audit chain: %w", err)
+	}
+	var previous sql.NullString
+	if err := tx.QueryRow(s.bind(`SELECT entry_hash FROM audit_log ORDER BY sequence DESC LIMIT 1`)).Scan(&previous); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("read audit chain head: %w", err)
+	}
+	entry.PrevHash = previous.String
+	if entry.ID == "" {
+		entry.ID = "audit_" + config.KeyedHash(s.key, fmt.Sprintf("%d:%s:%s", entry.CreatedAt.UnixNano(), entry.Action, entry.Target))[:24]
+	}
+	entry.EntryHash = auditEntryHash(entry)
+	metadataJSON := ""
+	if len(entry.Metadata) > 0 {
+		encoded, err := json.Marshal(entry.Metadata)
+		if err != nil {
+			return err
+		}
+		metadataJSON = string(encoded)
+	}
+	if _, err := tx.Exec(s.bind(`INSERT INTO audit_log(id,actor,action,target,result,metadata_json,prev_hash,entry_hash,created_at) VALUES(?,?,?,?,?,?,?,?,?)`), entry.ID, entry.Actor, entry.Action, entry.Target, entry.Result, metadataJSON, entry.PrevHash, entry.EntryHash, entry.CreatedAt.Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("append audit entry: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit audit entry: %w", err)
 	}
 	return nil
 }
@@ -156,7 +235,7 @@ func (s *Store) AuditEntries(limit int) ([]model.AuditEntry, error) {
 	if s.db == nil {
 		return nil, errors.New("store is closed")
 	}
-	rows, err := s.db.Query(`SELECT id,actor,action,target,result,metadata_json,prev_hash,entry_hash,created_at FROM audit_log ORDER BY sequence DESC LIMIT ?`, limit)
+	rows, err := s.db.Query(s.bind(`SELECT id,actor,action,target,result,metadata_json,prev_hash,entry_hash,created_at FROM audit_log ORDER BY sequence DESC LIMIT ?`), limit)
 	if err != nil {
 		return nil, fmt.Errorf("query audit entries: %w", err)
 	}
@@ -194,7 +273,7 @@ func (s *Store) VerifyAuditChain() error {
 	if s.db == nil {
 		return errors.New("store is closed")
 	}
-	rows, err := s.db.Query(`SELECT id,actor,action,target,result,metadata_json,prev_hash,entry_hash,created_at FROM audit_log ORDER BY sequence ASC`)
+	rows, err := s.db.Query(s.bind(`SELECT id,actor,action,target,result,metadata_json,prev_hash,entry_hash,created_at FROM audit_log ORDER BY sequence ASC`))
 	if err != nil {
 		return err
 	}
@@ -223,10 +302,13 @@ func (s *Store) VerifyAuditChain() error {
 	return rows.Err()
 }
 
-// BackupTo creates a consistent SQLite snapshot without copying a live WAL or
-// SHM sidecar. The destination must be a new file and is intended for the
-// hpctl backup staging directory.
+// BackupTo creates a consistent SQLite file snapshot without copying a live
+// WAL or SHM sidecar. PostgreSQL backups use ExportSnapshot instead so the
+// resulting archive remains explicit about its backend.
 func (s *Store) BackupTo(destination string) error {
+	if s.driver == DriverPostgres {
+		return errors.New("raw PostgreSQL file backups are unsupported; use ExportSnapshot")
+	}
 	destination = filepath.Clean(strings.TrimSpace(destination))
 	if destination == "." || destination == "" {
 		return errors.New("backup destination is required")
@@ -271,15 +353,61 @@ func OpenWithOptions(dir, key string, options Options) (*Store, error) {
 	if options.MirrorMaxBytes < 1<<20 || options.MirrorMaxBytes > 256<<20 {
 		options.MirrorMaxBytes = defaultMirrorMaxBytes
 	}
-	dbPath := filepath.Join(dir, "aegislure.sqlite")
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		return nil, fmt.Errorf("open sqlite store: %w", err)
+	driver := strings.ToLower(strings.TrimSpace(options.Driver))
+	if driver == "" {
+		driver = DriverSQLite
 	}
-	s := &Store{dir: dir, key: key, db: db, dbPath: dbPath, maxEvents: options.MaxEvents, eventRetention: options.EventRetention, mirrorMaxBytes: options.MirrorMaxBytes}
-	if err := configureSQLite(db); err != nil {
+	if driver == "postgresql" {
+		driver = DriverPostgres
+	}
+	if driver != DriverSQLite && driver != DriverPostgres {
+		return nil, fmt.Errorf("unsupported database driver %q", options.Driver)
+	}
+	if driver == DriverPostgres && strings.TrimSpace(options.DatabaseURL) == "" {
+		return nil, errors.New("postgres database URL is required")
+	}
+	dbPath := ""
+	dbTarget := ""
+	driverName := driver
+	dataSource := options.DatabaseURL
+	if driver == DriverSQLite {
+		dbPath = filepath.Join(dir, "aegislure.sqlite")
+		dataSource = dbPath
+		driverName = DriverSQLite
+	} else {
+		dbTarget = safeDatabaseTarget(options.DatabaseURL)
+		driverName = "pgx"
+	}
+	db, err := sql.Open(driverName, dataSource)
+	if err != nil {
+		return nil, fmt.Errorf("open %s store: %w", driver, err)
+	}
+	s := &Store{dir: dir, key: key, driver: driver, db: db, dbPath: dbPath, dbTarget: dbTarget, maxEvents: options.MaxEvents, eventRetention: options.EventRetention, mirrorMaxBytes: options.MirrorMaxBytes}
+	if driver == DriverPostgres {
+		if options.ConnectRetries <= 0 {
+			options.ConnectRetries = 12
+		}
+		if options.ConnectDelay <= 0 {
+			options.ConnectDelay = 2 * time.Second
+		}
+		if err := pingWithRetry(db, options.ConnectRetries, options.ConnectDelay); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("connect postgres store: %w", err)
+		}
+		db.SetMaxOpenConns(8)
+		db.SetMaxIdleConns(4)
+		db.SetConnMaxLifetime(30 * time.Minute)
+	} else if err := configureSQLite(db); err != nil {
 		_ = db.Close()
 		return nil, err
+	} else {
+		db.SetMaxOpenConns(1)
+	}
+	if driver == DriverPostgres {
+		if err := configurePostgres(db); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
 	}
 	s.state = model.State{
 		HoneyUsers:                 make(map[string]model.HoneyUser),
@@ -295,12 +423,15 @@ func OpenWithOptions(dir, key string, options Options) (*Store, error) {
 		IdentityIndicatorDecisions: make(map[string]model.IdentityIndicatorDecision),
 		OAuthChannelPolicies:       model.DefaultOAuthChannelPolicies(),
 	}
-	stateLoaded, err := s.loadStateFromSQLite()
+	stateLoaded, err := s.loadStateFromDatabase()
 	if err != nil {
 		_ = db.Close()
 		return nil, err
 	}
-	if !stateLoaded {
+	// A PostgreSQL deployment is deliberately a fresh backend. Do not read
+	// SQLite's state mirror here: that would turn a missing PG row into an
+	// implicit, undocumented migration path.
+	if !stateLoaded && driver == DriverSQLite {
 		path := filepath.Join(dir, "state.json")
 		if b, readErr := os.ReadFile(path); readErr == nil {
 			if err := json.Unmarshal(b, &s.state); err != nil {
@@ -328,9 +459,11 @@ func OpenWithOptions(dir, key string, options Options) (*Store, error) {
 	// SQLite is authoritative. Rebuild the compatibility mirror on every
 	// open so retention, interrupted appends and legacy migrations cannot leave
 	// stale or missing rows in events.jsonl.
-	if err := s.rewriteEventMirrorLocked(filepath.Join(dir, "events.jsonl")); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("rebuild event mirror: %w", err)
+	if driver == DriverSQLite {
+		if err := s.rewriteEventMirrorLocked(filepath.Join(dir, "events.jsonl")); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("rebuild event mirror: %w", err)
+		}
 	}
 	if !stateLoaded {
 		if err := s.saveLocked(); err != nil {
@@ -339,6 +472,81 @@ func OpenWithOptions(dir, key string, options Options) (*Store, error) {
 		}
 	}
 	return s, nil
+}
+
+func pingWithRetry(db *sql.DB, attempts int, delay time.Duration) error {
+	if attempts < 1 {
+		attempts = 1
+	}
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := db.PingContext(ctx)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if attempt+1 < attempts {
+			time.Sleep(delay)
+		}
+	}
+	return lastErr
+}
+
+func safeDatabaseTarget(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "postgres"
+	}
+	parsed.User = nil
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return "postgres"
+	}
+	return parsed.String()
+}
+
+func (s *Store) bind(query string) string {
+	if s.driver != DriverPostgres {
+		return query
+	}
+	return rebindPostgres(query)
+}
+
+func rebindPostgres(query string) string {
+	var builder strings.Builder
+	placeholder := 1
+	inSingleQuote := false
+	inDoubleQuote := false
+	for index := 0; index < len(query); index++ {
+		character := query[index]
+		switch character {
+		case '\'':
+			if !inDoubleQuote {
+				if inSingleQuote && index+1 < len(query) && query[index+1] == '\'' {
+					builder.WriteByte(character)
+					index++
+					builder.WriteByte(query[index])
+					continue
+				}
+				inSingleQuote = !inSingleQuote
+			}
+		case '"':
+			if !inSingleQuote {
+				inDoubleQuote = !inDoubleQuote
+			}
+		case '?':
+			if !inSingleQuote && !inDoubleQuote {
+				builder.WriteString(fmt.Sprintf("$%d", placeholder))
+				placeholder++
+				continue
+			}
+		}
+		builder.WriteByte(character)
+	}
+	return builder.String()
 }
 
 func configureSQLite(db *sql.DB) error {
@@ -398,25 +606,107 @@ CREATE INDEX IF NOT EXISTS audit_created_at_idx ON audit_log(created_at);
 	return nil
 }
 
-func (s *Store) loadStateFromSQLite() (bool, error) {
-	var raw []byte
-	err := s.db.QueryRow(`SELECT value FROM metadata WHERE key = 'state_json'`).Scan(&raw)
+func configurePostgres(db *sql.DB) error {
+	schema := `
+CREATE TABLE IF NOT EXISTS metadata (
+	key TEXT PRIMARY KEY NOT NULL,
+	value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS events (
+	sequence BIGINT PRIMARY KEY NOT NULL,
+	event_id TEXT NOT NULL UNIQUE,
+	observed_at TEXT NOT NULL,
+	product TEXT NOT NULL,
+	source_ip TEXT NOT NULL,
+	route_template TEXT NOT NULL,
+	event_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS events_observed_at_idx ON events(observed_at);
+CREATE INDEX IF NOT EXISTS events_product_idx ON events(product, observed_at);
+CREATE INDEX IF NOT EXISTS events_source_ip_idx ON events(source_ip, observed_at);
+CREATE INDEX IF NOT EXISTS events_route_idx ON events(route_template, observed_at);
+CREATE TABLE IF NOT EXISTS external_event_refs (
+	source_id TEXT NOT NULL,
+	source_file_id TEXT NOT NULL,
+	source_offset BIGINT NOT NULL,
+	source_event_hash TEXT NOT NULL,
+	event_sequence BIGINT NOT NULL,
+	PRIMARY KEY(source_id, source_file_id, source_offset, source_event_hash)
+);
+CREATE TABLE IF NOT EXISTS audit_log (
+	sequence BIGSERIAL PRIMARY KEY,
+	id TEXT NOT NULL UNIQUE,
+	actor TEXT NOT NULL,
+	action TEXT NOT NULL,
+	target TEXT NOT NULL,
+	result TEXT NOT NULL,
+	metadata_json TEXT,
+	prev_hash TEXT,
+	entry_hash TEXT NOT NULL,
+	created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS audit_created_at_idx ON audit_log(created_at);
+CREATE SEQUENCE IF NOT EXISTS aegislure_event_sequence;
+	`
+	// database/sql drivers may prepare a statement before execution. Execute
+	// each DDL statement independently so the schema works with both pgx's
+	// prepared and simple protocol paths.
+	for _, statement := range strings.Split(schema, ";") {
+		statement = strings.TrimSpace(statement)
+		if statement == "" {
+			continue
+		}
+		if _, err := db.Exec(statement); err != nil {
+			return fmt.Errorf("create postgres schema statement %q: %w", statement, err)
+		}
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin postgres event sequence setup: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtext('aegislure:event-sequence'))`); err != nil {
+		return fmt.Errorf("lock postgres event sequence: %w", err)
+	}
+	var maximum sql.NullInt64
+	if err := tx.QueryRow(`SELECT MAX(sequence) FROM events`).Scan(&maximum); err != nil {
+		return fmt.Errorf("read postgres event sequence: %w", err)
+	}
+	if maximum.Valid {
+		if _, err := tx.Exec(`SELECT setval('aegislure_event_sequence', $1, true)`, maximum.Int64); err != nil {
+			return fmt.Errorf("initialize postgres event sequence: %w", err)
+		}
+	} else if _, err := tx.Exec(`SELECT setval('aegislure_event_sequence', 1, false)`); err != nil {
+		return fmt.Errorf("initialize postgres empty event sequence: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit postgres event sequence setup: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) loadStateFromDatabase() (bool, error) {
+	var raw string
+	err := s.db.QueryRow(s.bind(`SELECT value FROM metadata WHERE key = 'state_json'`)).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("read sqlite state: %w", err)
+		return false, fmt.Errorf("read %s state: %w", s.driver, err)
 	}
-	if err := json.Unmarshal(raw, &s.state); err != nil {
-		return false, fmt.Errorf("decode sqlite state: %w", err)
+	if err := json.Unmarshal([]byte(raw), &s.state); err != nil {
+		return false, fmt.Errorf("decode %s state: %w", s.driver, err)
 	}
 	return true, nil
 }
 
 func (s *Store) importLegacyEventsIfNeeded() error {
+	if s.driver != DriverSQLite {
+		return nil
+	}
 	var count int
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&count); err != nil {
-		return fmt.Errorf("count sqlite events: %w", err)
+		return fmt.Errorf("count %s events: %w", s.driver, err)
 	}
 	if count != 0 {
 		return nil
@@ -448,7 +738,7 @@ func (s *Store) importLegacyEventsIfNeeded() error {
 		if event.Sequence > sequence {
 			sequence = event.Sequence
 		}
-		if _, err := tx.Exec(`INSERT OR IGNORE INTO events(sequence,event_id,observed_at,product,source_ip,route_template,event_json) VALUES(?,?,?,?,?,?,?)`, event.Sequence, event.EventID, event.ObservedAt.Format(time.RFC3339Nano), event.Product, event.SourceIP, event.RouteTemplate, string(mustJSON(event))); err != nil {
+		if _, err := tx.Exec(s.bind(`INSERT INTO events(sequence,event_id,observed_at,product,source_ip,route_template,event_json) VALUES(?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`), event.Sequence, event.EventID, event.ObservedAt.Format(time.RFC3339Nano), event.Product, event.SourceIP, event.RouteTemplate, string(mustJSON(event))); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("migrate legacy event: %w", err)
 		}
@@ -471,8 +761,8 @@ func mustJSON(value any) []byte {
 func (s *Store) loadEventSequence() error {
 	if s.db != nil {
 		var sequence int64
-		if err := s.db.QueryRow(`SELECT COALESCE(MAX(sequence), 0) FROM events`).Scan(&sequence); err != nil {
-			return fmt.Errorf("read sqlite event sequence: %w", err)
+		if err := s.db.QueryRow(s.bind(`SELECT COALESCE(MAX(sequence), 0) FROM events`)).Scan(&sequence); err != nil {
+			return fmt.Errorf("read %s event sequence: %w", s.driver, err)
 		}
 		if sequence > 0 {
 			s.eventSeq = uint64(sequence)
@@ -502,51 +792,86 @@ func (s *Store) loadEventSequence() error {
 	return scanner.Err()
 }
 
+func (s *Store) nextEventSequence() error {
+	if s.driver == DriverPostgres {
+		var sequence int64
+		if err := s.db.QueryRow(`SELECT nextval('aegislure_event_sequence')`).Scan(&sequence); err != nil {
+			return fmt.Errorf("allocate postgres event sequence: %w", err)
+		}
+		if sequence < 1 {
+			return errors.New("postgres event sequence is invalid")
+		}
+		s.eventSeq = uint64(sequence)
+		return nil
+	}
+	s.eventSeq++
+	return nil
+}
+
+func (s *Store) nextEventSequenceTx(tx *sql.Tx) (uint64, error) {
+	if s.driver == DriverPostgres {
+		var sequence int64
+		if err := tx.QueryRow(`SELECT nextval('aegislure_event_sequence')`).Scan(&sequence); err != nil {
+			return 0, fmt.Errorf("allocate postgres event sequence: %w", err)
+		}
+		if sequence < 1 {
+			return 0, errors.New("postgres event sequence is invalid")
+		}
+		return uint64(sequence), nil
+	}
+	s.eventSeq++
+	return s.eventSeq, nil
+}
+
 func (s *Store) ensureMaps() {
-	if s.state.HoneyUsers == nil {
-		s.state.HoneyUsers = make(map[string]model.HoneyUser)
+	ensureStateMaps(&s.state)
+}
+
+func ensureStateMaps(state *model.State) {
+	if state.HoneyUsers == nil {
+		state.HoneyUsers = make(map[string]model.HoneyUser)
 	}
-	if s.state.HoneyTokens == nil {
-		s.state.HoneyTokens = make(map[string]model.HoneyToken)
+	if state.HoneyTokens == nil {
+		state.HoneyTokens = make(map[string]model.HoneyToken)
 	}
-	if s.state.Identities == nil {
-		s.state.Identities = make(map[string]model.HoneyIdentity)
+	if state.Identities == nil {
+		state.Identities = make(map[string]model.HoneyIdentity)
 	}
-	if s.state.Effects == nil {
-		s.state.Effects = make(map[string]model.VirtualEffect)
+	if state.Effects == nil {
+		state.Effects = make(map[string]model.VirtualEffect)
 	}
-	if s.state.Quotas == nil {
-		s.state.Quotas = make(map[string]int64)
+	if state.Quotas == nil {
+		state.Quotas = make(map[string]int64)
 	}
-	if s.state.QuotaLedger == nil {
-		s.state.QuotaLedger = []model.QuotaEntry{}
+	if state.QuotaLedger == nil {
+		state.QuotaLedger = []model.QuotaEntry{}
 	}
-	if s.state.Packs == nil {
-		s.state.Packs = make(map[string]model.ConfigPack)
+	if state.Packs == nil {
+		state.Packs = make(map[string]model.ConfigPack)
 	}
-	if s.state.PackBindings == nil {
-		s.state.PackBindings = make(map[string]string)
+	if state.PackBindings == nil {
+		state.PackBindings = make(map[string]string)
 	}
-	if s.state.InteractionChain.Mode == "" {
-		s.state.InteractionChain = model.DefaultInteractionChainConfig()
+	if state.InteractionChain.Mode == "" {
+		state.InteractionChain = model.DefaultInteractionChainConfig()
 	}
-	if s.state.ImportSources == nil {
-		s.state.ImportSources = make(map[string]model.ImportSource)
+	if state.ImportSources == nil {
+		state.ImportSources = make(map[string]model.ImportSource)
 	}
-	if s.state.IndicatorDecisions == nil {
-		s.state.IndicatorDecisions = make(map[string]model.IndicatorDecision)
+	if state.IndicatorDecisions == nil {
+		state.IndicatorDecisions = make(map[string]model.IndicatorDecision)
 	}
-	if s.state.IdentityIndicatorDecisions == nil {
-		s.state.IdentityIndicatorDecisions = make(map[string]model.IdentityIndicatorDecision)
+	if state.IdentityIndicatorDecisions == nil {
+		state.IdentityIndicatorDecisions = make(map[string]model.IdentityIndicatorDecision)
 	}
-	if s.state.OAuthChannelPolicies == nil {
-		s.state.OAuthChannelPolicies = make(map[string]model.OAuthChannelPolicy)
+	if state.OAuthChannelPolicies == nil {
+		state.OAuthChannelPolicies = make(map[string]model.OAuthChannelPolicy)
 	}
 	defaults := model.DefaultOAuthChannelPolicies()
 	for _, provider := range model.OAuthChannelProviders() {
-		policy, ok := s.state.OAuthChannelPolicies[provider]
+		policy, ok := state.OAuthChannelPolicies[provider]
 		if !ok {
-			s.state.OAuthChannelPolicies[provider] = defaults[provider]
+			state.OAuthChannelPolicies[provider] = defaults[provider]
 			continue
 		}
 		policy.Provider = provider
@@ -556,7 +881,7 @@ func (s *Store) ensureMaps() {
 		if policy.CrossSite == "" {
 			policy.CrossSite = defaults[provider].CrossSite
 		}
-		s.state.OAuthChannelPolicies[provider] = policy
+		state.OAuthChannelPolicies[provider] = policy
 	}
 }
 
@@ -783,15 +1108,24 @@ func (s *Store) saveLocked() error {
 	if s.db != nil {
 		tx, err := s.db.Begin()
 		if err != nil {
-			return fmt.Errorf("begin sqlite state save: %w", err)
+			return fmt.Errorf("begin %s state save: %w", s.driver, err)
 		}
-		if _, err := tx.Exec(`INSERT INTO metadata(key,value) VALUES('state_json',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, b); err != nil {
+		defer tx.Rollback()
+		if s.driver == DriverPostgres {
+			if _, err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtext('aegislure:state'))`); err != nil {
+				return fmt.Errorf("lock %s state: %w", s.driver, err)
+			}
+		}
+		if _, err := tx.Exec(s.bind(`INSERT INTO metadata(key,value) VALUES('state_json',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`), string(b)); err != nil {
 			_ = tx.Rollback()
-			return fmt.Errorf("write sqlite state: %w", err)
+			return fmt.Errorf("write %s state: %w", s.driver, err)
 		}
 		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit sqlite state: %w", err)
+			return fmt.Errorf("commit %s state: %w", s.driver, err)
 		}
+	}
+	if s.driver == DriverPostgres {
+		return nil
 	}
 	tmp := filepath.Join(s.dir, "state.json.tmp")
 	if err := os.WriteFile(tmp, append(b, '\n'), 0600); err != nil {
@@ -803,11 +1137,60 @@ func (s *Store) saveLocked() error {
 func (s *Store) Update(fn func(*model.State) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.driver == DriverPostgres {
+		return s.updatePostgresLocked(fn)
+	}
 	s.ensureMaps()
 	if err := fn(&s.state); err != nil {
 		return err
 	}
 	return s.saveLocked()
+}
+
+// updatePostgresLocked refreshes the state row while holding its database row
+// lock. This matters when more than one process (or more than one replica in
+// a local test) shares the same PostgreSQL database: each callback observes
+// the committed state immediately before applying its change.
+func (s *Store) updatePostgresLocked(fn func(*model.State) error) error {
+	if s.db == nil {
+		return errors.New("store is closed")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin postgres state update: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtext('aegislure:state'))`); err != nil {
+		return fmt.Errorf("lock postgres state: %w", err)
+	}
+	working := s.state
+	var raw string
+	err = tx.QueryRow(s.bind(`SELECT value FROM metadata WHERE key = 'state_json' FOR UPDATE`)).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		// A fresh PostgreSQL database has no SQLite mirror by design. The
+		// initialized in-memory defaults are the only starting point.
+		ensureStateMaps(&working)
+	} else if err != nil {
+		return fmt.Errorf("read postgres state for update: %w", err)
+	} else if err := json.Unmarshal([]byte(raw), &working); err != nil {
+		return fmt.Errorf("decode postgres state for update: %w", err)
+	}
+	ensureStateMaps(&working)
+	if err := fn(&working); err != nil {
+		return err
+	}
+	encoded, err := json.MarshalIndent(working, "", "  ")
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(s.bind(`INSERT INTO metadata(key,value) VALUES('state_json',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`), string(encoded)); err != nil {
+		return fmt.Errorf("write postgres state: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit postgres state: %w", err)
+	}
+	s.state = working
+	return nil
 }
 
 func (s *Store) Admin() model.AdminState {
@@ -1437,15 +1820,21 @@ func (s *Store) AppendEvent(event model.Event) error {
 	if event.EventOrigin == "" {
 		event.EventOrigin = "native"
 	}
-	s.eventSeq++
+	if s.db != nil {
+		if err := s.nextEventSequence(); err != nil {
+			return err
+		}
+	} else {
+		s.eventSeq++
+	}
 	event.Sequence = s.eventSeq
 	encoded, err := json.Marshal(event)
 	if err != nil {
 		return err
 	}
 	if s.db != nil {
-		if _, err := s.db.Exec(`INSERT INTO events(sequence,event_id,observed_at,product,source_ip,route_template,event_json) VALUES(?,?,?,?,?,?,?)`, event.Sequence, event.EventID, event.ObservedAt.Format(time.RFC3339Nano), event.Product, event.SourceIP, event.RouteTemplate, string(encoded)); err != nil {
-			return fmt.Errorf("append sqlite event: %w", err)
+		if _, err := s.db.Exec(s.bind(`INSERT INTO events(sequence,event_id,observed_at,product,source_ip,route_template,event_json) VALUES(?,?,?,?,?,?,?)`), event.Sequence, event.EventID, event.ObservedAt.Format(time.RFC3339Nano), event.Product, event.SourceIP, event.RouteTemplate, string(encoded)); err != nil {
+			return fmt.Errorf("append %s event: %w", s.driver, err)
 		}
 		pruned, err := s.pruneEventsLocked(time.Now().UTC())
 		if err != nil {
@@ -1454,6 +1843,9 @@ func (s *Store) AppendEvent(event model.Event) error {
 		if pruned {
 			return s.rewriteEventMirrorLocked(filepath.Join(s.dir, "events.jsonl"))
 		}
+	}
+	if s.driver == DriverPostgres {
+		return nil
 	}
 	path := filepath.Join(s.dir, "events.jsonl")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
@@ -1475,7 +1867,7 @@ func (s *Store) AppendEvent(event model.Event) error {
 }
 
 // AppendImportedEvent writes a third-party observation only after its
-// provenance key has been checked in SQLite. Duplicate tail/replay input is
+// provenance key has been checked in the authoritative database. Duplicate tail/replay input is
 // acknowledged without creating a second underlying event.
 func (s *Store) AppendImportedEvent(event model.Event, sourceID, sourceFileID string, sourceOffset int64, sourceHash string) (bool, error) {
 	if strings.TrimSpace(sourceID) == "" || strings.TrimSpace(sourceFileID) == "" || sourceOffset < 0 || strings.TrimSpace(sourceHash) == "" {
@@ -1489,14 +1881,25 @@ func (s *Store) AppendImportedEvent(event model.Event, sourceID, sourceFileID st
 	event.SourceEventHash = sourceHash
 	event.SourceFileID = sourceFileID
 	event.SourceOffset = sourceOffset
+	if s.db == nil {
+		return false, errors.New("store is closed")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, fmt.Errorf("begin imported event: %w", err)
+	}
+	defer tx.Rollback()
 	var exists int
-	if err := s.db.QueryRow(`SELECT 1 FROM external_event_refs WHERE source_id=? AND source_file_id=? AND source_offset=? AND source_event_hash=?`, sourceID, sourceFileID, sourceOffset, sourceHash).Scan(&exists); err == nil {
+	if err := tx.QueryRow(s.bind(`SELECT 1 FROM external_event_refs WHERE source_id=? AND source_file_id=? AND source_offset=? AND source_event_hash=?`), sourceID, sourceFileID, sourceOffset, sourceHash).Scan(&exists); err == nil {
 		return false, nil
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return false, fmt.Errorf("check imported event provenance: %w", err)
 	}
-	s.eventSeq++
-	event.Sequence = s.eventSeq
+	sequence, err := s.nextEventSequenceTx(tx)
+	if err != nil {
+		return false, err
+	}
+	event.Sequence = sequence
 	if event.EventID == "" {
 		event.EventID = fmt.Sprintf("import_%s_%d", sourceHash[:minInt(len(sourceHash), 16)], sourceOffset)
 	}
@@ -1504,21 +1907,20 @@ func (s *Store) AppendImportedEvent(event model.Event, sourceID, sourceFileID st
 	if err != nil {
 		return false, err
 	}
-	tx, err := s.db.Begin()
+	result, err := tx.Exec(s.bind(`INSERT INTO external_event_refs(source_id,source_file_id,source_offset,source_event_hash,event_sequence) VALUES(?,?,?,?,?) ON CONFLICT DO NOTHING`), sourceID, sourceFileID, sourceOffset, sourceHash, event.Sequence)
 	if err != nil {
-		return false, fmt.Errorf("begin imported event: %w", err)
-	}
-	if _, err := tx.Exec(`INSERT INTO events(sequence,event_id,observed_at,product,source_ip,route_template,event_json) VALUES(?,?,?,?,?,?,?)`, event.Sequence, event.EventID, event.ObservedAt.Format(time.RFC3339Nano), event.Product, event.SourceIP, event.RouteTemplate, string(encoded)); err != nil {
-		_ = tx.Rollback()
-		return false, fmt.Errorf("append imported sqlite event: %w", err)
-	}
-	if _, err := tx.Exec(`INSERT INTO external_event_refs(source_id,source_file_id,source_offset,source_event_hash,event_sequence) VALUES(?,?,?,?,?)`, sourceID, sourceFileID, sourceOffset, sourceHash, event.Sequence); err != nil {
-		_ = tx.Rollback()
 		return false, fmt.Errorf("append imported provenance: %w", err)
+	}
+	if affected, rowsErr := result.RowsAffected(); rowsErr == nil && affected == 0 {
+		return false, nil
+	}
+	if _, err := tx.Exec(s.bind(`INSERT INTO events(sequence,event_id,observed_at,product,source_ip,route_template,event_json) VALUES(?,?,?,?,?,?,?)`), event.Sequence, event.EventID, event.ObservedAt.Format(time.RFC3339Nano), event.Product, event.SourceIP, event.RouteTemplate, string(encoded)); err != nil {
+		return false, fmt.Errorf("append imported %s event: %w", s.driver, err)
 	}
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("commit imported event: %w", err)
 	}
+	s.eventSeq = event.Sequence
 	pruned, err := s.pruneEventsLocked(time.Now().UTC())
 	if err != nil {
 		return false, err
@@ -1527,6 +1929,9 @@ func (s *Store) AppendImportedEvent(event model.Event, sourceID, sourceFileID st
 		if err := s.rewriteEventMirrorLocked(filepath.Join(s.dir, "events.jsonl")); err != nil {
 			return false, err
 		}
+		return true, nil
+	}
+	if s.driver == DriverPostgres {
 		return true, nil
 	}
 	f, err := os.OpenFile(filepath.Join(s.dir, "events.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
@@ -1556,18 +1961,18 @@ func (s *Store) pruneEventsLocked(now time.Time) (bool, error) {
 	}
 	changed := false
 	cutoff := now.Add(-s.eventRetention).Format(time.RFC3339Nano)
-	if result, err := s.db.Exec(`DELETE FROM events WHERE observed_at < ?`, cutoff); err != nil {
-		return false, fmt.Errorf("prune expired sqlite events: %w", err)
+	if result, err := s.db.Exec(s.bind(`DELETE FROM events WHERE observed_at < ?`), cutoff); err != nil {
+		return false, fmt.Errorf("prune expired %s events: %w", s.driver, err)
 	} else if affected, rowsErr := result.RowsAffected(); rowsErr == nil && affected > 0 {
 		changed = true
 	}
 	var count int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&count); err != nil {
-		return false, fmt.Errorf("count retained sqlite events: %w", err)
+	if err := s.db.QueryRow(s.bind(`SELECT COUNT(*) FROM events`)).Scan(&count); err != nil {
+		return false, fmt.Errorf("count retained %s events: %w", s.driver, err)
 	}
 	if count > s.maxEvents {
-		if result, err := s.db.Exec(`DELETE FROM events WHERE sequence IN (SELECT sequence FROM events ORDER BY sequence ASC LIMIT ?)`, count-s.maxEvents); err != nil {
-			return false, fmt.Errorf("prune sqlite event count: %w", err)
+		if result, err := s.db.Exec(s.bind(`DELETE FROM events WHERE sequence IN (SELECT sequence FROM events ORDER BY sequence ASC LIMIT ?)`), count-s.maxEvents); err != nil {
+			return false, fmt.Errorf("prune %s event count: %w", s.driver, err)
 		} else if affected, rowsErr := result.RowsAffected(); rowsErr == nil && affected > 0 {
 			changed = true
 		}
@@ -1575,13 +1980,16 @@ func (s *Store) pruneEventsLocked(now time.Time) (bool, error) {
 	// Provenance is useful only while its corresponding event is retained;
 	// keeping the same bound prevents an import source from growing state
 	// independently of the event retention policy.
-	if _, err := s.db.Exec(`DELETE FROM external_event_refs WHERE event_sequence NOT IN (SELECT sequence FROM events)`); err != nil {
+	if _, err := s.db.Exec(s.bind(`DELETE FROM external_event_refs WHERE event_sequence NOT IN (SELECT sequence FROM events)`)); err != nil {
 		return false, fmt.Errorf("prune imported event provenance: %w", err)
 	}
 	return changed, nil
 }
 
 func (s *Store) maybeRewriteEventMirrorLocked(path string) error {
+	if s.driver == DriverPostgres {
+		return nil
+	}
 	info, err := os.Stat(path)
 	if err == nil && info.Size() <= s.mirrorMaxBytes {
 		return nil
@@ -1596,12 +2004,15 @@ func (s *Store) maybeRewriteEventMirrorLocked(path string) error {
 }
 
 func (s *Store) rewriteEventMirrorLocked(path string) error {
+	if s.driver == DriverPostgres {
+		return nil
+	}
 	tmp := path + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
 	}
-	rows, err := s.db.Query(`SELECT event_json FROM events ORDER BY sequence ASC`)
+	rows, err := s.db.Query(s.bind(`SELECT event_json FROM events ORDER BY sequence ASC`))
 	if err != nil {
 		_ = f.Close()
 		return fmt.Errorf("query event mirror: %w", err)
@@ -1647,9 +2058,9 @@ func (s *Store) Events(limit int, product, sourceIP string) ([]model.Event, erro
 		limit = 100
 	}
 	if s.db != nil {
-		rows, err := s.db.Query(`SELECT event_json FROM events ORDER BY sequence ASC`)
+		rows, err := s.db.Query(s.bind(`SELECT event_json FROM events ORDER BY sequence ASC`))
 		if err != nil {
-			return nil, fmt.Errorf("query sqlite events: %w", err)
+			return nil, fmt.Errorf("query %s events: %w", s.driver, err)
 		}
 		defer rows.Close()
 		var all []model.Event

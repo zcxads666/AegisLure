@@ -31,15 +31,15 @@ make sbom
 
 The Compose installation requires the generated admin certificate/key and sets `HP_REQUIRE_TLS=1`. Native development can remain HTTP only when TLS is intentionally not configured. Set `HP_ADMIN_HOSTS` to a comma-separated allowlist when the management listener is reached through known hostnames; keep the management port behind a VPN, trusted reverse proxy or host firewall because the random path is only an additional locator.
 
-Event storage is bounded by `event_retention_days` (default 30) and `event_max_entries` (default 100000). The equivalent environment overrides are `HP_EVENT_RETENTION_DAYS` and `HP_EVENT_MAX_ENTRIES`; invalid or out-of-range values are ignored by the config loader. SQLite WAL is authoritative, while the JSONL/state files are bounded mirrors.
+Event storage is bounded by `event_retention_days` (default 30) and `event_max_entries` (default 100000). The equivalent environment overrides are `HP_EVENT_RETENTION_DAYS` and `HP_EVENT_MAX_ENTRIES`; invalid or out-of-range values are ignored by the config loader. `HP_DB_DRIVER=sqlite` is the default. Set `HP_DB_DRIVER=postgres` with `HP_DATABASE_URL`/`HP_DATABASE_URL_FILE`, or with the `HP_DB_HOST`, `HP_DB_PORT`, `HP_DB_NAME`, `HP_DB_USER`, `HP_DB_PASSWORD_FILE` and `HP_DB_SSLMODE` component settings. SQLite keeps bounded JSONL/state mirrors; PostgreSQL is authoritative without those mirrors.
 
 The current admin profile intentionally has no Bootstrap code and no TOTP/MFA. The first owner is created directly at `<admin_path>/setup/create-owner`; use an 8+ character password and store the one-time recovery codes. Treat the hidden path as an additional locator only: restrict the management port to a trusted network or VPN in production.
 
 ## Backups
 
-The backup archive contains up to four fixed members: `config.json`, `aegislure.sqlite`, `state.json`, and `events.jsonl`. Protect it like a secret because the config contains the instance key and the state contains keyed hashes. Restore only onto an isolated, stopped installation after validating ownership and permissions. Restore accepts only these names, applies per-file and total size limits, stages extraction, validates a SQLite copy before activation, and atomically replaces state/data files; it does not restore TLS secrets, OAuth secrets, or arbitrary paths.
+The current backup archive contains `config.json`, `snapshot.json` and `manifest.json`. The logical snapshot records its backend, SHA-256-checked contents, state, retained events, audit chain and imported-event idempotency references. Protect it like a secret because the config contains the instance key and the state contains keyed hashes. Restore only onto an isolated, stopped installation after validating ownership and permissions. Restore accepts bounded fixed names and refuses a SQLite snapshot on PostgreSQL or a PostgreSQL snapshot on SQLite; cross-backend migration is not implemented. TLS secrets, OAuth secrets and arbitrary paths are never restored. Older SQLite archives with `aegislure.sqlite`, `state.json` and `events.jsonl` remain readable for compatibility.
 
-The standalone backend uses `aegislure.sqlite` in WAL mode as its authoritative local store, plus append-only `events.jsonl` and atomic `state.json` compatibility/backup mirrors. Event sequence numbers and virtual state are restored after restart. Imported third-party events use a local provenance key for idempotency; this is not the later distributed durable ACK protocol. Do not treat this standalone store as the later PostgreSQL/Hive sensor transport.
+SQLite uses `aegislure.sqlite` in WAL mode as its authoritative local store and maintains append-only `events.jsonl` plus atomic `state.json` compatibility mirrors. PostgreSQL stores the same logical state, event stream, audit chain and import provenance in its own schema and does not read local SQLite files. Both backends use database transactions/locks for state, event sequence, audit-chain and quota updates. Imported third-party events use a local provenance key for idempotency; this is not a distributed durable ACK protocol.
 
 `hpctl import` is an offline, bounded JSONL importer for the allowlisted local products (`new-api`, `vllm`, `ollama`, `sglang`, and `localai`). It accepts only the documented event fields, requires an IP address, redacts body previews, and records source product/schema/file/offset/hash provenance. Re-running the same file identity and byte offsets is idempotent. It never downloads models, opens a source URL, or forwards imported content to an external service.
 
@@ -85,7 +85,18 @@ Use immutable `@sha256:<digest>` image references:
 ./hpctl rollback --image registry.example/aegislure@sha256:<64-hex-digest>
 ```
 
-The command refuses tag-only references. Capture `./hpctl status`, the current image digest and a backup before an upgrade; verify health and the expected profile set after restart. Roll back to the previously recorded digest if the new image fails validation. No migration is irreversible in this standalone baseline; still test the backup on a clean destination before a production change.
+The command refuses tag-only references. Capture `./hpctl status`, the current image digest and a backend-matched backup before an upgrade; verify health and the expected profile set after restart. Roll back to the previously recorded digest if the new image fails validation. Database migration is not performed by upgrade or restore; test a same-backend backup on a clean destination before a production change.
+
+For the bundled PostgreSQL topology, start the database and application with:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.pg.yml --profile bundled-pg up -d
+```
+
+For a managed PostgreSQL service, set `HP_DATABASE_URL` (or provide a URL file
+through the deployment's secret mechanism) and omit `--profile bundled-pg`. In
+Compose, a file under `runtime/secrets` is visible inside the container under
+`/var/lib/aegislure/secrets`; set `HP_DATABASE_URL_FILE` to that container path.
 
 ## Incident response
 

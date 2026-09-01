@@ -192,8 +192,8 @@ type AdminRecoveryCode struct {
 }
 
 // AuditEntry is a local tamper-evident record for administrator and runtime
-// configuration changes. The chain is authoritative in SQLite; Metadata must
-// contain only bounded, already-redacted values.
+// configuration changes. The chain is authoritative in the selected database
+// backend; Metadata must contain only bounded, already-redacted values.
 type AuditEntry struct {
 	ID        string            `json:"id"`
 	Actor     string            `json:"actor"`

@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ${HP_IMAGE:-aegislure:standalone-v1}
+    image: ${HP_IMAGE:-ghcr.io/zcxads666/aegislure:v0.1.0}
     restart: unless-stopped
     read_only: true
     # The bind-mounted runtime directory is created by the installing user.
@@ -26,6 +26,15 @@ services:
     environment:
       HP_CONFIG: /var/lib/aegislure/config.json
       HP_DATA_DIR: /var/lib/aegislure/data
+      HP_DB_DRIVER: ${HP_DB_DRIVER:-sqlite}
+      HP_DATABASE_URL: ${HP_DATABASE_URL:-}
+      HP_DATABASE_URL_FILE: ${HP_DATABASE_URL_FILE:-}
+      HP_DB_HOST: ${HP_DB_HOST:-postgres}
+      HP_DB_PORT: ${HP_DB_PORT:-5432}
+      HP_DB_NAME: ${HP_DB_NAME:-aegislure}
+      HP_DB_USER: ${HP_DB_USER:-aegislure}
+      HP_DB_PASSWORD_FILE: ${HP_DB_PASSWORD_FILE:-}
+      HP_DB_SSLMODE: ${HP_DB_SSLMODE:-disable}
       HP_PROFILES: ${HP_PROFILES:-ollama,vllm}
       HP_ADMIN_PORT: ${HP_ADMIN_PORT:-28443}
       HP_COOKIE_SECURE: "1"
@@ -39,7 +48,7 @@ services:
       HP_TLS_CERT: /var/lib/aegislure/secrets/admin.crt
       HP_TLS_KEY: /var/lib/aegislure/secrets/admin.key
     volumes:
-      - ./runtime:/var/lib/aegislure
+      - ${HP_RUNTIME_DIR:-./runtime}:/var/lib/aegislure
     ports:
       - target: ${NEW_API_TARGET_PORT:-3000}
         published: "${NEW_API_PORT:-3000}"

@@ -1,0 +1,122 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version, for example v0.1.0
+        required: true
+        default: v0.1.0
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+  attestations: write
+
+env:
+  IMAGE_REPOSITORY: ghcr.io/zcxads666/aegislure
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release version
+        id: release
+        env:
+          TAG_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+        run: |
+          [[ "$TAG_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "version must look like v0.1.0" >&2
+            exit 1
+          }
+          printf 'version=%s\n' "$TAG_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish multi-architecture image
+        id: image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          build-args: |
+            VERSION=${{ steps.release.outputs.version }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE_REPOSITORY }}:${{ steps.release.outputs.version }}
+          labels: |
+            org.opencontainers.image.title=AegisLure
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build release bundle and manifest
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -Eeuo pipefail
+          image="${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]] || {
+            echo "build did not return a 64-character immutable digest" >&2
+            exit 1
+          }
+          git archive --format=tar.gz --prefix="aegislure-${VERSION}/" "$GITHUB_SHA" -o "aegislure-${VERSION}.tar.gz"
+          cat > release-manifest.json <<EOF
+          {
+            "schema_version": 1,
+            "format": "aegislure-release-manifest-v1",
+            "version": "${VERSION}",
+            "git_sha": "${GITHUB_SHA}",
+            "image": "${image}",
+            "image_digest": "${IMAGE_DIGEST}",
+            "architectures": ["linux/amd64", "linux/arm64"],
+            "sbom": "registry-attestation",
+            "provenance": "registry-attestation",
+            "assets": {
+              "bundle": "aegislure-${VERSION}.tar.gz",
+              "checksums": "sha256sums.txt"
+            }
+          }
+          EOF
+          sha256sum "aegislure-${VERSION}.tar.gz" > sha256sums.txt
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          gh release create "$VERSION" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "AegisLure $VERSION" \
+            --generate-notes \
+            "aegislure-${VERSION}.tar.gz" \
+            release-manifest.json \
+            sha256sums.txt

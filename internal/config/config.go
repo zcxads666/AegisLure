@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,27 +16,37 @@ import (
 )
 
 type Config struct {
-	InstanceID         string            `json:"instance_id"`
-	InstanceKey        string            `json:"instance_key"`
-	DataDir            string            `json:"data_dir"`
-	PublicBind         string            `json:"public_bind"`
-	AdminBind          string            `json:"admin_bind"`
-	AdminPort          int               `json:"admin_port"`
-	AdminPath          string            `json:"admin_path"`
-	RequireAdminTLS    bool              `json:"require_admin_tls,omitempty"`
-	AdminHostAllowlist []string          `json:"admin_host_allowlist,omitempty"`
-	EventRetentionDays int               `json:"event_retention_days,omitempty"`
-	EventMaxEntries    int               `json:"event_max_entries,omitempty"`
-	PortPools          map[string][]int  `json:"port_pools,omitempty"`
-	OllamaVersion      string            `json:"ollama_version,omitempty"`
-	VLLMVersion        string            `json:"vllm_version,omitempty"`
-	OllamaKeepAlive    string            `json:"ollama_keep_alive,omitempty"`
-	VLLMDocsEnabled    bool              `json:"vllm_docs_enabled,omitempty"`
-	VLLMServedNames    []string          `json:"vllm_served_model_names,omitempty"`
-	IPInfoLiteToken    string            `json:"ipinfo_lite_token,omitempty"`
-	ProfilePorts       map[string]int    `json:"profile_ports"`
-	EnabledProfiles    []string          `json:"enabled_profiles"`
-	Scenario           map[string]string `json:"scenario"`
+	InstanceID           string            `json:"instance_id"`
+	InstanceKey          string            `json:"instance_key"`
+	DataDir              string            `json:"data_dir"`
+	DatabaseDriver       string            `json:"database_driver,omitempty"`
+	DatabaseURL          string            `json:"-"`
+	DatabaseURLFile      string            `json:"-"`
+	DatabaseHost         string            `json:"-"`
+	DatabasePort         int               `json:"-"`
+	DatabaseName         string            `json:"-"`
+	DatabaseUser         string            `json:"-"`
+	DatabasePassword     string            `json:"-"`
+	DatabasePasswordFile string            `json:"-"`
+	DatabaseSSLMode      string            `json:"-"`
+	PublicBind           string            `json:"public_bind"`
+	AdminBind            string            `json:"admin_bind"`
+	AdminPort            int               `json:"admin_port"`
+	AdminPath            string            `json:"admin_path"`
+	RequireAdminTLS      bool              `json:"require_admin_tls,omitempty"`
+	AdminHostAllowlist   []string          `json:"admin_host_allowlist,omitempty"`
+	EventRetentionDays   int               `json:"event_retention_days,omitempty"`
+	EventMaxEntries      int               `json:"event_max_entries,omitempty"`
+	PortPools            map[string][]int  `json:"port_pools,omitempty"`
+	OllamaVersion        string            `json:"ollama_version,omitempty"`
+	VLLMVersion          string            `json:"vllm_version,omitempty"`
+	OllamaKeepAlive      string            `json:"ollama_keep_alive,omitempty"`
+	VLLMDocsEnabled      bool              `json:"vllm_docs_enabled,omitempty"`
+	VLLMServedNames      []string          `json:"vllm_served_model_names,omitempty"`
+	IPInfoLiteToken      string            `json:"ipinfo_lite_token,omitempty"`
+	ProfilePorts         map[string]int    `json:"profile_ports"`
+	EnabledProfiles      []string          `json:"enabled_profiles"`
+	Scenario             map[string]string `json:"scenario"`
 }
 
 func Load(path string) (*Config, error) {
@@ -55,6 +67,9 @@ func Load(path string) (*Config, error) {
 	if c.OllamaKeepAlive == "" {
 		c.OllamaKeepAlive = "5m"
 	}
+	if c.DatabaseDriver == "" {
+		c.DatabaseDriver = "sqlite"
+	}
 	if c.EventRetentionDays <= 0 {
 		c.EventRetentionDays = 30
 	}
@@ -66,6 +81,9 @@ func Load(path string) (*Config, error) {
 		c.DataDir = filepath.Dir(path)
 	}
 	applyEnv(&c)
+	if err := NormalizeDatabase(&c); err != nil {
+		return nil, err
+	}
 	return &c, nil
 }
 
@@ -130,6 +148,7 @@ func Init(path, dataDir string) (*Config, error) {
 		InstanceID:         instanceID,
 		InstanceKey:        instanceKey,
 		DataDir:            dataDir,
+		DatabaseDriver:     "sqlite",
 		PublicBind:         "0.0.0.0",
 		AdminBind:          "0.0.0.0",
 		AdminPort:          port,
@@ -152,6 +171,9 @@ func Init(path, dataDir string) (*Config, error) {
 	}
 	if value := os.Getenv("HP_PROFILES"); value != "" {
 		c.EnabledProfiles = splitComma(value)
+	}
+	if value := os.Getenv("HP_DB_DRIVER"); value != "" {
+		c.DatabaseDriver = strings.ToLower(strings.TrimSpace(value))
 	}
 	if err := Save(path, c); err != nil {
 		return nil, err
@@ -221,6 +243,38 @@ func applyEnv(c *Config) {
 	if v := os.Getenv("HP_DATA_DIR"); v != "" {
 		c.DataDir = v
 	}
+	if v := os.Getenv("HP_DB_DRIVER"); v != "" {
+		c.DatabaseDriver = strings.ToLower(strings.TrimSpace(v))
+	}
+	if v := os.Getenv("HP_DATABASE_URL"); v != "" {
+		c.DatabaseURL = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("HP_DATABASE_URL_FILE"); v != "" {
+		c.DatabaseURLFile = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("HP_DB_HOST"); v != "" {
+		c.DatabaseHost = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("HP_DB_PORT"); v != "" {
+		if port, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			c.DatabasePort = port
+		}
+	}
+	if v := os.Getenv("HP_DB_NAME"); v != "" {
+		c.DatabaseName = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("HP_DB_USER"); v != "" {
+		c.DatabaseUser = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("HP_DB_PASSWORD"); v != "" {
+		c.DatabasePassword = v
+	}
+	if v := os.Getenv("HP_DB_PASSWORD_FILE"); v != "" {
+		c.DatabasePasswordFile = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("HP_DB_SSLMODE"); v != "" {
+		c.DatabaseSSLMode = strings.TrimSpace(v)
+	}
 	if v := os.Getenv("HP_PUBLIC_BIND"); v != "" {
 		c.PublicBind = v
 	}
@@ -265,6 +319,117 @@ func applyEnv(c *Config) {
 	}
 	if v := os.Getenv("HP_VLLM_SERVED_MODEL_NAMES"); v != "" {
 		c.VLLMServedNames = splitComma(v)
+	}
+}
+
+// NormalizeDatabase resolves the runtime-only database settings. Credentials
+// and DSNs are deliberately excluded from Config JSON so a config backup or
+// status response cannot accidentally persist or echo them.
+func NormalizeDatabase(c *Config) error {
+	if c == nil {
+		return fmt.Errorf("database config is nil")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.DatabaseDriver)) {
+	case "", "sqlite":
+		c.DatabaseDriver = "sqlite"
+		c.DatabaseURL = ""
+		return nil
+	case "postgres", "postgresql":
+		c.DatabaseDriver = "postgres"
+	default:
+		return fmt.Errorf("unsupported database driver %q", c.DatabaseDriver)
+	}
+	if c.DatabaseURLFile != "" {
+		value, err := readSecretFile(c.DatabaseURLFile, "database URL")
+		if err != nil {
+			return err
+		}
+		c.DatabaseURL = value
+	}
+	if c.DatabaseURL != "" {
+		return validatePostgresURL(c.DatabaseURL)
+	}
+	if c.DatabaseHost == "" {
+		c.DatabaseHost = "postgres"
+	}
+	if c.DatabasePort == 0 {
+		c.DatabasePort = 5432
+	}
+	if c.DatabasePort < 1 || c.DatabasePort > 65535 {
+		return fmt.Errorf("database port must be between 1 and 65535")
+	}
+	if c.DatabaseName == "" {
+		c.DatabaseName = "aegislure"
+	}
+	if c.DatabaseUser == "" {
+		c.DatabaseUser = "aegislure"
+	}
+	if c.DatabasePasswordFile != "" {
+		value, err := readSecretFile(c.DatabasePasswordFile, "database password")
+		if err != nil {
+			return err
+		}
+		c.DatabasePassword = value
+	}
+	if c.DatabasePassword == "" {
+		return fmt.Errorf("postgres database password is required via HP_DB_PASSWORD_FILE or HP_DATABASE_URL")
+	}
+	if c.DatabaseSSLMode == "" {
+		c.DatabaseSSLMode = "disable"
+	}
+	if !validSSLMode(c.DatabaseSSLMode) {
+		return fmt.Errorf("unsupported postgres sslmode %q", c.DatabaseSSLMode)
+	}
+	password := c.DatabasePassword
+	if c.DatabaseURL == "" {
+		connectionURL := url.URL{Scheme: "postgres", Host: net.JoinHostPort(c.DatabaseHost, strconv.Itoa(c.DatabasePort)), Path: "/" + c.DatabaseName, User: url.UserPassword(c.DatabaseUser, password)}
+		query := connectionURL.Query()
+		query.Set("sslmode", c.DatabaseSSLMode)
+		connectionURL.RawQuery = query.Encode()
+		c.DatabaseURL = connectionURL.String()
+	}
+	return nil
+}
+
+func readSecretFile(path, name string) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", name, err)
+	}
+	if info.IsDir() || info.Size() > 16*1024 {
+		return "", fmt.Errorf("%s file is invalid", name)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", name, err)
+	}
+	value := strings.TrimSpace(string(b))
+	if value == "" {
+		return "", fmt.Errorf("%s is empty", name)
+	}
+	return value, nil
+}
+
+func validatePostgresURL(value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil || (parsed.Scheme != "postgres" && parsed.Scheme != "postgresql") || parsed.Hostname() == "" || parsed.Path == "" {
+		return fmt.Errorf("HP_DATABASE_URL must be a valid postgres URL")
+	}
+	if parsed.User == nil || parsed.User.Username() == "" {
+		return fmt.Errorf("HP_DATABASE_URL must include a database user")
+	}
+	if mode := parsed.Query().Get("sslmode"); mode != "" && !validSSLMode(mode) {
+		return fmt.Errorf("unsupported postgres sslmode %q", mode)
+	}
+	return nil
+}
+
+func validSSLMode(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "disable", "allow", "prefer", "require", "verify-ca", "verify-full":
+		return true
+	default:
+		return false
 	}
 }
 

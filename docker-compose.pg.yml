@@ -1,0 +1,96 @@
+services:
+  aegislure:
+    environment:
+      HP_DB_DRIVER: postgres
+      HP_DATABASE_URL: ${HP_DATABASE_URL:-}
+      HP_DATABASE_URL_FILE: ${HP_DATABASE_URL_FILE:-}
+      HP_DB_HOST: ${HP_DB_HOST:-postgres}
+      HP_DB_PORT: ${HP_DB_PORT:-5432}
+      HP_DB_NAME: ${HP_DB_NAME:-aegislure}
+      HP_DB_USER: ${HP_DB_USER:-aegislure}
+      HP_DB_PASSWORD_FILE: /run/secrets/aegislure_db_password
+      HP_DB_SSLMODE: ${HP_DB_SSLMODE:-disable}
+    secrets:
+      - aegislure_db_password
+    networks:
+      - db_net
+
+  # This one-shot service is intentionally profile-gated and is the only
+  # bundled-PG bootstrap container that uses root: it initializes ownership
+  # on a fresh named volume. The long-running database below runs as the
+  # image's postgres user. External PostgreSQL users run only `aegislure`;
+  # the bundled database is started with `--profile bundled-pg` and is never
+  # exposed through a host port.
+  postgres-init:
+    image: ${HP_POSTGRES_IMAGE:-postgres:16-alpine}
+    profiles: [bundled-pg]
+    restart: "no"
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        pg_uid="$$(id -u postgres)"
+        pg_gid="$$(id -g postgres)"
+        mkdir -p /var/lib/postgresql/data
+        chown -R "$${pg_uid}:$${pg_gid}" /var/lib/postgresql/data
+        chmod 700 /var/lib/postgresql/data
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - db_net
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=8m
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 64m
+    cpus: 0.25
+
+  postgres:
+    image: ${HP_POSTGRES_IMAGE:-postgres:16-alpine}
+    profiles: [bundled-pg]
+    restart: unless-stopped
+    user: postgres
+    depends_on:
+      postgres-init:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_DB: ${HP_DB_NAME:-aegislure}
+      POSTGRES_USER: ${HP_DB_USER:-aegislure}
+      POSTGRES_PASSWORD_FILE: /run/secrets/aegislure_db_password
+    secrets:
+      - aegislure_db_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - db_net
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+      - /run/postgresql:rw,nosuid,nodev,size=8m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 512m
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+secrets:
+  aegislure_db_password:
+    file: ${HP_POSTGRES_PASSWORD_FILE:-./runtime/secrets/postgres_password}
+
+volumes:
+  postgres_data:
+
+networks:
+  db_net:
+    internal: true
