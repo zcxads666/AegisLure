@@ -304,6 +304,10 @@ func newAPIRoute(method, path string) string {
 		return "newapi.about-content"
 	case path == "/api/pricing":
 		return "newapi.pricing-data"
+	case path == "/api/perf-metrics/summary":
+		return "newapi.perf-summary"
+	case path == "/api/perf-metrics":
+		return "newapi.perf-metrics"
 	case path == "/api/rankings":
 		return "newapi.rankings-data"
 	case path == "/api/setup":

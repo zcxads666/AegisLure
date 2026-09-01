@@ -224,6 +224,19 @@ func newAPIProfileModelIDs(catalog []profiles.CatalogEntry) []string {
 	return result
 }
 
+func newAPIVendorIcon(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "openai":
+		return "OpenAI.Color"
+	case "anthropic":
+		return "Claude.Color"
+	case "google", "gemini":
+		return "Gemini.Color"
+	default:
+		return ""
+	}
+}
+
 func newAPIPricingView(catalog []profiles.CatalogEntry) map[string]any {
 	data := make([]map[string]any, 0, len(catalog))
 	vendors := make([]map[string]any, 0)
@@ -241,7 +254,11 @@ func newAPIPricingView(catalog []profiles.CatalogEntry) map[string]any {
 			}
 		}
 		if vendorID == 0 {
-			vendors = append(vendors, map[string]any{"id": len(vendors) + 1, "name": provider, "description": "Model catalog"})
+			vendor := map[string]any{"id": len(vendors) + 1, "name": provider, "description": "Model catalog"}
+			if icon := newAPIVendorIcon(provider); icon != "" {
+				vendor["icon"] = icon
+			}
+			vendors = append(vendors, vendor)
 			vendorID = len(vendors)
 		}
 		if !seenVendors[provider] {

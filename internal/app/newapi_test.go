@@ -53,6 +53,11 @@ func TestNewAPIPublicPagesAndStatusContract(t *testing.T) {
 		t.Fatalf("public New API status set a cookie: %#v", resp.Cookies())
 	}
 
+	resp, body = doRawJSON(t, client, http.MethodPost, "/api/user/auth/refresh", nil, nil)
+	if resp.StatusCode != http.StatusNoContent || len(body) != 0 {
+		t.Fatalf("anonymous New API auth refresh was not a quiet no-content response: %d %s", resp.StatusCode, body)
+	}
+
 	resp, body = doRawJSON(t, client, http.MethodGet, "/api/about", nil, nil)
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"data":""`) {
 		t.Fatalf("public New API about content was not left unconfigured: %d %s", resp.StatusCode, body)
@@ -60,6 +65,22 @@ func TestNewAPIPublicPagesAndStatusContract(t *testing.T) {
 	resp, body = doRawJSON(t, client, http.MethodGet, "/api/notice", nil, nil)
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"data":""`) {
 		t.Fatalf("public New API notice was not empty: %d %s", resp.StatusCode, body)
+	}
+	resp, body = doRawJSON(t, client, http.MethodGet, "/api/pricing", nil, nil)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"icon":"OpenAI.Color"`) || !strings.Contains(string(body), `"icon":"Claude.Color"`) || !strings.Contains(string(body), `"icon":"Gemini.Color"`) {
+		t.Fatalf("public New API pricing did not expose local vendor icons: %d %s", resp.StatusCode, body)
+	}
+	resp, body = doRawJSON(t, client, http.MethodGet, "/api/perf-metrics/summary?hours=24", nil, nil)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"models"`) {
+		t.Fatalf("public New API performance summary failed: %d %s", resp.StatusCode, body)
+	}
+	resp, body = doRawJSON(t, client, http.MethodGet, "/api/perf-metrics?model=gpt-5.6-sol&hours=24", nil, nil)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"model_name":"gpt-5.6-sol"`) || !strings.Contains(string(body), `"groups":[]`) {
+		t.Fatalf("public New API performance detail failed: %d %s", resp.StatusCode, body)
+	}
+	resp, body = doRawJSON(t, client, http.MethodGet, "/static/cc-switch.svg", nil, nil)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(resp.Header.Get("Content-Type"), "image/svg+xml") || !strings.Contains(string(body), "CC Switch") {
+		t.Fatalf("local CC Switch asset was not served: %d content-type=%q body=%s", resp.StatusCode, resp.Header.Get("Content-Type"), body)
 	}
 
 	for _, path := range []string{"/admin", "/billing", "/payment", "/wallet", "/channels", "/models", "/users", "/redemption-codes", "/subscriptions", "/system-info", "/system-settings", "/playground", "/setup", "/oauth", "/webhook"} {

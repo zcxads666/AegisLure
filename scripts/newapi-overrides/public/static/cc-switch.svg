@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" aria-labelledby="title">
+  <title id="title">CC Switch</title>
+  <rect width="24" height="24" rx="6" fill="#2563eb"/>
+  <text x="12" y="15.2" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-size="8" font-weight="700" fill="#ffffff">CC</text>
+</svg>

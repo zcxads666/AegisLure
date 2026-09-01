@@ -51,8 +51,17 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 			a.methodNotAllowed(w)
 			return
 		}
-		user, ok := a.requireHoneyUser(w, session)
+		// Anonymous bootstrap is a normal public-page path. A 204 response
+		// lets the upstream client clear its local auth state without logging a
+		// noisy 401 network error; authenticated sessions still receive the
+		// regular refresh bundle below.
+		if session.UserID == "" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		user, ok := a.store.GetHoneyUser(session.UserID)
 		if !ok {
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		session.UserID = user.ID
@@ -749,6 +758,23 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "", "data": ""})
 	case "newapi.pricing-data":
 		a.writeJSON(w, http.StatusOK, newAPIPricingView(a.catalogForSession(model.ProductNewAPI, "guest", session)))
+	case "newapi.perf-summary":
+		events, err := a.store.Events(1000, model.ProductNewAPI, "")
+		if err != nil {
+			a.writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": "metrics unavailable", "data": map[string]any{"models": []any{}}})
+			return
+		}
+		hours := boundedQueryInt(r, "hours", 24, 1, 168)
+		a.writeJSON(w, http.StatusOK, newAPIPerformanceSummaryView(events, hours, time.Now().UTC()))
+	case "newapi.perf-metrics":
+		events, err := a.store.Events(1000, model.ProductNewAPI, "")
+		if err != nil {
+			a.writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "message": "metrics unavailable", "data": map[string]any{"model_name": "", "groups": []any{}}})
+			return
+		}
+		hours := boundedQueryInt(r, "hours", 24, 1, 168)
+		modelName := strings.TrimSpace(r.URL.Query().Get("model"))
+		a.writeJSON(w, http.StatusOK, newAPIPerformanceDetailView(events, modelName, hours, time.Now().UTC()))
 	case "newapi.rankings-data":
 		a.writeJSON(w, http.StatusOK, newAPIRankingsView())
 	case "newapi.setup":

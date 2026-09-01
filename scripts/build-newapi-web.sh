@@ -28,6 +28,9 @@ ln -s "$source_root/node_modules" "$stage_root/node_modules"
 if [[ -d "$script_dir/newapi-overrides/src" ]]; then
   rsync -a "$script_dir/newapi-overrides/src/" "$stage_root/src/"
 fi
+if [[ -d "$script_dir/newapi-overrides/public" ]]; then
+  rsync -a "$script_dir/newapi-overrides/public/" "$stage_root/public/"
+fi
 
 replace_text() {
   local file="$1"
@@ -36,6 +39,11 @@ replace_text() {
   AEGISLURE_OLD_TEXT="$old_text" AEGISLURE_NEW_TEXT="$new_text" \
     perl -0pi -e 's/\Q$ENV{AEGISLURE_OLD_TEXT}\E/$ENV{AEGISLURE_NEW_TEXT}/g' "$file"
 }
+
+# The public CSP intentionally permits only same-origin images. Keep the
+# supported-app card visually complete without making a remote image request.
+replace_text "$stage_root/src/features/home/components/sections/hero.tsx" \
+  "src='https://ccswitch.io/favicon.png'" "src='/static/cc-switch.svg'"
 
 # Keep restricted account actions on pages that are available to the public
 # tenant, while preserving the upstream page copy and layout.
