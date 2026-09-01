@@ -681,7 +681,7 @@ func (a *App) adminDashboard(w http.ResponseWriter) {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "dashboard query failed"})
 		return
 	}
-	counts := map[string]int{"events": len(events), "unique_ips": len(indicators), "high_risk": 0, "invocations": 0, "accepted": 0, "rejected": 0, "sessions": 0}
+	counts := map[string]int{"events": len(events), "unique_ips": len(indicators), "high_risk": 0, "invocations": 0, "accepted": 0, "rejected": 0, "sessions": 0, "risk_events": 0, "risk_rate": 0}
 	products := map[string]int{}
 	levels := map[string]int{}
 	risk := map[string]int{"low": 0, "medium": 0, "high": 0}
@@ -712,12 +712,16 @@ func (a *App) adminDashboard(w http.ResponseWriter) {
 		if event.ExecutionOutcome == "rejected_before_dispatch" {
 			counts["rejected"]++
 		}
+		if event.Score >= dashboardRiskThreshold {
+			counts["risk_events"]++
+		}
 		products[event.Product]++
 		if event.InvocationLevel != "" {
 			levels[string(event.InvocationLevel)]++
 		}
 	}
 	counts["sessions"] = len(sessions)
+	counts["risk_rate"] = sharePercentage(counts["risk_events"], len(events))
 	activity := make([]map[string]any, 0, 12)
 	now := time.Now().UTC()
 	for i := 11; i >= 0; i-- {
@@ -740,12 +744,23 @@ func (a *App) adminDashboard(w http.ResponseWriter) {
 	if len(recent) > 8 {
 		recent = recent[:8]
 	}
+	analytics := buildDashboardAnalytics(events, indicators, now)
 	enabled := append([]string{}, a.cfg.EnabledProfiles...)
 	a.writeJSON(w, http.StatusOK, map[string]any{
 		"service": "AegisLure", "synthetic_only": true, "generated_at": now,
 		"counts": counts, "enabled_profiles": enabled, "admin_port": a.cfg.AdminPort,
 		"admin_path_hint": "stored in root-owned config; never returned after setup",
 		"activity":        activity, "products": productList, "risk_distribution": risk, "invocation_levels": levels, "recent_events": recent,
+		"risk_threshold": dashboardRiskThreshold,
+		"risk_summary": map[string]any{
+			"event_count": counts["risk_events"],
+			"event_rate":  counts["risk_rate"],
+			"ip_count":    risk["medium"] + risk["high"],
+		},
+		"risk_activity":             analytics["risk_activity"],
+		"source_countries":          analytics["source_countries"],
+		"honeypot_distribution":     analytics["honeypot_distribution"],
+		"risk_trigger_distribution": analytics["risk_trigger_distribution"],
 	})
 }
 

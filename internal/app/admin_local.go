@@ -1129,7 +1129,7 @@ func (a *App) adminActorDetail(w http.ResponseWriter, _ *http.Request, rawIP str
 		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "actor not found"})
 		return
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"ip": ip, "indicator": indicator, "events": events, "event_count": len(events), "synthetic_only": true})
+	a.writeJSON(w, http.StatusOK, map[string]any{"ip": ip, "country": sourceCountryLabel(ip), "indicator": indicator, "events": events, "event_count": len(events), "synthetic_only": true})
 }
 
 func (a *App) adminIdentityIndicators(w http.ResponseWriter, _ *http.Request) {
