@@ -34,7 +34,7 @@ func loadPersistedRuleEngine(a *App) {
 		if pack.Lifecycle != model.PackActive || len(pack.Definition) == 0 {
 			continue
 		}
-		if !globalFound || pack.UpdatedAt.After(globalPack.UpdatedAt) {
+		if !globalFound || pack.UpdatedAt.After(globalPack.UpdatedAt) || (pack.UpdatedAt.Equal(globalPack.UpdatedAt) && (pack.Revision > globalPack.Revision || pack.Revision == globalPack.Revision && pack.ID > globalPack.ID)) {
 			globalPack, globalFound = pack, true
 		}
 	}
@@ -93,15 +93,23 @@ func builtinPacks() []model.ConfigPack {
 		{ID: "sglang-http-safe-v1", Product: model.ProductSGLang, AuthPosture: "no_key", ServerInfo: "honey_key", DangerousEffects: "virtual_only", EffectTTLSec: 900},
 		{ID: "localai-legacy-safe-v1", Product: model.ProductLocalAI, AuthPosture: "legacy-unauth", ModelInstall: "synthetic_task", EffectTTLSec: 90},
 	}}
-	rules := packs.DetectorRulePack{SchemaVersion: 1, Revision: "builtin-rules-v1", DSL: map[string]any{"allowed_types": []string{"atomic", "sequence", "threshold", "credential_reuse", "campaign"}, "regex_engine": "RE2", "code_execution": false}, Rules: []packs.DetectorRule{
+	rules := packs.DetectorRulePack{SchemaVersion: 1, Revision: "builtin-rules-v2", DSL: map[string]any{
+		"allowed_types":     []string{"atomic", "sequence", "threshold", "credential_reuse", "campaign"},
+		"sequence_modes":    []string{"ordered", "unordered"},
+		"regex_engine":      "RE2",
+		"code_execution":    false,
+		"chain_aggregation": map[string]any{"default_mode": "session", "default_window": "30m", "allowed_modes": []string{"session", "source_ip", "source_ip_product"}},
+	}, Rules: []packs.DetectorRule{
 		{ID: "SSRF_URL_CLASS_V1", Type: "atomic", ReasonCode: "exploit_probe_ssrf", Score: 45, Confidence: "high", URLClasses: []string{"loopback", "unspecified", "link_local", "private", "file_scheme"}},
-		{ID: "PATH_TRAVERSAL_V1", Type: "atomic", ReasonCode: "path_traversal_probe", Score: 50, Confidence: "high"},
-		{ID: "SERIALIZATION_PROBE_V1", Type: "atomic", ReasonCode: "dangerous_serialization_or_execution_probe", Score: 60, Confidence: "high"},
+		{ID: "PATH_TRAVERSAL_V1", Type: "atomic", ReasonCode: "path_traversal_probe", Score: 50, Confidence: "high", Where: json.RawMessage(`{"all":[{"field":"method","op":"in","value":["GET","POST"]},{"field":"body_preview","op":"regex","value":"(?i)(?:\\.\\.|%2e%2e|/etc/passwd|proc/self)"}]}`)},
+		{ID: "SERIALIZATION_PROBE_V1", Type: "atomic", ReasonCode: "dangerous_serialization_or_execution_probe", Score: 60, Confidence: "high", Where: json.RawMessage(`{"all":[{"field":"method","op":"eq","value":"POST"},{"field":"body_preview","op":"regex","value":"(?i)(?:pickle|__reduce__|yaml\\.load|deserialize)"}]}`)},
 		{ID: "VLLM_KEY_GAP_BYPASS_V1", Type: "sequence", ReasonCode: "auth_bypass_then_honey_invoke", Score: 60, Within: "10m", Steps: []string{"llm.invoke.rejected", "vllm.invocations accepted", "llm.stream.completed"}},
 		{ID: "HONEY_TOKEN_REUSE_V1", Type: "credential_reuse", ReasonCode: "honey_credential_reuse", Score: 65, Confidence: "high"},
-		{ID: "NEWAPI_NORMAL_USE_V1", Type: "sequence", ReasonCode: "intentional_compute_use", Score: 35, Within: "30m", Steps: []string{"newapi.user.register.success", "newapi.checkin.success", "newapi.token.created", "llm.invoke.accepted"}},
+		{ID: "NEWAPI_NORMAL_USE_V1", Type: "sequence", ReasonCode: "intentional_compute_use", Score: 35, Confidence: "medium", Within: "30m", SequenceMode: "unordered", Steps: []string{"newapi.user.register.success", "newapi.user.login.success", "newapi.checkin.success", "newapi.token.created|newapi.token.key.revealed", "newapi.models.listed", "llm.invoke.accepted"}},
 	}}
-	result := make([]model.ConfigPack, 0, 9)
+	rulesV1 := rules
+	rulesV1.Revision = "builtin-rules-v1"
+	result := make([]model.ConfigPack, 0, 10)
 	for _, item := range fingerprint.Packs {
 		data := definition(fingerprint)
 		result = append(result, builtinConfigPack(item.ID, model.PackKindFingerprint, fingerprint.Revision, data, now))
@@ -109,7 +117,8 @@ func builtinPacks() []model.ConfigPack {
 	result = append(result,
 		builtinConfigPack("seed-2026q3", model.PackKindModel, modelCatalog.Revision, definition(modelCatalog), now),
 		builtinConfigPack("builtin-safe-v1", model.PackKindScenario, scenarios.Revision, definition(scenarios), now),
-		builtinConfigPack("builtin-rules-v1", model.PackKindDetector, rules.Revision, definition(rules), now),
+		builtinConfigPack("builtin-rules-v1", model.PackKindDetector, rulesV1.Revision, definition(rulesV1), now),
+		builtinConfigPack("builtin-rules-v2", model.PackKindDetector, rules.Revision, definition(rules), now),
 	)
 	return result
 }
@@ -220,6 +229,93 @@ func (a *App) adminPackList(w http.ResponseWriter, kind string) {
 
 func packSummary(pack model.ConfigPack) map[string]any {
 	return map[string]any{"id": pack.ID, "kind": pack.Kind, "revision": pack.Revision, "previous_revision": pack.PreviousRevision, "lifecycle": pack.Lifecycle, "target": pack.Target, "signature": pack.Signature, "has_definition": len(pack.Definition) > 0, "created_at": pack.CreatedAt, "updated_at": pack.UpdatedAt, "data_only": true}
+}
+
+func (a *App) activePack(kind string) (model.ConfigPack, bool) {
+	var result model.ConfigPack
+	found := false
+	for _, pack := range a.store.ListPacks(kind) {
+		if pack.Lifecycle != model.PackActive {
+			continue
+		}
+		if !found || pack.UpdatedAt.After(result.UpdatedAt) || (pack.UpdatedAt.Equal(result.UpdatedAt) && (pack.Revision > result.Revision || pack.Revision == result.Revision && pack.ID > result.ID)) {
+			result, found = pack, true
+		}
+	}
+	return result, found
+}
+
+func (a *App) packForTarget(kind, target string) (model.ConfigPack, bool) {
+	if pack, ok := a.store.BoundPack(kind, target); ok {
+		return pack, true
+	}
+	return a.activePack(kind)
+}
+
+func (a *App) adminPackStrategies(chainConfig model.InteractionChainConfig) []map[string]any {
+	items := make([]map[string]any, 0, len(a.profiles))
+	for _, product := range []string{model.ProductNewAPI, model.ProductVLLM, model.ProductOllama, model.ProductSGLang, model.ProductLocalAI} {
+		profile, ok := a.profiles[product]
+		if !ok {
+			continue
+		}
+		profile = a.applyRuntimePacks(profile)
+		packRevisions := make(map[string]any)
+		for _, kind := range []string{model.PackKindFingerprint, model.PackKindModel, model.PackKindScenario, model.PackKindDetector} {
+			pack, found := a.packForTarget(kind, "inst_"+product)
+			if kind == model.PackKindFingerprint {
+				pack, found = a.fingerprintPackForProduct(product)
+			}
+			if found {
+				_, bound := a.store.BoundPack(kind, "inst_"+product)
+				packRevisions[kind] = map[string]any{"id": pack.ID, "revision": pack.Revision, "lifecycle": pack.Lifecycle, "bound": bound}
+			}
+		}
+		rules := make([]packs.DetectorRule, 0)
+		var rulePack map[string]any
+		if pack, found := a.packForTarget(model.PackKindDetector, "inst_"+product); found {
+			var document packs.DetectorRulePack
+			if json.Unmarshal(pack.Definition, &document) == nil && packs.ValidateDetectorRulePack(document) == nil {
+				rules = append([]packs.DetectorRule(nil), document.Rules...)
+				rulePack = map[string]any{"id": pack.ID, "revision": document.Revision, "lifecycle": pack.Lifecycle}
+			}
+		}
+		items = append(items, map[string]any{
+			"product":            product,
+			"profile_id":         profile.ID,
+			"version":            profile.DisplayVersion,
+			"scenario":           profile.Scenario,
+			"effect_scope":       profile.EffectScope,
+			"effect_ttl_seconds": int(profile.EffectTTL / time.Second),
+			"packs":              packRevisions,
+			"rule_pack":          rulePack,
+			"rules":              rules,
+			"rule_count":         len(rules),
+			"chain_aggregation":  chainConfig,
+			"synthetic_only":     true,
+			"outbound_network":   false,
+			"real_inference":     false,
+		})
+	}
+	return items
+}
+
+func (a *App) fingerprintPackForProduct(product string) (model.ConfigPack, bool) {
+	for _, pack := range a.store.ListPacks(model.PackKindFingerprint) {
+		if pack.Lifecycle != model.PackActive {
+			continue
+		}
+		var document packs.FingerprintPackDocument
+		if json.Unmarshal(pack.Definition, &document) != nil {
+			continue
+		}
+		for _, item := range document.Packs {
+			if item.Product == product {
+				return pack, true
+			}
+		}
+	}
+	return model.ConfigPack{}, false
 }
 
 func (a *App) adminPackCreate(w http.ResponseWriter, r *http.Request, kind string) {

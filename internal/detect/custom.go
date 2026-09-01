@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -212,6 +213,9 @@ func matchSequence(rule packs.DetectorRule, events []model.Event) bool {
 			within = parsed
 		}
 	}
+	if rule.SequenceMode == "unordered" {
+		return matchUnorderedSequence(rule.Steps, events, within)
+	}
 	for start := 0; start < len(events); start++ {
 		step := 0
 		var first, last time.Time
@@ -233,13 +237,83 @@ func matchSequence(rule packs.DetectorRule, events []model.Event) bool {
 	return false
 }
 
+func matchUnorderedSequence(steps []string, events []model.Event, within time.Duration) bool {
+	candidates := make([][]int, len(steps))
+	for stepIndex, step := range steps {
+		for eventIndex, event := range events {
+			if matchesStep(step, event) {
+				candidates[stepIndex] = append(candidates[stepIndex], eventIndex)
+			}
+		}
+		if len(candidates[stepIndex]) == 0 {
+			return false
+		}
+	}
+	order := make([]int, len(steps))
+	for index := range order {
+		order[index] = index
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		if len(candidates[order[i]]) != len(candidates[order[j]]) {
+			return len(candidates[order[i]]) < len(candidates[order[j]])
+		}
+		return order[i] < order[j]
+	})
+	used := make([]bool, len(events))
+	var search func(int, time.Time, time.Time) bool
+	search = func(position int, earliest, latest time.Time) bool {
+		if position == len(order) {
+			return true
+		}
+		for _, eventIndex := range candidates[order[position]] {
+			if used[eventIndex] {
+				continue
+			}
+			eventTime := events[eventIndex].ObservedAt
+			nextEarliest, nextLatest := earliest, latest
+			if !eventTime.IsZero() {
+				if nextEarliest.IsZero() || eventTime.Before(nextEarliest) {
+					nextEarliest = eventTime
+				}
+				if nextLatest.IsZero() || eventTime.After(nextLatest) {
+					nextLatest = eventTime
+				}
+			}
+			if !nextEarliest.IsZero() && !nextLatest.IsZero() && nextLatest.Sub(nextEarliest) > within {
+				continue
+			}
+			used[eventIndex] = true
+			if search(position+1, nextEarliest, nextLatest) {
+				return true
+			}
+			used[eventIndex] = false
+		}
+		return false
+	}
+	return search(0, time.Time{}, time.Time{})
+}
+
 func matchesStep(step string, event model.Event) bool {
 	step = strings.TrimSpace(strings.ToLower(step))
 	if step == "" {
 		return false
 	}
+	if strings.Contains(step, "|") {
+		for _, alternative := range strings.Split(step, "|") {
+			if matchesStep(alternative, event) {
+				return true
+			}
+		}
+		return false
+	}
 	if strings.EqualFold(step, event.EventType) {
 		return true
+	}
+	if step == "llm.invoke.accepted" && event.InvocationID != "" {
+		switch event.ExecutionOutcome {
+		case "synthetic_accepted", "synthetic_stream_started", "synthetic_stream_completed":
+			return true
+		}
 	}
 	if strings.Contains(step, " ") {
 		parts := strings.Fields(step)

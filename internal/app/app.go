@@ -615,6 +615,9 @@ func (a *App) record(profile profiles.Profile, r *http.Request, body []byte, cw 
 		modelResolved = true
 	}
 	eventType := obs.EventType
+	if eventType == "" {
+		eventType = eventTypeForObservation(obs.RouteTemplate, r.Method, cw.status)
+	}
 	if obs.InvocationID != "" {
 		switch obs.ExecutionOutcome {
 		case "rejected_before_dispatch":
@@ -663,6 +666,42 @@ func (a *App) record(profile profiles.Profile, r *http.Request, body []byte, cw 
 	}
 	if err := a.store.AppendEvent(event); err != nil {
 		a.log.Printf("event append failed: %v", err)
+	}
+}
+
+func eventTypeForObservation(route, method string, status int) string {
+	success := status >= http.StatusOK && status < http.StatusMultipleChoices
+	suffix := ".failed"
+	if success {
+		suffix = ".success"
+	}
+	switch route {
+	case "newapi.user.register":
+		return "newapi.user.register" + suffix
+	case "newapi.user.login":
+		return "newapi.user.login" + suffix
+	case "newapi.checkin":
+		if method == http.MethodGet {
+			return "newapi.checkin.view"
+		}
+		return "newapi.checkin" + suffix
+	case "newapi.token.create":
+		if success {
+			return "newapi.token.created"
+		}
+		return "newapi.token.create.failed"
+	case "newapi.token.key":
+		if success {
+			return "newapi.token.key.revealed"
+		}
+		return "newapi.token.key.failed"
+	case "newapi.user.models", "openai.models":
+		if success {
+			return "newapi.models.listed"
+		}
+		return "newapi.models.list.failed"
+	default:
+		return ""
 	}
 }
 

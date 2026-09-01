@@ -289,6 +289,7 @@ func OpenWithOptions(dir, key string, options Options) (*Store, error) {
 		Quotas:                     make(map[string]int64),
 		Packs:                      make(map[string]model.ConfigPack),
 		PackBindings:               make(map[string]string),
+		InteractionChain:           model.DefaultInteractionChainConfig(),
 		ImportSources:              make(map[string]model.ImportSource),
 		IndicatorDecisions:         make(map[string]model.IndicatorDecision),
 		IdentityIndicatorDecisions: make(map[string]model.IdentityIndicatorDecision),
@@ -525,6 +526,9 @@ func (s *Store) ensureMaps() {
 	if s.state.PackBindings == nil {
 		s.state.PackBindings = make(map[string]string)
 	}
+	if s.state.InteractionChain.Mode == "" {
+		s.state.InteractionChain = model.DefaultInteractionChainConfig()
+	}
 	if s.state.ImportSources == nil {
 		s.state.ImportSources = make(map[string]model.ImportSource)
 	}
@@ -724,6 +728,23 @@ func (s *Store) Admin() model.AdminState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.state.Admin
+}
+
+func (s *Store) InteractionChainConfig() model.InteractionChainConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	config := s.state.InteractionChain
+	if config.Mode == "" {
+		return model.DefaultInteractionChainConfig()
+	}
+	return config
+}
+
+func (s *Store) SetInteractionChainConfig(config model.InteractionChainConfig) error {
+	return s.Update(func(state *model.State) error {
+		state.InteractionChain = config
+		return nil
+	})
 }
 
 func packKey(kind, id, revision string) string {

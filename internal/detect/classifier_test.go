@@ -49,3 +49,30 @@ func TestRuleEngineEvaluatesBoundedWhereAndSequence(t *testing.T) {
 		t.Fatalf("sequence rule result = %#v", second)
 	}
 }
+
+func TestRuleEngineUnorderedSequenceMatchesCriticalPathInAnyOrder(t *testing.T) {
+	engine := NewRuleEngine()
+	pack := packs.DetectorRulePack{SchemaVersion: 1, Revision: "unordered-r1", Rules: []packs.DetectorRule{{
+		ID: "CRITICAL_PATH_V1", Type: "sequence", ReasonCode: "critical_path", Score: 35, SequenceMode: "unordered", Within: "10m",
+		Steps: []string{"newapi.user.register.success", "newapi.user.login.success", "newapi.checkin.success", "newapi.token.created|newapi.token.key.revealed", "newapi.models.listed", "llm.invoke.accepted"},
+	}}}
+	if err := engine.Load(pack); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().UTC()
+	events := []model.Event{
+		{EventID: "invoke", EventType: "llm.stream.completed", InvocationID: "inv-1", ExecutionOutcome: "synthetic_stream_completed", ObservedAt: base.Add(5 * time.Second)},
+		{EventID: "models", EventType: "newapi.models.listed", ObservedAt: base.Add(4 * time.Second)},
+		{EventID: "token", EventType: "newapi.token.key.revealed", ObservedAt: base.Add(3 * time.Second)},
+		{EventID: "checkin", EventType: "newapi.checkin.success", ObservedAt: base.Add(2 * time.Second)},
+		{EventID: "login", EventType: "newapi.user.login.success", ObservedAt: base.Add(time.Second)},
+		{EventID: "register", EventType: "newapi.user.register.success", ObservedAt: base},
+	}
+	var result RuleEvaluation
+	for _, event := range events {
+		result = engine.Evaluate(event)
+	}
+	if len(result.MatchedRuleIDs) != 1 || result.MatchedRuleIDs[0] != "CRITICAL_PATH_V1" || result.Score != 35 {
+		t.Fatalf("unordered sequence result = %#v", result)
+	}
+}

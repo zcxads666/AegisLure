@@ -190,9 +190,33 @@ type State struct {
 	QuotaLedger                []QuotaEntry                         `json:"quota_ledger,omitempty"`
 	Packs                      map[string]ConfigPack                `json:"packs,omitempty"`
 	PackBindings               map[string]string                    `json:"pack_bindings,omitempty"`
+	InteractionChain           InteractionChainConfig               `json:"interaction_chain,omitempty"`
 	ImportSources              map[string]ImportSource              `json:"import_sources,omitempty"`
 	IndicatorDecisions         map[string]IndicatorDecision         `json:"indicator_decisions,omitempty"`
 	IdentityIndicatorDecisions map[string]IdentityIndicatorDecision `json:"identity_indicator_decisions,omitempty"`
+}
+
+// InteractionChainConfig controls how the local admin view groups the
+// append-only event stream. It is intentionally small and data-only so a
+// public request can never turn the control plane into a query language.
+type InteractionChainConfig struct {
+	Mode          string `json:"mode"`
+	WindowSeconds int    `json:"window_seconds"`
+	MaxEvents     int    `json:"max_events"`
+}
+
+const (
+	InteractionChainBySession          = "session"
+	InteractionChainBySourceIP         = "source_ip"
+	InteractionChainBySourceAndProduct = "source_ip_product"
+)
+
+func DefaultInteractionChainConfig() InteractionChainConfig {
+	return InteractionChainConfig{
+		Mode:          InteractionChainBySession,
+		WindowSeconds: 30 * 60,
+		MaxEvents:     200,
+	}
 }
 
 const (

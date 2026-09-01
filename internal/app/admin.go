@@ -387,6 +387,8 @@ func (a *App) handleAdminAPI(w http.ResponseWriter, r *http.Request, path string
 		a.adminInteractionChains(w, r)
 	case strings.HasPrefix(path, "interaction-chains/") && r.Method == http.MethodGet:
 		a.adminInteractionChainDetail(w, r, strings.TrimPrefix(path, "interaction-chains/"))
+	case path == "chain-config":
+		a.adminInteractionChainConfig(w, r)
 	case strings.HasPrefix(path, "actors/") && r.Method == http.MethodGet:
 		a.adminActorDetail(w, r, strings.TrimPrefix(path, "actors/"))
 	case path == "indicators" || path == "indicators/ips":
@@ -796,17 +798,24 @@ func (a *App) adminInvocations(w http.ResponseWriter, r *http.Request) {
 }
 
 type interactionChainView struct {
-	ID              string                `json:"id"`
-	SessionID       string                `json:"session_id"`
-	Product         string                `json:"product"`
-	FirstEventID    string                `json:"first_event_id"`
-	LastEventID     string                `json:"last_event_id"`
-	EventCount      int                   `json:"event_count"`
-	Stage           string                `json:"stage"`
-	IntentClass     string                `json:"intent_class"`
-	InvocationLevel model.InvocationLevel `json:"invocation_level"`
-	Score           int                   `json:"score"`
-	Events          []model.Event         `json:"events"`
+	ID               string                `json:"id"`
+	SessionID        string                `json:"session_id,omitempty"`
+	Product          string                `json:"product"`
+	AggregationMode  string                `json:"aggregation_mode"`
+	AggregationKey   string                `json:"aggregation_key,omitempty"`
+	SessionCount     int                   `json:"session_count"`
+	FirstEventID     string                `json:"first_event_id"`
+	LastEventID      string                `json:"last_event_id"`
+	LatestObservedAt time.Time             `json:"latest_observed_at"`
+	LatestSequence   uint64                `json:"latest_sequence,omitempty"`
+	EventCount       int                   `json:"event_count"`
+	Stage            string                `json:"stage"`
+	IntentClass      string                `json:"intent_class"`
+	InvocationLevel  model.InvocationLevel `json:"invocation_level"`
+	Score            int                   `json:"score"`
+	MatchedRuleIDs   []string              `json:"matched_rule_ids,omitempty"`
+	ReasonCodes      []string              `json:"reason_codes,omitempty"`
+	Events           []model.Event         `json:"events"`
 }
 
 func (a *App) adminInteractionChains(w http.ResponseWriter, r *http.Request) {
@@ -815,51 +824,181 @@ func (a *App) adminInteractionChains(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "chain query failed"})
 		return
 	}
-	bySession := make(map[string]*interactionChainView)
-	for i := len(events) - 1; i >= 0; i-- {
-		event := events[i]
-		if event.SessionID == "" {
-			continue
-		}
-		item := bySession[event.SessionID]
-		if item == nil {
-			item = &interactionChainView{ID: "chain_" + security.Fingerprint(a.cfg.InstanceKey, event.SessionID)[:20], SessionID: event.SessionID, Product: event.Product, FirstEventID: event.EventID, LastEventID: event.EventID, InvocationLevel: model.L0}
-			bySession[event.SessionID] = item
-		}
-		item.EventCount++
-		item.Events = append(item.Events, event)
-		item.LastEventID = event.EventID
-		if event.Score > item.Score {
-			item.Score = event.Score
-		}
-		if invocationRank(event.InvocationLevel) > invocationRank(item.InvocationLevel) {
-			item.InvocationLevel = event.InvocationLevel
-		}
-		if event.IntentClass != "" {
-			item.IntentClass = event.IntentClass
-		}
-	}
-	result := make([]*interactionChainView, 0, len(bySession))
-	for _, item := range bySession {
-		switch item.InvocationLevel {
-		case model.L4:
-			item.Stage = "post_call_verified"
-		case model.L3:
-			item.Stage = "response_consumed"
-		case model.L2:
-			item.Stage = "synthetic_accepted"
-		case model.L1:
-			item.Stage = "rejected_attempt"
-		default:
-			item.Stage = "discovery"
-		}
-		result = append(result, item)
-	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Score > result[j].Score })
+	config := a.store.InteractionChainConfig()
+	result := a.buildInteractionChainViews(events, config)
 	if limit := queryInt(r, "limit", 100); limit >= 1 && limit < len(result) {
 		result = result[:limit]
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"chains": result, "synthetic_only": true})
+	a.writeJSON(w, http.StatusOK, map[string]any{"chains": result, "count": len(result), "aggregation": config, "synthetic_only": true})
+}
+
+type interactionChainBucket struct {
+	identityKey string
+	displayKey  string
+	events      []model.Event
+	sessions    map[string]bool
+	latest      time.Time
+}
+
+func (a *App) buildInteractionChainViews(events []model.Event, config model.InteractionChainConfig) []*interactionChainView {
+	config = normalizeInteractionChainConfig(config)
+	buckets := make(map[string]*interactionChainBucket)
+	for _, event := range events {
+		identityKey, displayKey, ok := interactionChainKey(event, config.Mode)
+		if !ok {
+			continue
+		}
+		bucket := buckets[identityKey]
+		if bucket == nil {
+			bucket = &interactionChainBucket{identityKey: identityKey, displayKey: displayKey, sessions: make(map[string]bool), latest: event.ObservedAt}
+			buckets[identityKey] = bucket
+		}
+		if !bucket.latest.IsZero() && !event.ObservedAt.IsZero() && bucket.latest.Sub(event.ObservedAt) > time.Duration(config.WindowSeconds)*time.Second {
+			continue
+		}
+		if len(bucket.events) >= config.MaxEvents {
+			continue
+		}
+		bucket.events = append(bucket.events, event)
+		if event.SessionID != "" {
+			bucket.sessions[event.SessionID] = true
+		}
+		if event.ObservedAt.After(bucket.latest) {
+			bucket.latest = event.ObservedAt
+		}
+	}
+	result := make([]*interactionChainView, 0, len(buckets))
+	for _, bucket := range buckets {
+		if len(bucket.events) == 0 {
+			continue
+		}
+		sort.SliceStable(bucket.events, func(i, j int) bool {
+			left, right := bucket.events[i], bucket.events[j]
+			if left.Sequence != 0 || right.Sequence != 0 {
+				if left.Sequence != right.Sequence {
+					return left.Sequence < right.Sequence
+				}
+			} else if !left.ObservedAt.Equal(right.ObservedAt) {
+				return left.ObservedAt.Before(right.ObservedAt)
+			}
+			return left.EventID < right.EventID
+		})
+		sessionID := ""
+		if config.Mode == model.InteractionChainBySession {
+			if len(bucket.sessions) == 1 {
+				for value := range bucket.sessions {
+					sessionID = value
+				}
+			}
+		}
+		view := buildInteractionChainView("chain_"+security.Fingerprint(a.cfg.InstanceKey, bucket.identityKey)[:20], sessionID, bucket.events)
+		view.AggregationMode = config.Mode
+		view.AggregationKey = bucket.displayKey
+		view.SessionCount = len(bucket.sessions)
+		result = append(result, view)
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		left, right := result[i], result[j]
+		if !left.LatestObservedAt.Equal(right.LatestObservedAt) {
+			return left.LatestObservedAt.After(right.LatestObservedAt)
+		}
+		if left.LatestSequence != right.LatestSequence {
+			return left.LatestSequence > right.LatestSequence
+		}
+		if left.Score != right.Score {
+			return left.Score > right.Score
+		}
+		if left.EventCount != right.EventCount {
+			return left.EventCount > right.EventCount
+		}
+		return left.ID < right.ID
+	})
+	return result
+}
+
+func interactionChainKey(event model.Event, mode string) (string, string, bool) {
+	switch mode {
+	case model.InteractionChainBySourceIP:
+		if event.SourceIP == "" {
+			return "", "", false
+		}
+		return "source:" + event.SourceIP, "source_ip:" + event.SourceIP, true
+	case model.InteractionChainBySourceAndProduct:
+		if event.SourceIP == "" || event.Product == "" {
+			return "", "", false
+		}
+		return "source_product:" + event.Product + "\x00" + event.SourceIP, event.Product + " @ " + event.SourceIP, true
+	default:
+		if event.SessionID == "" {
+			return "", "", false
+		}
+		// Keep the original session-mode hash input stable for existing links.
+		return event.SessionID, event.SessionID, true
+	}
+}
+
+func normalizeInteractionChainConfig(config model.InteractionChainConfig) model.InteractionChainConfig {
+	defaults := model.DefaultInteractionChainConfig()
+	if config.Mode != model.InteractionChainBySession && config.Mode != model.InteractionChainBySourceIP && config.Mode != model.InteractionChainBySourceAndProduct {
+		config.Mode = defaults.Mode
+	}
+	if config.WindowSeconds < 60 || config.WindowSeconds > 24*60*60 {
+		config.WindowSeconds = defaults.WindowSeconds
+	}
+	if config.MaxEvents < 10 || config.MaxEvents > 1000 {
+		config.MaxEvents = defaults.MaxEvents
+	}
+	return config
+}
+
+func (a *App) adminInteractionChainConfig(w http.ResponseWriter, r *http.Request) {
+	config := a.store.InteractionChainConfig()
+	if r.Method == http.MethodGet {
+		a.writeJSON(w, http.StatusOK, map[string]any{"config": normalizeInteractionChainConfig(config), "allowed_modes": []string{model.InteractionChainBySession, model.InteractionChainBySourceIP, model.InteractionChainBySourceAndProduct}, "data_only": true})
+		return
+	}
+	if r.Method != http.MethodPut && r.Method != http.MethodPatch {
+		a.writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if !sameOriginRequest(r) {
+		a.writeJSON(w, http.StatusForbidden, map[string]string{"error": "cross-site request rejected"})
+		return
+	}
+	body, tooLarge := readBoundedBody(r, 8*1024)
+	if tooLarge {
+		a.writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "chain configuration too large"})
+		return
+	}
+	var request struct {
+		Mode          *string `json:"mode"`
+		WindowSeconds *int    `json:"window_seconds"`
+		MaxEvents     *int    `json:"max_events"`
+	}
+	if err := decodeStrictValue(body, &request); err != nil {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid chain configuration"})
+		return
+	}
+	if request.Mode != nil {
+		config.Mode = strings.TrimSpace(*request.Mode)
+	}
+	if request.WindowSeconds != nil {
+		config.WindowSeconds = *request.WindowSeconds
+	}
+	if request.MaxEvents != nil {
+		config.MaxEvents = *request.MaxEvents
+	}
+	normalized := normalizeInteractionChainConfig(config)
+	if normalized != config {
+		a.writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "mode, window_seconds, or max_events is out of range"})
+		return
+	}
+	if err := a.store.SetInteractionChainConfig(config); err != nil {
+		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "chain configuration save failed"})
+		return
+	}
+	a.recordAudit(r, "interaction-chain.config.update", "interaction-chain", "success", map[string]string{"mode": config.Mode, "window_seconds": strconv.Itoa(config.WindowSeconds), "max_events": strconv.Itoa(config.MaxEvents)})
+	a.writeJSON(w, http.StatusOK, map[string]any{"config": config, "allowed_modes": []string{model.InteractionChainBySession, model.InteractionChainBySourceIP, model.InteractionChainBySourceAndProduct}, "data_only": true})
 }
 
 func invocationRank(level model.InvocationLevel) int {
@@ -970,7 +1109,27 @@ func (a *App) adminPacks(w http.ResponseWriter) {
 			}
 		}
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"fingerprint_revision": "builtin-v1", "model_catalog_revision": "seed-2026q3", "scenario_revision": "builtin-safe-v1", "detector_revision": "builtin-rules-v1", "lifecycle": []string{model.PackDraft, model.PackValidated, model.PackUnitTest, model.PackReplay, model.PackShadow, model.PackCanary, model.PackActive, model.PackRollback}, "items": items, "bindings": bindings, "bound_revisions": boundRevisions, "data_only": true})
+	revisions := make(map[string]string)
+	for _, kind := range []string{model.PackKindFingerprint, model.PackKindModel, model.PackKindScenario, model.PackKindDetector} {
+		if pack, ok := a.activePack(kind); ok {
+			revisions[kind] = pack.Revision
+		}
+	}
+	chainConfig := normalizeInteractionChainConfig(a.store.InteractionChainConfig())
+	a.writeJSON(w, http.StatusOK, map[string]any{
+		"fingerprint_revision":   revisions[model.PackKindFingerprint],
+		"model_catalog_revision": revisions[model.PackKindModel],
+		"scenario_revision":      revisions[model.PackKindScenario],
+		"detector_revision":      revisions[model.PackKindDetector],
+		"lifecycle":              []string{model.PackDraft, model.PackValidated, model.PackUnitTest, model.PackReplay, model.PackShadow, model.PackCanary, model.PackActive, model.PackRollback},
+		"items":                  items,
+		"bindings":               bindings,
+		"bound_revisions":        boundRevisions,
+		"chain_aggregation":      chainConfig,
+		"allowed_chain_modes":    []string{model.InteractionChainBySession, model.InteractionChainBySourceIP, model.InteractionChainBySourceAndProduct},
+		"strategies":             a.adminPackStrategies(chainConfig),
+		"data_only":              true,
+	})
 }
 
 func (a *App) rotateAdminEntry(w http.ResponseWriter, r *http.Request) {

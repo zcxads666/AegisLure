@@ -121,15 +121,16 @@ type ScenarioPackDocument struct {
 }
 
 type DetectorRule struct {
-	ID         string          `json:"id"`
-	Type       string          `json:"type"`
-	ReasonCode string          `json:"reason_code"`
-	Score      int             `json:"score"`
-	Confidence string          `json:"confidence"`
-	Within     string          `json:"within,omitempty"`
-	Steps      []string        `json:"steps,omitempty"`
-	URLClasses []string        `json:"url_classes,omitempty"`
-	Where      json.RawMessage `json:"where,omitempty"`
+	ID           string          `json:"id"`
+	Type         string          `json:"type"`
+	ReasonCode   string          `json:"reason_code"`
+	Score        int             `json:"score"`
+	Confidence   string          `json:"confidence"`
+	Within       string          `json:"within,omitempty"`
+	SequenceMode string          `json:"sequence_mode,omitempty"`
+	Steps        []string        `json:"steps,omitempty"`
+	URLClasses   []string        `json:"url_classes,omitempty"`
+	Where        json.RawMessage `json:"where,omitempty"`
 }
 
 type DetectorRulePack struct {
@@ -300,6 +301,12 @@ func ValidateDetectorRulePack(pack DetectorRulePack) error {
 			if err != nil || window <= 0 || window > 24*time.Hour {
 				return fmt.Errorf("invalid detector time window in %q", rule.ID)
 			}
+		}
+		if rule.SequenceMode != "" && rule.Type != "sequence" {
+			return fmt.Errorf("sequence_mode is only valid for sequence rule %q", rule.ID)
+		}
+		if rule.SequenceMode != "" && rule.SequenceMode != "ordered" && rule.SequenceMode != "unordered" {
+			return fmt.Errorf("invalid sequence mode in %q", rule.ID)
 		}
 		if len(rule.Steps) > 16 || len(rule.URLClasses) > 16 {
 			return fmt.Errorf("detector rule %q exceeds bounded complexity", rule.ID)

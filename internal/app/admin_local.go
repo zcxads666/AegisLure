@@ -1044,29 +1044,19 @@ func (a *App) adminInteractionChainDetail(w http.ResponseWriter, _ *http.Request
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "chain query failed"})
 		return
 	}
-	bySession := make(map[string][]model.Event)
-	for _, event := range events {
-		if event.SessionID != "" {
-			bySession[event.SessionID] = append(bySession[event.SessionID], event)
+	views := a.buildInteractionChainViews(events, a.store.InteractionChainConfig())
+	for _, view := range views {
+		if view.ID == chainID {
+			a.writeJSON(w, http.StatusOK, map[string]any{"chain": view, "synthetic_only": true})
+			return
 		}
-	}
-	for sessionID, sessionEvents := range bySession {
-		candidateID := "chain_" + security.Fingerprint(a.cfg.InstanceKey, sessionID)[:20]
-		if candidateID != chainID {
-			continue
-		}
-		for i, j := 0, len(sessionEvents)-1; i < j; i, j = i+1, j-1 {
-			sessionEvents[i], sessionEvents[j] = sessionEvents[j], sessionEvents[i]
-		}
-		view := buildInteractionChainView(candidateID, sessionID, sessionEvents)
-		a.writeJSON(w, http.StatusOK, map[string]any{"chain": view, "synthetic_only": true})
-		return
 	}
 	a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "interaction chain not found"})
 }
 
 func buildInteractionChainView(id, sessionID string, events []model.Event) *interactionChainView {
 	view := &interactionChainView{ID: id, SessionID: sessionID, FirstEventID: "", LastEventID: "", InvocationLevel: model.L0, Events: append([]model.Event(nil), events...)}
+	sessions := make(map[string]bool)
 	for _, event := range events {
 		if view.FirstEventID == "" {
 			view.FirstEventID = event.EventID
@@ -1074,6 +1064,15 @@ func buildInteractionChainView(id, sessionID string, events []model.Event) *inte
 		view.LastEventID = event.EventID
 		view.Product = event.Product
 		view.EventCount++
+		if event.SessionID != "" {
+			sessions[event.SessionID] = true
+		}
+		if event.ObservedAt.After(view.LatestObservedAt) {
+			view.LatestObservedAt = event.ObservedAt
+		}
+		if event.Sequence > view.LatestSequence {
+			view.LatestSequence = event.Sequence
+		}
 		if event.Score > view.Score {
 			view.Score = event.Score
 		}
@@ -1083,7 +1082,10 @@ func buildInteractionChainView(id, sessionID string, events []model.Event) *inte
 		if event.IntentClass != "" {
 			view.IntentClass = event.IntentClass
 		}
+		view.MatchedRuleIDs = uniqueStrings(append(view.MatchedRuleIDs, event.MatchedRuleIDs...))
+		view.ReasonCodes = uniqueStrings(append(view.ReasonCodes, event.ReasonCodes...))
 	}
+	view.SessionCount = len(sessions)
 	switch view.InvocationLevel {
 	case model.L4:
 		view.Stage = "post_call_verified"

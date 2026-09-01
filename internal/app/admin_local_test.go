@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zcxads666/AegisLure/internal/model"
 	"github.com/zcxads666/AegisLure/internal/profiles"
@@ -96,6 +97,116 @@ func TestLocalAdminDetailRoutesAndInstancePatch(t *testing.T) {
 	resp, policy := doJSON(t, admin, http.MethodPost, cfg.AdminPath+"admin/api/v1/identity-policies/discord:validate", nil)
 	if resp.StatusCode != http.StatusOK || policy["mode"] != "blocked" || policy["cross_site_feed"] != false {
 		t.Fatalf("identity policy validation status = %d %#v", resp.StatusCode, policy)
+	}
+}
+
+func TestNewAPICriticalPathAggregatesOutOfOrderStepsAndExposesStrategyConfig(t *testing.T) {
+	a, cfg, st := newTestApp(t, true)
+	defer st.Close()
+	admin := &inProcessClient{handler: a.adminHandler(), cookies: map[string]string{}}
+	if resp, _ := doJSON(t, admin, http.MethodPost, cfg.AdminPath+"admin/api/v1/auth/login", map[string]string{"username": "owner", "password": "correct horse battery staple"}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin login status = %d", resp.StatusCode)
+	}
+
+	profile := profiles.Build(cfg)[model.ProductNewAPI]
+	public := &inProcessClient{handler: a.publicHandler(profile), cookies: map[string]string{}}
+	password := "Password123!"
+	if resp, _ := doJSON(t, public, http.MethodPost, "/api/user/register", map[string]string{"username": "critical-path-user", "password": password}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("registration status = %d", resp.StatusCode)
+	}
+	if resp, _ := doJSON(t, public, http.MethodPost, "/api/user/login", map[string]string{"username": "critical-path-user", "password": password}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("login status = %d", resp.StatusCode)
+	}
+	if resp, _ := doJSON(t, public, http.MethodPost, "/api/user/checkin", map[string]any{}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("check-in status = %d", resp.StatusCode)
+	}
+	resp, tokenBody := doJSON(t, public, http.MethodPost, "/api/token", map[string]any{"name": "critical-path"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("token creation status = %d %#v", resp.StatusCode, tokenBody)
+	}
+	tokenData := tokenBody["data"].(map[string]any)
+	rawKey := tokenData["key"].(string)
+	tokenID := tokenData["id"].(string)
+	if resp, _ := doJSON(t, public, http.MethodPost, "/api/token/"+tokenID+"/key", nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("key reveal status = %d", resp.StatusCode)
+	}
+	if resp, _ := doJSON(t, public, http.MethodGet, "/api/user/models", nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("model list status = %d", resp.StatusCode)
+	}
+	if resp, _ := doRawJSON(t, public, http.MethodPost, "/v1/chat/completions", map[string]any{"model": "gpt-5.6-sol", "messages": []any{map[string]string{"role": "user", "content": "reply with ok"}}}, map[string]string{"Authorization": "Bearer " + rawKey}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("model invocation status = %d", resp.StatusCode)
+	}
+
+	resp, chains := doJSON(t, admin, http.MethodGet, cfg.AdminPath+"admin/api/v1/interaction-chains?limit=20", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("chain list status = %d %#v", resp.StatusCode, chains)
+	}
+	chainItems := chains["chains"].([]any)
+	if len(chainItems) != 1 {
+		t.Fatalf("critical path was split into multiple chains: %#v", chains)
+	}
+	chain := chainItems[0].(map[string]any)
+	if chain["aggregation_mode"] != "session" || chain["event_count"].(float64) < 7 || chain["latest_observed_at"] == "" {
+		t.Fatalf("chain aggregation metadata is incomplete: %#v", chain)
+	}
+	matched := false
+	for _, value := range chain["matched_rule_ids"].([]any) {
+		if value == "NEWAPI_NORMAL_USE_V1" {
+			matched = true
+		}
+	}
+	if !matched {
+		t.Fatalf("critical New API path did not match the unordered rule: %#v", chain)
+	}
+
+	resp, configBody := doJSON(t, admin, http.MethodGet, cfg.AdminPath+"admin/api/v1/chain-config", nil)
+	if resp.StatusCode != http.StatusOK || configBody["config"].(map[string]any)["mode"] != "session" {
+		t.Fatalf("chain config GET = %d %#v", resp.StatusCode, configBody)
+	}
+	resp, updated := doJSON(t, admin, http.MethodPut, cfg.AdminPath+"admin/api/v1/chain-config", map[string]any{"mode": "source_ip_product", "window_seconds": 600, "max_events": 100})
+	if resp.StatusCode != http.StatusOK || updated["config"].(map[string]any)["mode"] != "source_ip_product" {
+		t.Fatalf("chain config PUT = %d %#v", resp.StatusCode, updated)
+	}
+	resp, packsBody := doJSON(t, admin, http.MethodGet, cfg.AdminPath+"admin/api/v1/packs", nil)
+	if resp.StatusCode != http.StatusOK || packsBody["strategies"] == nil || packsBody["chain_aggregation"].(map[string]any)["mode"] != "source_ip_product" {
+		t.Fatalf("pack strategy overview = %d %#v", resp.StatusCode, packsBody)
+	}
+	strategies := packsBody["strategies"].([]any)
+	var newAPIStrategy map[string]any
+	for _, value := range strategies {
+		strategy := value.(map[string]any)
+		if strategy["product"] == model.ProductNewAPI {
+			newAPIStrategy = strategy
+		}
+	}
+	if newAPIStrategy == nil || newAPIStrategy["rule_count"].(float64) < 6 {
+		t.Fatalf("New API strategy rules missing: %#v", newAPIStrategy)
+	}
+	resp, invalid := doJSON(t, admin, http.MethodPut, cfg.AdminPath+"admin/api/v1/chain-config", map[string]any{"mode": "session", "window_seconds": 30, "max_events": 1})
+	if resp.StatusCode != http.StatusUnprocessableEntity || invalid["error"] == nil {
+		t.Fatalf("invalid chain config status = %d %#v", resp.StatusCode, invalid)
+	}
+}
+
+func TestInteractionChainRefreshOrdersByLatestRecordDeterministically(t *testing.T) {
+	a, _, st := newTestApp(t, true)
+	defer st.Close()
+	base := time.Now().UTC()
+	events := []model.Event{
+		{EventID: "newer-last", Sequence: 4, SessionID: "session-new", Product: model.ProductOllama, ObservedAt: base.Add(4 * time.Second), EventType: "http.request.classified"},
+		{EventID: "older-last", Sequence: 3, SessionID: "session-old", Product: model.ProductOllama, ObservedAt: base.Add(3 * time.Second), EventType: "http.request.classified"},
+		{EventID: "newer-first", Sequence: 2, SessionID: "session-new", Product: model.ProductOllama, ObservedAt: base.Add(2 * time.Second), EventType: "http.request.classified"},
+		{EventID: "older-first", Sequence: 1, SessionID: "session-old", Product: model.ProductOllama, ObservedAt: base, EventType: "http.request.classified"},
+	}
+	views := a.buildInteractionChainViews(events, model.DefaultInteractionChainConfig())
+	if len(views) != 2 || views[0].SessionID != "session-new" || views[1].SessionID != "session-old" {
+		t.Fatalf("chain ordering was not latest-first: %#v", views)
+	}
+	if len(views[0].Events) != 2 || views[0].Events[0].EventID != "newer-first" || views[0].Events[1].EventID != "newer-last" {
+		t.Fatalf("chain events were not chronological: %#v", views[0].Events)
+	}
+	if config := st.InteractionChainConfig(); config.Mode != model.InteractionChainBySession {
+		t.Fatalf("default interaction chain config changed unexpectedly: %#v", config)
 	}
 }
 
