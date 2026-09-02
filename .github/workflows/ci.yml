@@ -83,3 +83,6 @@ jobs:
           tags: aegislure:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Run Docker deployment smoke test
+        run: ./scripts/test-docker.sh

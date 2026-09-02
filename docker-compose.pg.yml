@@ -8,7 +8,10 @@ services:
       HP_DB_PORT: ${HP_DB_PORT:-5432}
       HP_DB_NAME: ${HP_DB_NAME:-aegislure}
       HP_DB_USER: ${HP_DB_USER:-aegislure}
-      HP_DB_PASSWORD_FILE: /run/secrets/aegislure_db_password
+      # The bundled profile creates this application-owned copy before the
+      # app starts. External PostgreSQL installations should override it with
+      # their own in-container secret path (the installer does this).
+      HP_DB_PASSWORD_FILE: ${HP_DB_PASSWORD_FILE:-/run/aegislure-db-secrets/application_password}
       HP_DB_SSLMODE: ${HP_DB_SSLMODE:-disable}
       HP_PROFILES: ${HP_PROFILES:-new-api,vllm,ollama,sglang,localai}
     secrets:
@@ -16,12 +19,12 @@ services:
     networks:
       - db_net
 
-  # This one-shot service is intentionally profile-gated and is the only
-  # bundled-PG bootstrap container that uses root: it initializes ownership
-  # on a fresh named volume. The long-running database below runs as the
-  # image's postgres user. External PostgreSQL users run only `aegislure`;
-  # the bundled database is started with `--profile bundled-pg` and is never
-  # exposed through a host port.
+  # These one-shot services are intentionally profile-gated. They are the
+  # only bundled-PG bootstrap containers that use root: they initialize the
+  # data directory and create per-consumer password copies. The long-running
+  # database below runs as the image's postgres user. External PostgreSQL
+  # users run only `aegislure`; the bundled database is started with
+  # `--profile bundled-pg` and is never exposed through a host port.
   postgres-init:
     image: ${HP_POSTGRES_IMAGE:-postgres:16-alpine}
     profiles: [bundled-pg]
@@ -50,6 +53,74 @@ services:
     mem_limit: 64m
     cpus: 0.25
 
+  postgres-secret-init:
+    image: ${HP_POSTGRES_IMAGE:-postgres:16-alpine}
+    profiles: [bundled-pg]
+    restart: "no"
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        source_file=/run/secrets/aegislure_db_password
+        secret_dir=/var/lib/aegislure-db-secrets
+        postgres_file="$${secret_dir}/postgres_password"
+        application_file="$${secret_dir}/application_password"
+        app_uid="$${AEGISLURE_APP_UID:-1000}"
+        app_gid="$${AEGISLURE_APP_GID:-1000}"
+        case "$${app_uid}:$${app_gid}" in
+          *[!0-9:]*|*:|:*) echo "application UID/GID must be numeric" >&2; exit 1 ;;
+        esac
+        postgres_uid="$$(id -u postgres)"
+        postgres_gid="$$(id -g postgres)"
+        test -s "$${source_file}" || { echo "PostgreSQL password source is missing or empty" >&2; exit 1; }
+        mkdir -p "$${secret_dir}"
+        chmod 711 "$${secret_dir}"
+        copy_secret() {
+          destination="$1"
+          owner="$2"
+          if [ -e "$${destination}" ] && [ ! -f "$${destination}" ]; then
+            echo "PostgreSQL secret target is not a regular file: $${destination}" >&2
+            exit 1
+          fi
+          if [ ! -s "$${destination}" ]; then
+            temporary="$${destination}.tmp.$$$$"
+            rm -f "$${temporary}"
+            cp "$${source_file}" "$${temporary}"
+            chown "$${owner}" "$${temporary}"
+            chmod 400 "$${temporary}"
+            mv "$${temporary}" "$${destination}"
+          else
+            chown "$${owner}" "$${destination}"
+            chmod 400 "$${destination}"
+          fi
+        }
+        copy_secret "$${postgres_file}" "$${postgres_uid}:$${postgres_gid}"
+        # Derive the application copy from the existing PostgreSQL copy so a
+        # repeated installer run never rotates a live database password.
+        source_file="$${postgres_file}"
+        copy_secret "$${application_file}" "$${app_uid}:$${app_gid}"
+        chown 0:0 "$${secret_dir}"
+        chmod 711 "$${secret_dir}"
+    environment:
+      AEGISLURE_APP_UID: ${HP_CONTAINER_UID:-1000}
+      AEGISLURE_APP_GID: ${HP_CONTAINER_GID:-1000}
+    secrets:
+      - aegislure_db_password
+    volumes:
+      - postgres_secrets:/var/lib/aegislure-db-secrets
+    networks:
+      - db_net
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=8m
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 64m
+    cpus: 0.25
+
   postgres:
     image: ${HP_POSTGRES_IMAGE:-postgres:16-alpine}
     profiles: [bundled-pg]
@@ -58,14 +129,15 @@ services:
     depends_on:
       postgres-init:
         condition: service_completed_successfully
+      postgres-secret-init:
+        condition: service_completed_successfully
     environment:
       POSTGRES_DB: ${HP_DB_NAME:-aegislure}
       POSTGRES_USER: ${HP_DB_USER:-aegislure}
-      POSTGRES_PASSWORD_FILE: /run/secrets/aegislure_db_password
-    secrets:
-      - aegislure_db_password
+      POSTGRES_PASSWORD_FILE: /run/aegislure-db-secrets/postgres_password
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - postgres_secrets:/run/aegislure-db-secrets:ro
     networks:
       - db_net
     read_only: true
@@ -91,6 +163,7 @@ secrets:
 
 volumes:
   postgres_data:
+  postgres_secrets:
 
 networks:
   db_net:

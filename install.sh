@@ -177,7 +177,36 @@ if [[ ! -f runtime/secrets/admin.crt || ! -f runtime/secrets/admin.key ]]; then
   chmod 644 runtime/secrets/admin.crt
 fi
 if [[ "$(id -u)" == "0" ]]; then
-  chown -R "$CONTAINER_UID:$CONTAINER_GID" runtime
+  # Only application-owned paths are changed here. In particular, the
+  # PostgreSQL source secret may be consumed by a different container user;
+  # bundled PostgreSQL gets per-consumer copies in a named secret volume.
+  chown "$CONTAINER_UID:$CONTAINER_GID" runtime runtime/secrets
+  chown -R "$CONTAINER_UID:$CONTAINER_GID" runtime/data
+  if [[ -f runtime/config.json ]]; then
+    chown "$CONTAINER_UID:$CONTAINER_GID" runtime/config.json
+  fi
+  for admin_secret in runtime/secrets/admin.crt runtime/secrets/admin.key; do
+    if [[ -f "$admin_secret" ]]; then
+      chown "$CONTAINER_UID:$CONTAINER_GID" "$admin_secret"
+    fi
+  done
+fi
+
+CONFIGURED_DATABASE_URL="${HP_DATABASE_URL:-$(dotenv_value HP_DATABASE_URL)}"
+CONFIGURED_DATABASE_URL_FILE="${HP_DATABASE_URL_FILE:-$(dotenv_value HP_DATABASE_URL_FILE)}"
+if [[ "$MODE" == postgres ]]; then
+  configured_password_file="${HP_DB_PASSWORD_FILE:-$(dotenv_value HP_DB_PASSWORD_FILE)}"
+  if [[ -z "$CONFIGURED_DATABASE_URL" && -z "$CONFIGURED_DATABASE_URL_FILE" ]]; then
+    # The bundled secret initializer creates this file with the application
+    # UID/GID. Do not make the app read the host source file directly.
+    set_env_value HP_DB_PASSWORD_FILE /run/aegislure-db-secrets/application_password
+    export HP_DB_PASSWORD_FILE=/run/aegislure-db-secrets/application_password
+  elif [[ -z "$configured_password_file" || "$configured_password_file" == "/run/aegislure-db-secrets/application_password" ]]; then
+    # External PostgreSQL uses the Compose secret mount unless the operator
+    # explicitly selected another in-container password file.
+    set_env_value HP_DB_PASSWORD_FILE /run/secrets/aegislure_db_password
+    export HP_DB_PASSWORD_FILE=/run/secrets/aegislure_db_password
+  fi
 fi
 
 COMPOSE_FILES=(-f docker-compose.yml)
@@ -188,34 +217,149 @@ compose() {
   docker compose "${COMPOSE_FILES[@]}" "$@"
 }
 
-compose config >/dev/null
+compose_container_id() {
+  local service="$1"
+  compose ps -q "$service" 2>/dev/null | head -n 1
+}
+
+service_is_running() {
+  local service="$1"
+  local container_id
+  container_id="$(compose_container_id "$service")"
+  [[ -n "$container_id" ]] || return 1
+  [[ "$(docker inspect -f '{{.State.Running}}' "$container_id" 2>/dev/null || true)" == "true" ]]
+}
+
+wait_for_service_health() {
+  local service="$1"
+  local timeout_seconds="$2"
+  local container_id state health
+  local elapsed=0
+  while (( elapsed < timeout_seconds )); do
+    container_id="$(compose_container_id "$service")"
+    if [[ -n "$container_id" ]]; then
+      state="$(docker inspect -f '{{.State.Status}}' "$container_id" 2>/dev/null || true)"
+      health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_id" 2>/dev/null || true)"
+      if [[ "$health" == "healthy" ]]; then
+        return 0
+      fi
+      if [[ "$state" == "exited" || "$state" == "dead" ]]; then
+        echo "AegisLure installation failed during ${service} startup (container state: ${state}, health: ${health})." >&2
+        return 1
+      fi
+    fi
+    sleep 2
+    elapsed=$((elapsed + 2))
+  done
+  echo "AegisLure installation timed out waiting for ${service} to become healthy." >&2
+  return 1
+}
+
+wait_for_aegislure_health() {
+  local health_output container_id container_health container_state
+  local elapsed=0
+  health_output="$(mktemp runtime/.health.XXXXXX)"
+  while (( elapsed < 180 )); do
+    container_id="$(compose_container_id aegislure)"
+    if [[ -n "$container_id" ]]; then
+      container_state="$(docker inspect -f '{{.State.Status}}' "$container_id" 2>/dev/null || true)"
+      if [[ "$container_state" == "exited" || "$container_state" == "dead" ]]; then
+        rm -f "$health_output"
+        echo "AegisLure installation failed during application health verification (container state: ${container_state})." >&2
+        return 1
+      fi
+    fi
+    if service_is_running aegislure && compose exec -T aegislure /usr/local/bin/hpctl \
+      health --config /var/lib/aegislure/config.json >"$health_output" 2>/dev/null; then
+      if grep -Eq '"healthy"[[:space:]]*:[[:space:]]*true' "$health_output" \
+        && grep -Eq '"database_connected"[[:space:]]*:[[:space:]]*true' "$health_output"; then
+        container_health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_id" 2>/dev/null || true)"
+        if [[ "$container_health" == "healthy" ]]; then
+          cat "$health_output"
+          rm -f "$health_output"
+          return 0
+        fi
+      fi
+    fi
+    sleep 2
+    elapsed=$((elapsed + 2))
+  done
+  rm -f "$health_output"
+  echo "AegisLure installation timed out waiting for the application health check and Docker health status (healthy=true and database_connected=true)." >&2
+  return 1
+}
+
+show_startup_diagnostics() {
+  if [[ "$MODE" == postgres && -z "$CONFIGURED_DATABASE_URL" && -z "$CONFIGURED_DATABASE_URL_FILE" ]]; then
+    compose --profile bundled-pg ps >&2 || true
+    compose --profile bundled-pg logs --no-color --tail=100 postgres-secret-init postgres postgres-init aegislure >&2 || true
+  else
+    compose ps >&2 || true
+    compose logs --no-color --tail=100 aegislure >&2 || true
+  fi
+}
+
+if ! compose config >/dev/null; then
+  echo "AegisLure installation failed during Compose configuration validation." >&2
+  exit 1
+fi
 if [[ "$NO_BUILD" -eq 0 ]]; then
-  compose build
+  if ! compose build; then
+    echo "AegisLure installation failed during image build." >&2
+    exit 1
+  fi
 fi
 if [[ "$PULL" -eq 1 ]]; then
-  compose pull
+  if ! compose pull; then
+    echo "AegisLure installation failed during image pull." >&2
+    exit 1
+  fi
 fi
 
-CONFIGURED_DATABASE_URL="${HP_DATABASE_URL:-$(dotenv_value HP_DATABASE_URL)}"
-CONFIGURED_DATABASE_URL_FILE="${HP_DATABASE_URL_FILE:-$(dotenv_value HP_DATABASE_URL_FILE)}"
 if [[ "$MODE" == postgres && -z "$CONFIGURED_DATABASE_URL" && -z "$CONFIGURED_DATABASE_URL_FILE" ]]; then
-  # Connection retries in the application allow this to be started before
-  # the database finishes initialization.
-  compose --profile bundled-pg up -d postgres
+  if ! compose --profile bundled-pg up -d postgres; then
+    echo "AegisLure installation failed during bundled PostgreSQL startup." >&2
+    show_startup_diagnostics
+    exit 1
+  fi
+  if ! wait_for_service_health postgres 180; then
+    show_startup_diagnostics
+    exit 1
+  fi
 fi
 if [[ ! -f runtime/config.json ]]; then
-  compose run --rm --no-deps --entrypoint /usr/local/bin/hpctl aegislure \
-    init --config /var/lib/aegislure/config.json --data-dir /var/lib/aegislure/data
+  if ! compose run --rm --no-deps --entrypoint /usr/local/bin/hpctl aegislure \
+    init --config /var/lib/aegislure/config.json --data-dir /var/lib/aegislure/data; then
+    echo "AegisLure installation failed during runtime initialization." >&2
+    show_startup_diagnostics
+    exit 1
+  fi
 fi
 
 if [[ "$MODE" == postgres && -z "$CONFIGURED_DATABASE_URL" && -z "$CONFIGURED_DATABASE_URL_FILE" ]]; then
-  compose --profile bundled-pg up -d aegislure
+  if ! compose --profile bundled-pg up -d aegislure; then
+    echo "AegisLure installation failed during application startup." >&2
+    show_startup_diagnostics
+    exit 1
+  fi
 else
-  compose up -d aegislure
+  if ! compose up -d aegislure; then
+    echo "AegisLure installation failed during application startup." >&2
+    show_startup_diagnostics
+    exit 1
+  fi
 fi
-echo "AegisLure is running. Open the hidden admin path to create the first owner."
-compose run --rm --no-deps --entrypoint /usr/local/bin/hpctl aegislure \
-  status --config /var/lib/aegislure/config.json
+if ! wait_for_aegislure_health; then
+  show_startup_diagnostics
+  exit 1
+fi
+if ! compose exec -T aegislure /usr/local/bin/hpctl \
+  status --config /var/lib/aegislure/config.json; then
+  echo "AegisLure installation failed during final status verification." >&2
+  show_startup_diagnostics
+  exit 1
+fi
+echo "AegisLure is running and passed the database and application health checks. Open the hidden admin path to create the first owner."
 echo "Admin TLS certificate fingerprint (SHA-256):"
 openssl x509 -in runtime/secrets/admin.crt -noout -fingerprint -sha256
 echo "Use: ./hpctl status"

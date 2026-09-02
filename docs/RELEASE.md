@@ -14,8 +14,15 @@ go vet ./...
 go build -trimpath ./cmd/aegislure ./cmd/hpctl
 docker compose -f docker-compose.yml config --quiet
 docker compose -f docker-compose.yml -f docker-compose.pg.yml --profile bundled-pg config --quiet
+./scripts/test-docker.sh
 make sbom
 ```
+
+The Docker smoke test requires a reachable Docker Engine. It builds the local
+image, exercises SQLite and bundled PostgreSQL, checks the dynamic secret
+owners and public bindings, verifies `hpctl` against the running service, and
+asserts that a failed PostgreSQL bootstrap cannot produce the final success
+message.
 
 `make sbom` reads the committed `go.mod` and `go.sum` directly and emits an
 SPDX 2.3 JSON inventory without resolving modules from the network. Review the

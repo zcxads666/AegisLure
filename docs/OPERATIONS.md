@@ -27,7 +27,7 @@ make sbom
 
 `admin entry rotate` writes a new path into the runtime config; restart the service before using it. It invalidates active web sessions when performed through the authenticated API. A host port change is a signed declarative `PortChangePlan`; `hpctl ports apply` updates the selected profile's runtime mapping and `.env`, but deliberately does not restart the service. Native deployments may use a default pool candidate; Docker Compose publishes only the base normal project port for each profile, so a Docker port change must update the base `*_PORT`/`*_TARGET_PORT` mapping and then recreate the service. Confirm the plan is current, then run `hpctl restart` or `docker compose up -d`.
 
-`hpctl health` checks the local HTTPS/HTTP setup status endpoint with proxy use disabled. The response includes readiness for every selected public profile and its actual/configured port; verify the host-side published mapping with `ss -ltnp` and the admin instance view. The service refuses to start if a selected profile has no valid configured port.
+`hpctl health` checks the local HTTPS/HTTP setup status endpoint with proxy use disabled. In a Docker Compose installation, the wrapper executes the check inside the running `aegislure` service so `127.0.0.1` refers to the service being checked; it does not create a temporary container. The response includes readiness for every selected public profile and its actual/configured port; verify the host-side published mapping with `ss -ltnp` and the admin instance view. The service refuses to start if a selected profile has no valid configured port.
 
 The Compose installation requires the generated admin certificate/key and sets `HP_REQUIRE_TLS=1`. Native development can remain HTTP only when TLS is intentionally not configured. Set `HP_ADMIN_HOSTS` to a comma-separated allowlist when the management listener is reached through known hostnames; keep the management port behind a VPN, trusted reverse proxy or host firewall because the random path is only an additional locator.
 
@@ -111,6 +111,13 @@ For the bundled PostgreSQL topology, start the database and application with:
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.pg.yml --profile bundled-pg up -d
 ```
+
+The bundled PostgreSQL profile creates a short-lived root bootstrap container
+that discovers the selected PostgreSQL image's `postgres` UID/GID and writes
+separate mode-0400 password copies into a named secret volume. PostgreSQL and
+the application then read their own copy as non-root users. The host source
+password remains outside the application-owned runtime tree; rerunning the
+installer preserves an existing database password and volume.
 
 For a managed PostgreSQL service, set `HP_DATABASE_URL` (or provide a URL file
 through the deployment's secret mechanism) and omit `--profile bundled-pg`. In

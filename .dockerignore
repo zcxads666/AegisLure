@@ -17,6 +17,7 @@ secrets
 .DS_Store
 ._*
 **/._*
+internal/app/ui/newapi-dist/._index.html
 node_modules
 bin
 dist

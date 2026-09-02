@@ -2,13 +2,27 @@
 set -Eeuo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
+docker_config_was_set=0
+docker_config_before=""
+if [[ "${DOCKER_CONFIG+x}" == x ]]; then
+  docker_config_was_set=1
+  docker_config_before="$DOCKER_CONFIG"
+fi
 if [[ -f scripts/env.sh ]]; then
   source scripts/env.sh
 fi
-if command -v go >/dev/null 2>&1; then
-  exec go run ./cmd/hpctl "$@"
+# scripts/env.sh provides the repository Go toolchain, but must not silently
+# move Docker commands to another context. Keep the caller's Docker context,
+# which is also the context used by the preceding `docker compose` command.
+if (( docker_config_was_set )); then
+  export DOCKER_CONFIG="$docker_config_before"
+else
+  unset DOCKER_CONFIG
 fi
+
+docker_available=0
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  docker_available=1
   compose_args=(-f docker-compose.yml)
   mode="${HP_DB_DRIVER:-}"
   if [[ -z "$mode" && -f .env ]]; then
@@ -28,12 +42,60 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 &
       profile_args+=(--profile bundled-pg)
     fi
   fi
-  case "${1:-}" in
-    start) exec docker compose "${compose_args[@]}" "${profile_args[@]}" up -d ;;
-    stop) exec docker compose "${compose_args[@]}" "${profile_args[@]}" stop ;;
-    restart) exec docker compose "${compose_args[@]}" "${profile_args[@]}" restart ;;
-    *) exec docker compose "${compose_args[@]}" "${profile_args[@]}" run --rm --no-deps --entrypoint /usr/local/bin/hpctl aegislure "$@" ;;
-  esac
+  compose_command=(docker compose "${compose_args[@]}")
+  if (( ${#profile_args[@]} > 0 )); then
+    compose_command+=("${profile_args[@]}")
+  fi
+  docker_project_configured=0
+  if [[ -n "${HP_IMAGE:-}" ]] || { [[ -f .env ]] && grep -q '^HP_IMAGE=' .env; }; then
+    docker_project_configured=1
+  fi
+
+  docker_service_running() {
+    local service="$1"
+    local container_id state
+    container_id="$("${compose_command[@]}" ps -q "$service" 2>/dev/null | head -n 1)"
+    [[ -n "$container_id" ]] || return 1
+    state="$(docker inspect -f '{{.State.Running}}' "$container_id" 2>/dev/null || true)"
+    [[ "$state" == "true" ]]
+  }
+
+  # A host-side `docker compose run` creates a new container whose localhost
+  # is not the running service. Execute status/health in the running service
+  # instead, so localhost is the AegisLure listener that is being checked.
+  if [[ "${1:-}" == "status" || "${1:-}" == "health" ]]; then
+    if docker_service_running aegislure; then
+      exec "${compose_command[@]}" exec -T aegislure /usr/local/bin/hpctl "$@"
+    fi
+    if (( docker_project_configured )); then
+      if [[ "${1:-}" == "health" ]]; then
+        echo "AegisLure service is not running; start it before checking health" >&2
+        exit 1
+      fi
+      # A configured Docker project is authoritative even when Go is also
+      # installed on the host. Running the binary on the host would inspect
+      # host-local state instead of the configured Compose project.
+      exec "${compose_command[@]}" run --rm --no-deps --entrypoint /usr/local/bin/hpctl aegislure "$@"
+    fi
+  fi
+
+  if [[ -z "$(command -v go || true)" ]]; then
+    case "${1:-}" in
+      start) exec "${compose_command[@]}" up -d ;;
+      stop) exec "${compose_command[@]}" stop ;;
+      restart) exec "${compose_command[@]}" restart ;;
+      *) exec "${compose_command[@]}" run --rm --no-deps --entrypoint /usr/local/bin/hpctl aegislure "$@" ;;
+    esac
+  fi
+fi
+
+if command -v go >/dev/null 2>&1; then
+  exec go run ./cmd/hpctl "$@"
+fi
+
+if (( docker_available )); then
+  echo "Docker Compose is available, but the requested operation could not be dispatched" >&2
+  exit 1
 fi
 echo "Docker Compose or Go is required" >&2
 exit 1

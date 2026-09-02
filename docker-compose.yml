@@ -54,9 +54,14 @@ services:
       HP_TLS_KEY: /var/lib/aegislure/secrets/admin.key
     volumes:
       - ${HP_RUNTIME_DIR:-./runtime}:/var/lib/aegislure
+      # Bundled PostgreSQL uses an application-owned copy created by the
+      # profile-gated secret initializer. External PostgreSQL can continue to
+      # use the Compose secret path selected by HP_DB_PASSWORD_FILE.
+      - postgres_secrets:/run/aegislure-db-secrets:ro
     ports:
-      # Public honeypot listeners are externally reachable by default. The
-      # admin listener below remains loopback-only unless explicitly changed.
+      # Public honeypot and admin listeners are externally reachable by
+      # default. Restrict the admin bind address at the host/firewall layer
+      # when the management surface must be private.
       # HP_PORT_BIND_IP is legacy; use the two scoped variables instead.
       - target: ${NEW_API_TARGET_PORT:-3000}
         published: "${NEW_API_PORT:-3000}"
@@ -96,3 +101,6 @@ networks:
     internal: true
   admin_net:
     internal: true
+
+volumes:
+  postgres_secrets:
