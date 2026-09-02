@@ -45,8 +45,11 @@ type Config struct {
 	VLLMServedNames      []string          `json:"vllm_served_model_names,omitempty"`
 	GeoIPProvider        string            `json:"geoip_provider,omitempty"`
 	IPInfoLiteToken      string            `json:"ipinfo_lite_token,omitempty"`
+	IPInfoLiteTokenFile  string            `json:"-"`
 	MaxMindCityDBPath    string            `json:"-"`
 	MaxMindASNDBPath     string            `json:"-"`
+	IPInfoLocationDBPath string            `json:"-"`
+	IPInfoASNDBPath      string            `json:"-"`
 	ProfilePorts         map[string]int    `json:"profile_ports"`
 	EnabledProfiles      []string          `json:"enabled_profiles"`
 	Scenario             map[string]string `json:"scenario"`
@@ -54,9 +57,13 @@ type Config struct {
 
 const (
 	GeoIPProviderMaxMind    = "maxmind"
+	GeoIPProviderIPInfoAPI  = "ipinfo_api"
 	GeoIPProviderIPInfoLite = "ipinfo_lite"
+	GeoIPProviderIPInfoMMDB = "ipinfo_mmdb"
 	DefaultMaxMindCityDB    = "GeoLite2-City.mmdb"
 	DefaultMaxMindASNDB     = "GeoLite2-ASN.mmdb"
+	DefaultIPInfoLocationDB = "ipinfo_location.mmdb"
+	DefaultIPInfoASNDB      = "ipinfo_asn.mmdb"
 )
 
 func Load(path string) (*Config, error) {
@@ -206,6 +213,18 @@ func Init(path, dataDir string) (*Config, error) {
 	}
 	if value := os.Getenv("HP_MAXMIND_ASN_DB"); value != "" {
 		c.MaxMindASNDBPath = strings.TrimSpace(value)
+	}
+	if value := os.Getenv("HP_IPINFO_LOCATION_DB"); value != "" {
+		c.IPInfoLocationDBPath = strings.TrimSpace(value)
+	}
+	if value := os.Getenv("HP_IPINFO_ASN_DB"); value != "" {
+		c.IPInfoASNDBPath = strings.TrimSpace(value)
+	}
+	if value := os.Getenv("HP_IPINFO_LITE_TOKEN"); value != "" {
+		c.IPInfoLiteToken = strings.TrimSpace(value)
+	}
+	if value := os.Getenv("HP_IPINFO_LITE_TOKEN_FILE"); value != "" {
+		c.IPInfoLiteTokenFile = strings.TrimSpace(value)
 	}
 	if err := NormalizeGeoIP(c); err != nil {
 		return nil, err
@@ -364,6 +383,18 @@ func applyEnv(c *Config) {
 	if v := os.Getenv("HP_MAXMIND_ASN_DB"); v != "" {
 		c.MaxMindASNDBPath = strings.TrimSpace(v)
 	}
+	if v := os.Getenv("HP_IPINFO_LOCATION_DB"); v != "" {
+		c.IPInfoLocationDBPath = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("HP_IPINFO_ASN_DB"); v != "" {
+		c.IPInfoASNDBPath = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("HP_IPINFO_LITE_TOKEN"); v != "" {
+		c.IPInfoLiteToken = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("HP_IPINFO_LITE_TOKEN_FILE"); v != "" {
+		c.IPInfoLiteTokenFile = strings.TrimSpace(v)
+	}
 }
 
 // NormalizeGeoIP validates the selected lookup provider. Database paths are
@@ -375,13 +406,27 @@ func NormalizeGeoIP(c *Config) error {
 	switch strings.ToLower(strings.TrimSpace(c.GeoIPProvider)) {
 	case "", GeoIPProviderMaxMind:
 		c.GeoIPProvider = GeoIPProviderMaxMind
+	case GeoIPProviderIPInfoAPI, "ipinfo-api", "ipinfo-full":
+		c.GeoIPProvider = GeoIPProviderIPInfoAPI
 	case GeoIPProviderIPInfoLite, "ipinfo", "ipinfo-lite":
 		c.GeoIPProvider = GeoIPProviderIPInfoLite
+	case GeoIPProviderIPInfoMMDB, "ipinfo-mmdb", "ipinfo-database", "ipinfo-db":
+		c.GeoIPProvider = GeoIPProviderIPInfoMMDB
 	default:
 		return fmt.Errorf("unsupported geoip provider %q", c.GeoIPProvider)
 	}
 	c.MaxMindCityDBPath = strings.TrimSpace(c.MaxMindCityDBPath)
 	c.MaxMindASNDBPath = strings.TrimSpace(c.MaxMindASNDBPath)
+	c.IPInfoLocationDBPath = strings.TrimSpace(c.IPInfoLocationDBPath)
+	c.IPInfoASNDBPath = strings.TrimSpace(c.IPInfoASNDBPath)
+	c.IPInfoLiteTokenFile = strings.TrimSpace(c.IPInfoLiteTokenFile)
+	if c.IPInfoLiteTokenFile != "" {
+		token, err := readSecretFile(c.IPInfoLiteTokenFile, "IPinfo token")
+		if err != nil {
+			return err
+		}
+		c.IPInfoLiteToken = token
+	}
 	return nil
 }
 
@@ -405,6 +450,28 @@ func (c *Config) GeoIPDatabasePaths() (string, string) {
 		asnPath = filepath.Join(dataDir, "geoip", DefaultMaxMindASNDB)
 	}
 	return cityPath, asnPath
+}
+
+// IPInfoDatabasePaths returns the configured IPinfo location and ASN database
+// paths. If no explicit path is configured, both files live below the
+// deployment data directory's geoip subdirectory.
+func (c *Config) IPInfoDatabasePaths() (string, string) {
+	if c == nil {
+		return "", ""
+	}
+	dataDir := strings.TrimSpace(c.DataDir)
+	if dataDir == "" {
+		dataDir = "data"
+	}
+	locationPath := strings.TrimSpace(c.IPInfoLocationDBPath)
+	if locationPath == "" {
+		locationPath = filepath.Join(dataDir, "geoip", DefaultIPInfoLocationDB)
+	}
+	asnPath := strings.TrimSpace(c.IPInfoASNDBPath)
+	if asnPath == "" {
+		asnPath = filepath.Join(dataDir, "geoip", DefaultIPInfoASNDB)
+	}
+	return locationPath, asnPath
 }
 
 // NormalizeDatabase resolves the runtime-only database settings. Credentials

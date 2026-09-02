@@ -10,7 +10,7 @@ AegisLure 面向单机部署，提供 New API、vLLM、Ollama、SGLang 和 Local
 - New API 风格的首页、登录、注册、模型、密钥、用量和调用日志页面。
 - 管理控制台：总览、观测记录、调用分析、交互链路、IP 情报、蜜罐实例、规则策略和系统设置。
 - 规则与策略管理：支持规则、正则条件、身份策略、OAuth 渠道和风险等级的查看与维护。
-- IP 情报：支持本地地址分类、MaxMind GeoLite2 City + ASN 和 IPinfo Lite，并在查询失败时回退到可用结果或“未知”。
+- IP 情报：支持本地地址分类、MaxMind GeoLite2、IPinfo Location + ASN MMDB、IPinfo API 和 IPinfo Lite API，并在查询失败时回退到可用结果或“未知”。
 - GitHub、LinuxDO 和 Discord 注册入口，可按身份策略启用或停用。
 - 风险事件、审计记录、IP/身份指标、JSON/CSV/plain/STIX2/nftables 导出和有界保留策略。
 - SQLite 默认存储，也支持 PostgreSQL 新部署模式；两种模式均会自动加载默认规则和模型目录。
@@ -73,7 +73,7 @@ HP_ADMIN_PORT_BIND_IP=0.0.0.0
 
 SQLite 是默认数据库。PostgreSQL 模式使用 `docker-compose.pg.yml`，内部数据库端口不会发布到宿主机；也可以通过 `HP_DATABASE_URL` 或 `HP_DATABASE_URL_FILE` 连接托管 PostgreSQL。
 
-IP 情报默认使用本地 MaxMind GeoLite2 City 和 ASN 数据库。数据库缺失、未命中或查询失败时，服务会回退到本地地址分类和“未知”。也可以在管理设置中切换到 IPinfo Lite 并配置访问密钥；密钥只由后端使用。
+IP 情报默认使用本地 MaxMind GeoLite2 City 和 ASN 数据库。数据库缺失、未命中或查询失败时，服务会回退到本地地址分类和“未知”。如果使用 IPinfo 的离线数据下载，将 `ipinfo_location.mmdb` 与 `ipinfo_asn.mmdb` 放入 `runtime/data/geoip/`，再把 provider 设置为 `ipinfo_mmdb`；项目会按 IPinfo 的扁平 MMDB 字段读取，不需要转换文件。也可以在管理设置中切换到 IPinfo API（含 City）或 Lite API 并配置访问密钥；密钥只由后端使用。provider 或 token 切换后，下一次总览刷新会自动清除旧缓存并重新查询。
 
 备份只能恢复到相同数据库类型，SQLite 与 PostgreSQL 之间不执行隐式迁移。
 

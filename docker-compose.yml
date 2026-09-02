@@ -38,6 +38,10 @@ services:
       HP_GEOIP_PROVIDER: ${HP_GEOIP_PROVIDER:-}
       HP_MAXMIND_CITY_DB: ${HP_MAXMIND_CITY_DB:-/var/lib/aegislure/data/geoip/GeoLite2-City.mmdb}
       HP_MAXMIND_ASN_DB: ${HP_MAXMIND_ASN_DB:-/var/lib/aegislure/data/geoip/GeoLite2-ASN.mmdb}
+      HP_IPINFO_LOCATION_DB: ${HP_IPINFO_LOCATION_DB:-/var/lib/aegislure/data/geoip/ipinfo_location.mmdb}
+      HP_IPINFO_ASN_DB: ${HP_IPINFO_ASN_DB:-/var/lib/aegislure/data/geoip/ipinfo_asn.mmdb}
+      HP_IPINFO_LITE_TOKEN: ${HP_IPINFO_LITE_TOKEN:-}
+      HP_IPINFO_LITE_TOKEN_FILE: ${HP_IPINFO_LITE_TOKEN_FILE:-}
       # Docker deployments expose all honeypot protocols by default. Set
       # HP_PROFILES explicitly to run only a selected subset.
       HP_PROFILES: ${HP_PROFILES:-new-api,vllm,ollama,sglang,localai}

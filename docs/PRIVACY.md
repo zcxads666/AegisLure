@@ -32,20 +32,24 @@ request.
   not copied into the event store.
 
 Public source IP enrichment uses the local MaxMind GeoLite2 City and ASN
-databases by default. The readers are opened from the owner-selected runtime
-paths and reused locally; the database files and their full paths are not
-returned by the admin API. Local, private, link-local, multicast, unspecified
-and documentation addresses are classified without any provider lookup.
+databases by default, or the local IPinfo Location and ASN MMDB databases when
+that provider is selected. The readers are opened from the owner-selected
+runtime paths and reused locally; the database files and their full paths are
+not returned by the admin API. Local, private, link-local, multicast,
+unspecified and documentation addresses are classified without any provider
+lookup.
 Missing files, missing records and lookup errors fall back to `未知` or the
 deterministic local label.
 
-The operator can explicitly switch the provider in Settings to IPinfo Lite.
-Only then may public source IPs be sent to IPinfo for country/continent/ASN
-enrichment. The raw token is kept in the owner-readable runtime config and is
-never returned by the admin API; the response exposes only a masked suffix and
-bounded status metadata. See the [MaxMind GeoLite2 documentation](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data/),
-the [GeoIP2 Go reader documentation](https://github.com/oschwald/geoip2-golang)
-and the [IPinfo Lite API documentation](https://ipinfo.io/developers//lite-api)
+The operator can explicitly switch the provider in Settings to IPinfo API or
+IPinfo Lite. Only then may public source IPs be sent to IPinfo for
+country/continent/ASN enrichment. The raw token is kept in the owner-readable
+runtime config and is never returned by the admin API; the response exposes
+only a masked suffix and bounded status metadata. See the [MaxMind GeoLite2 documentation](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data/),
+the [GeoIP2 Go reader documentation](https://github.com/oschwald/geoip2-golang),
+the [IPinfo database documentation](https://ipinfo.io/developers/database-download),
+the [IPinfo geolocation database documentation](https://ipinfo.io/developers/ip-to-geolocation-database)
+and the [IPinfo Lite API documentation](https://ipinfo.io/developers/lite-api)
 for provider details.
 
 ## Retention and deletion

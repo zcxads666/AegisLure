@@ -64,6 +64,62 @@ func TestLoadNormalizesGeoIPProviderAndRuntimeDatabasePaths(t *testing.T) {
 	}
 }
 
+func TestLoadSupportsIPInfoMMDBPathsAndTokenEnvironment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"instance_id":"instance","instance_key":"key"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HP_GEOIP_PROVIDER", "ipinfo-database")
+	t.Setenv("HP_IPINFO_LOCATION_DB", "/srv/geoip/ipinfo_location.mmdb")
+	t.Setenv("HP_IPINFO_ASN_DB", "/srv/geoip/ipinfo_asn.mmdb")
+	t.Setenv("HP_IPINFO_LITE_TOKEN", "test-token")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GeoIPProvider != GeoIPProviderIPInfoMMDB || cfg.IPInfoLiteToken != "test-token" {
+		t.Fatalf("IPinfo settings normalization = %#v", cfg)
+	}
+	locationPath, asnPath := cfg.IPInfoDatabasePaths()
+	if locationPath != "/srv/geoip/ipinfo_location.mmdb" || asnPath != "/srv/geoip/ipinfo_asn.mmdb" {
+		t.Fatalf("IPinfo database paths = %q %q", locationPath, asnPath)
+	}
+	encoded, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "ipinfo_location.mmdb") || strings.Contains(string(encoded), "ipinfo_asn.mmdb") {
+		t.Fatalf("IPinfo runtime database paths leaked into config JSON: %s", encoded)
+	}
+}
+
+func TestLoadReadsIPInfoTokenFromProtectedRuntimeFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"instance_id":"instance","instance_key":"key"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	tokenPath := filepath.Join(t.TempDir(), "ipinfo_token")
+	if err := os.WriteFile(tokenPath, []byte("test-token\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HP_GEOIP_PROVIDER", "ipinfo-api")
+	t.Setenv("HP_IPINFO_LITE_TOKEN_FILE", tokenPath)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GeoIPProvider != GeoIPProviderIPInfoAPI || cfg.IPInfoLiteToken != "test-token" || cfg.IPInfoLiteTokenFile != tokenPath {
+		t.Fatalf("IPinfo token file settings = %#v", cfg)
+	}
+	encoded, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), tokenPath) {
+		t.Fatalf("IPinfo token file path leaked into config JSON: %s", encoded)
+	}
+}
+
 func TestNormalizeGeoIPRejectsUnknownProvider(t *testing.T) {
 	if err := NormalizeGeoIP(&Config{GeoIPProvider: "unknown"}); err == nil {
 		t.Fatal("unknown GeoIP provider was accepted")

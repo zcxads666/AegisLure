@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/oschwald/geoip2-golang/v2 v2.3.0
+	github.com/oschwald/maxminddb-golang/v2 v2.5.0
 	golang.org/x/crypto v0.31.0
 )
 
@@ -16,7 +17,6 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
-	github.com/oschwald/maxminddb-golang/v2 v2.5.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/text v0.29.0 // indirect
