@@ -10,6 +10,7 @@ services:
       HP_DB_USER: ${HP_DB_USER:-aegislure}
       HP_DB_PASSWORD_FILE: /run/secrets/aegislure_db_password
       HP_DB_SSLMODE: ${HP_DB_SSLMODE:-disable}
+      HP_PROFILES: ${HP_PROFILES:-new-api,vllm,ollama,sglang,localai}
     secrets:
       - aegislure_db_password
     networks:

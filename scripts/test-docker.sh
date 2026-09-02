@@ -31,10 +31,11 @@ chmod 644 "$TEST_ROOT/runtime/secrets/admin.crt"
 export HP_IMAGE="aegislure:docker-smoke"
 export HP_RUNTIME_DIR="$TEST_ROOT/runtime"
 export HP_POSTGRES_PASSWORD_FILE="$TEST_ROOT/runtime/secrets/postgres_password"
-export HP_PORT_BIND_IP=127.0.0.1
+export HP_PUBLIC_PORT_BIND_IP=127.0.0.1
+export HP_ADMIN_PORT_BIND_IP=127.0.0.1
 PORT_BASE=$((40000 + $(od -An -N2 -tu2 /dev/urandom) % 10000))
 export HP_ADMIN_PORT=$((PORT_BASE + 900))
-export HP_PROFILES=ollama,vllm
+export HP_PROFILES=new-api,vllm,ollama,sglang,localai
 export NEW_API_PORT=$((PORT_BASE + 1000)) NEW_API_PORT_1=$((PORT_BASE + 1001)) NEW_API_PORT_2=$((PORT_BASE + 1002)) NEW_API_PORT_3=$((PORT_BASE + 1003)) NEW_API_PORT_4=$((PORT_BASE + 1004)) NEW_API_PORT_5=$((PORT_BASE + 1005)) NEW_API_PORT_6=$((PORT_BASE + 1006)) NEW_API_PORT_7=$((PORT_BASE + 1007))
 export OLLAMA_PORT=$((PORT_BASE + 1100)) OLLAMA_PORT_1=$((PORT_BASE + 1101)) OLLAMA_PORT_2=$((PORT_BASE + 1102)) OLLAMA_PORT_3=$((PORT_BASE + 1103)) OLLAMA_PORT_4=$((PORT_BASE + 1104)) OLLAMA_PORT_5=$((PORT_BASE + 1105)) OLLAMA_PORT_6=$((PORT_BASE + 1106)) OLLAMA_PORT_7=$((PORT_BASE + 1107))
 export VLLM_PORT=$((PORT_BASE + 1200)) VLLM_PORT_1=$((PORT_BASE + 1201)) VLLM_PORT_2=$((PORT_BASE + 1202)) VLLM_PORT_3=$((PORT_BASE + 1203)) VLLM_PORT_4=$((PORT_BASE + 1204)) VLLM_PORT_5=$((PORT_BASE + 1205)) VLLM_PORT_6=$((PORT_BASE + 1206)) VLLM_PORT_7=$((PORT_BASE + 1207))
@@ -87,7 +88,11 @@ run_mode() {
   curl -ksf -H 'Host: 127.0.0.1' "$health_url" >/dev/null
   "${mode_compose[@]}" run --rm --no-deps --entrypoint /usr/local/bin/hpctl aegislure \
     status --config /var/lib/aegislure/config.json | grep -q "\"database_driver\": \"${mode}\""
+  curl -sf "http://127.0.0.1:${NEW_API_PORT}/v1/models" >/dev/null
+  curl -sf "http://127.0.0.1:${VLLM_PORT}/v1/models" >/dev/null
   curl -sf "http://127.0.0.1:${OLLAMA_PORT}/api/tags" >/dev/null
+  curl -sf "http://127.0.0.1:${SGLANG_PORT}/server_info" >/dev/null
+  curl -sf "http://127.0.0.1:${LOCALAI_PORT}/models/available" >/dev/null
   "${mode_compose[@]}" stop aegislure >/dev/null
   if [[ "$mode" == postgres ]]; then
     "${mode_compose[@]}" --profile bundled-pg stop postgres >/dev/null
