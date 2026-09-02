@@ -20,6 +20,13 @@ mkdir -p "$TEST_ROOT/runtime/secrets"
 chmod 700 "$TEST_ROOT/runtime" "$TEST_ROOT/runtime/secrets"
 printf '%s\n' docker-smoke-postgres-secret > "$TEST_ROOT/runtime/secrets/postgres_password"
 chmod 600 "$TEST_ROOT/runtime/secrets/postgres_password"
+openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 1 \
+  -subj "/CN=localhost" \
+  -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" \
+  -keyout "$TEST_ROOT/runtime/secrets/admin.key" \
+  -out "$TEST_ROOT/runtime/secrets/admin.crt" >/dev/null 2>&1
+chmod 600 "$TEST_ROOT/runtime/secrets/admin.key"
+chmod 644 "$TEST_ROOT/runtime/secrets/admin.crt"
 
 export HP_IMAGE="aegislure:docker-smoke"
 export HP_RUNTIME_DIR="$TEST_ROOT/runtime"
@@ -70,7 +77,14 @@ run_mode() {
   local admin_path
   admin_path="$(awk -F'"' '/"admin_path"/ { print $4; exit }' "$TEST_ROOT/runtime/config.json")"
   [[ -n "$admin_path" ]] || { echo "admin path was not initialized" >&2; return 1; }
-  curl -ksf -H 'Host: 127.0.0.1' "https://127.0.0.1:${HP_ADMIN_PORT}${admin_path}admin/api/v1/health" >/dev/null
+  local health_url="https://127.0.0.1:${HP_ADMIN_PORT}${admin_path}admin/api/v1/health"
+  for _ in $(seq 1 60); do
+    if curl -ksf -H 'Host: 127.0.0.1' "$health_url" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+  done
+  curl -ksf -H 'Host: 127.0.0.1' "$health_url" >/dev/null
   "${mode_compose[@]}" run --rm --no-deps --entrypoint /usr/local/bin/hpctl aegislure \
     status --config /var/lib/aegislure/config.json | grep -q "\"database_driver\": \"${mode}\""
   curl -sf "http://127.0.0.1:${OLLAMA_PORT}/api/tags" >/dev/null
