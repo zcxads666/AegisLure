@@ -101,6 +101,13 @@ for five minutes to avoid request storms, then retried automatically; successful
 results are cached for 24 hours. Adding or replacing MMDB files still requires
 a service restart because readers are opened at process startup.
 
+The IP intelligence list (`GET /admin/api/v1/indicators`) also resolves every
+returned historical IP through the current provider and includes country,
+country code, city/region, ASN, network name, provider and lookup status in
+each row. This uses the same cache and re-query behavior, so switching from a
+previously unknown provider causes the next list refresh to resolve old IPs;
+the dashboard's 128-IP bound does not apply to the authenticated risk list.
+
 Download GeoLite2 through an authorized MaxMind account and follow its license
 terms. See the [MaxMind GeoLite2 download documentation](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data/),
 the [GeoIP2 Go reader documentation](https://github.com/oschwald/geoip2-golang),

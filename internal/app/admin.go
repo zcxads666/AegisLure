@@ -1073,8 +1073,19 @@ func (a *App) adminIndicators(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	views := make([]map[string]any, 0, len(items))
+	rawIPs := make([]string, 0, len(items))
 	for _, item := range items {
-		views = append(views, indicatorView(item, decisions[item.IP], a.cfg.InstanceKey))
+		rawIPs = append(rawIPs, item.IP)
+	}
+	locations := a.lookupIPInfoForRiskList(rawIPs)
+	for _, item := range items {
+		view := indicatorView(item, decisions[item.IP], a.cfg.InstanceKey)
+		location, ok := locations[item.IP]
+		if !ok {
+			location = fallbackIPInfo(item.IP, "fallback_missing")
+		}
+		addIndicatorGeoView(view, location)
+		views = append(views, view)
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"items": views, "count": len(views), "approved_only": r.URL.Query().Get("status") == "approved", "note": "Standalone decisions require manual approval and always carry a TTL; no permanent block is emitted."})
 }

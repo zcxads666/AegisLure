@@ -112,6 +112,19 @@ function geoSourceLabel(value) {
   if (value === 'ipinfo_api') return 'IPinfo API'
   return '离线/回退'
 }
+function indicatorCountry(row) {
+  const country = row.country || '未知'
+  const code = row.country_code && row.country_code !== country ? ` · ${row.country_code}` : ''
+  return `${country}${code}`
+}
+function indicatorPlace(row) {
+  const place = [row.city, row.region].filter(Boolean).join(' · ')
+  return place || '—'
+}
+function indicatorNetwork(row) {
+  const network = [row.as_name, row.asn].filter(Boolean).join(' · ')
+  return network || '—'
+}
 function apiPath(path) { return `${BASE}admin/api/v1/${path}` }
 
 async function request(path, options = {}) {
@@ -390,8 +403,8 @@ function LegacyIndicatorsPage({ indicators, onRefresh }) {
 function IndicatorsPage({ indicators, onRefresh, onOpenIndicator }) {
   const [minScore, setMinScore] = useState(0); const filtered = (indicators || []).filter((item) => Number(item.score || 0) >= Number(minScore || 0))
   const exportIndicators = (format) => { const link = document.createElement('a'); link.href = `${apiPath('indicators')}?format=${format}&min_score=${encodeURIComponent(minScore)}`; link.download = `aegislure-indicators.${format}`; document.body.appendChild(link); link.click(); link.remove() }
-  const columns = [{ label: '来源 IP', render: (row) => html`<code class="mono ip-cell">${row.ip}</code>` }, { label: '风险分', render: (row) => html`<${RiskBadge} score=${row.score} />` }, { label: '置信度', render: (row) => html`<span class="confidence">${row.confidence || 'low'}</span>` }, { label: '证据', render: (row) => html`<span>${formatNumber(row.evidence_count)} 次 · ${formatNumber(row.sensor_count)} 个传感器</span>` }, { label: '产品', render: (row) => html`<div class="chip-list compact">${(row.products || []).map((product) => html`<${Badge} tone="neutral" key=${product}>${profileLabel(product)}<//>`)}</div>` }, { label: '建议动作', render: (row) => html`<span class=${cn('action-label', row.score >= 60 && 'action-risk')}>${row.recommended_action || 'observe'}</span>` }, { label: '最近出现', className: 'align-right', render: (row) => html`<span class="table-time">${formatTime(row.last_seen)}</span>` }]
-  return html`<div class="page-stack"><${PageHeader} eyebrow="Risk intelligence" title="IP 情报" description="聚合来源 IP 的风险证据、命中产品和建议处置动作；点击任意指标查看该 IP 的全部动作。" actions=${html`<div class="button-group"><${Button} icon="download" size="sm" onClick=${() => exportIndicators('csv')}>导出 CSV<//><${Button} icon="refresh" size="sm" onClick=${onRefresh}>刷新<//></div>`} /><${Panel} className="table-panel" title="指标列表" action=${html`<span class="panel-meta">${formatNumber(filtered.length)} 个指标 · 点击查看动作</span>`}><div class="indicator-tools"><label class="range-field"><span>最低风险分</span><input type="range" min="0" max="100" step="10" value=${minScore} onInput=${(event) => setMinScore(event.target.value)} /><b>${minScore}</b></label><div class="button-group"><button class="outline-button" type="button" onClick=${() => exportIndicators('plain')}>导出纯文本</button><button class="outline-button" type="button" onClick=${() => exportIndicators('csv')}>下载 CSV</button></div></div><${DataTable} columns=${columns} rows=${filtered} onRowClick=${onOpenIndicator} emptyTitle="还没有 IP 指标" emptyDescription="当观测到公开蜜罐端点请求后，风险聚合会出现在这里。" /><//><p class="page-note">推荐动作仅供人工审核参考；当前 Lite 存储不会自动封禁来源。点击列表行可查看该 IP 的完整脱敏动作时间线。</p></div>`
+  const columns = [{ label: '来源 IP', render: (row) => html`<code class="mono ip-cell">${row.ip}</code>` }, { label: '国家/地区', render: (row) => html`<span class="geo-cell">${indicatorCountry(row)}</span>` }, { label: '城市 / 地区', render: (row) => html`<span class="geo-cell">${indicatorPlace(row)}</span>` }, { label: '网络 / ASN', render: (row) => html`<span class="geo-cell">${indicatorNetwork(row)}</span>` }, { label: '来源', render: (row) => html`<span class="geo-cell">${geoSourceLabel(row.geo_source)}</span>` }, { label: '风险分', render: (row) => html`<${RiskBadge} score=${row.score} />` }, { label: '置信度', render: (row) => html`<span class="confidence">${row.confidence || 'low'}</span>` }, { label: '证据', render: (row) => html`<span>${formatNumber(row.evidence_count)} 次 · ${formatNumber(row.sensor_count)} 个传感器</span>` }, { label: '产品', render: (row) => html`<div class="chip-list compact">${(row.products || []).map((product) => html`<${Badge} tone="neutral" key=${product}>${profileLabel(product)}<//>`)}</div>` }, { label: '建议动作', render: (row) => html`<span class=${cn('action-label', row.score >= 60 && 'action-risk')}>${row.recommended_action || 'observe'}</span>` }, { label: '最近出现', className: 'align-right', render: (row) => html`<span class="table-time">${formatTime(row.last_seen)}</span>` }]
+  return html`<div class="page-stack"><${PageHeader} eyebrow="Risk intelligence" title="IP 情报" description="国家/地区、城市和网络归属直接展示；点击任意指标可查看该 IP 的全部动作。" actions=${html`<div class="button-group"><${Button} icon="download" size="sm" onClick=${() => exportIndicators('csv')}>导出 CSV<//><${Button} icon="refresh" size="sm" onClick=${onRefresh}>刷新<//></div>`} /><${Panel} className="table-panel" title="指标列表" action=${html`<span class="panel-meta">${formatNumber(filtered.length)} 个指标 · 地理信息直接展示</span>`}><div class="indicator-tools"><label class="range-field"><span>最低风险分</span><input type="range" min="0" max="100" step="10" value=${minScore} onInput=${(event) => setMinScore(event.target.value)} /><b>${minScore}</b></label><div class="button-group"><button class="outline-button" type="button" onClick=${() => exportIndicators('plain')}>导出纯文本</button><button class="outline-button" type="button" onClick=${() => exportIndicators('csv')}>下载 CSV</button></div></div><${DataTable} columns=${columns} rows=${filtered} onRowClick=${onOpenIndicator} emptyTitle="还没有 IP 指标" emptyDescription="当观测到公开蜜罐端点请求后，风险聚合会出现在这里。" /><//><p class="page-note">国家/地区信息由当前 GeoIP provider 查询；暂时不可用时显示“未知”，下一次刷新或缓存过期后会自动重试。推荐动作仅供人工审核参考。</p></div>`
 }
 
 function InstanceCard({ instance, busy, onAction }) {

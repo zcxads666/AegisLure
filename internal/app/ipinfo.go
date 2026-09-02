@@ -32,6 +32,7 @@ const (
 	ipInfoFailureCacheTTL     = 5 * time.Minute
 	ipInfoMaxTokenLength      = 256
 	ipInfoMaxDashboardIPs     = 128
+	ipInfoRiskListTimeout     = 8 * time.Second
 	ipInfoWorkers             = 6
 )
 
@@ -725,6 +726,14 @@ func (c *ipInfoClient) cacheResult(canonical string, result ipInfoResult, ttl ti
 }
 
 func (c *ipInfoClient) lookupMany(rawIPs []string) map[string]ipInfoResult {
+	return c.lookupManyWithOptions(rawIPs, ipInfoMaxDashboardIPs, ipInfoDashboardTimeout)
+}
+
+func (c *ipInfoClient) lookupManyForRiskList(rawIPs []string) map[string]ipInfoResult {
+	return c.lookupManyWithOptions(rawIPs, 0, ipInfoRiskListTimeout)
+}
+
+func (c *ipInfoClient) lookupManyWithOptions(rawIPs []string, maxIPs int, timeout time.Duration) map[string]ipInfoResult {
 	results := make(map[string]ipInfoResult, len(rawIPs))
 	if c == nil {
 		for _, rawIP := range rawIPs {
@@ -742,13 +751,13 @@ func (c *ipInfoClient) lookupMany(rawIPs []string) map[string]ipInfoResult {
 		seen[key] = true
 		unique = append(unique, key)
 	}
-	if len(unique) > ipInfoMaxDashboardIPs {
-		for _, key := range unique[ipInfoMaxDashboardIPs:] {
+	if maxIPs > 0 && len(unique) > maxIPs {
+		for _, key := range unique[maxIPs:] {
 			results[key] = fallbackIPInfo(key, "fallback_limit")
 		}
-		unique = unique[:ipInfoMaxDashboardIPs]
+		unique = unique[:maxIPs]
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), ipInfoDashboardTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	jobs := make(chan string, len(unique))
 	for _, key := range unique {
@@ -841,6 +850,17 @@ func (a *App) lookupIPInfo(ips []string) map[string]ipInfoResult {
 		return results
 	}
 	return a.ipInfo.lookupMany(ips)
+}
+
+func (a *App) lookupIPInfoForRiskList(ips []string) map[string]ipInfoResult {
+	if a == nil || a.ipInfo == nil {
+		results := make(map[string]ipInfoResult, len(ips))
+		for _, ip := range ips {
+			results[ip] = fallbackIPInfo(ip, "fallback_unconfigured")
+		}
+		return results
+	}
+	return a.ipInfo.lookupManyForRiskList(ips)
 }
 
 func (a *App) adminIPInfoSettings(w http.ResponseWriter, r *http.Request) {

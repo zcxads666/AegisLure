@@ -300,6 +300,26 @@ func indicatorView(item model.Indicator, decision model.IndicatorDecision, key s
 	}
 }
 
+func addIndicatorGeoView(view map[string]any, location ipInfoResult) {
+	country := firstNonEmpty(location.Country, sourceCountryLabel(location.IP))
+	view["country"] = country
+	view["country_code"] = location.CountryCode
+	view["city"] = location.City
+	view["region"] = location.Region
+	view["region_code"] = location.RegionCode
+	view["postal_code"] = location.PostalCode
+	view["latitude"] = location.Latitude
+	view["longitude"] = location.Longitude
+	view["timezone"] = location.Timezone
+	view["asn"] = location.ASN
+	view["as_name"] = location.ASName
+	view["as_domain"] = location.ASDomain
+	view["continent"] = location.Continent
+	view["continent_code"] = location.ContinentCode
+	view["geo_source"] = location.Source
+	view["geo_status"] = location.Status
+}
+
 func renderIndicatorExport(items []model.Indicator, decisions map[string]model.IndicatorDecision, format, key string) (string, string, error) {
 	format = strings.ToLower(strings.TrimSpace(format))
 	switch format {

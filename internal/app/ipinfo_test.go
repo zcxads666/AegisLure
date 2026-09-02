@@ -325,6 +325,80 @@ func TestAdminIPInfoSwitchRequeriesDashboardAfterUnknown(t *testing.T) {
 	}
 }
 
+func TestAdminIndicatorsRequeriesHistoricalIPsAndReturnsGeoFields(t *testing.T) {
+	a, cfg, st := newTestApp(t, true)
+	defer st.Close()
+	now := time.Now().UTC()
+	for _, ip := range []string{"8.8.8.8", "1.1.1.1"} {
+		if err := st.AppendEvent(model.Event{EventID: "historical-" + ip, Product: model.ProductOllama, SourceIP: ip, ObservedAt: now, Score: 80}); err != nil {
+			t.Fatalf("append historical indicator %s: %v", ip, err)
+		}
+	}
+	if result := a.resolveIPInfo("8.8.8.8"); result.Status != "fallback_maxmind_unavailable" {
+		t.Fatalf("historical IP should initially be unknown: %#v", result)
+	}
+
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.URL.Query().Get("token") != "test-token" {
+			t.Errorf("historical lookup did not use configured token: %s", r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/8.8.8.8":
+			_, _ = io.WriteString(w, `{"city":"Mountain View","region":"California","country":"US","loc":"38.0088,-122.1175","org":"AS15169 Google LLC"}`)
+		case "/1.1.1.1":
+			_, _ = io.WriteString(w, `{"city":"Sydney","region":"New South Wales","country":"AU","loc":"-33.86785,151.20732","org":"AS13335 Cloudflare, Inc."}`)
+		default:
+			t.Errorf("unexpected historical lookup path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	a.ipInfo.setProvider(config.GeoIPProviderIPInfoAPI)
+	a.ipInfo.endpoint = server.URL + "/"
+	a.ipInfo.setToken("test-token")
+
+	admin := &inProcessClient{handler: a.adminHandler(), cookies: map[string]string{}}
+	if resp, _ := doJSON(t, admin, http.MethodPost, cfg.AdminPath+"admin/api/v1/auth/login", map[string]string{"username": "owner", "password": "correct horse battery staple"}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin login status = %d", resp.StatusCode)
+	}
+	resp, body := doJSON(t, admin, http.MethodGet, cfg.AdminPath+"admin/api/v1/indicators", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("historical indicator list status = %d %#v", resp.StatusCode, body)
+	}
+	items, ok := body["items"].([]any)
+	if !ok || len(items) != 2 || requests.Load() != 2 {
+		t.Fatalf("historical indicator list did not query every IP: items=%#v requests=%d", body["items"], requests.Load())
+	}
+	byIP := make(map[string]map[string]any, len(items))
+	for _, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("indicator item type = %#v", raw)
+		}
+		byIP[item["ip"].(string)] = item
+	}
+	for ip, expected := range map[string]map[string]string{
+		"8.8.8.8": {"country": "US", "country_code": "US", "city": "Mountain View", "asn": "AS15169"},
+		"1.1.1.1": {"country": "AU", "country_code": "AU", "city": "Sydney", "asn": "AS13335"},
+	} {
+		item, ok := byIP[ip]
+		if !ok {
+			t.Fatalf("missing historical indicator %s: %#v", ip, byIP)
+		}
+		for field, value := range expected {
+			if item[field] != value {
+				t.Fatalf("historical indicator %s field %s = %#v, want %q; item=%#v", ip, field, item[field], value, item)
+			}
+		}
+		if item["geo_source"] != config.GeoIPProviderIPInfoAPI || item["geo_status"] != "ok" {
+			t.Fatalf("historical indicator %s geo metadata = %#v", ip, item)
+		}
+	}
+}
+
 func TestAdminIPInfoSettingsPersistsAndDoesNotReturnRawToken(t *testing.T) {
 	a, _, st := newTestApp(t, true)
 	defer st.Close()
