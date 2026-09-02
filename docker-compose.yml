@@ -75,7 +75,7 @@ services:
         host_ip: "${HP_PUBLIC_PORT_BIND_IP:-0.0.0.0}"
       - target: ${HP_ADMIN_PORT:-28443}
         published: "${HP_ADMIN_PORT:-28443}"
-        host_ip: "${HP_ADMIN_PORT_BIND_IP:-127.0.0.1}"
+        host_ip: "${HP_ADMIN_PORT_BIND_IP:-0.0.0.0}"
     networks:
       # Docker Desktop does not create a host-side port publisher when the
       # container's default network is `internal: true`. Keep the bait and

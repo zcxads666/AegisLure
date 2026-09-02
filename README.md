@@ -59,15 +59,15 @@ Docker 默认启用全部五类公开 profile，并使用正常项目端口：
 | SGLang | 30000 |
 | LocalAI | 8080 |
 
-管理入口使用 `HP_ADMIN_PORT` 指定的高位端口，默认仅绑定到 `127.0.0.1`。公开蜜罐端口默认绑定到 `0.0.0.0`。可在 `.env` 中设置：
+管理入口使用 `HP_ADMIN_PORT` 指定的高位端口，默认绑定到 `0.0.0.0`，以便从公网访问。公开蜜罐端口同样默认绑定到 `0.0.0.0`。可在 `.env` 中设置：
 
 ```env
 HP_PROFILES=new-api,vllm,ollama,sglang,localai
 HP_PUBLIC_PORT_BIND_IP=0.0.0.0
-HP_ADMIN_PORT_BIND_IP=127.0.0.1
+HP_ADMIN_PORT_BIND_IP=0.0.0.0
 ```
 
-管理入口路径由服务生成，可通过 `./hpctl status` 查看。首次访问管理入口时创建 owner，密码至少 8 个字符；请离线保存服务生成的恢复码，并通过防火墙、VPN 或可信反向代理限制管理端口来源。
+管理入口路径由服务生成，可通过 `./hpctl status` 查看。首次访问管理入口时创建 owner，密码至少 8 个字符；请离线保存服务生成的恢复码，并通过防火墙、VPN 或可信反向代理限制管理端口来源。若只需要本机访问，可将 `HP_ADMIN_PORT_BIND_IP` 设置为 `127.0.0.1`。
 
 ## 数据库与 IP 情报
 

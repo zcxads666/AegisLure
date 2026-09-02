@@ -32,7 +32,7 @@ export HP_IMAGE="aegislure:docker-smoke"
 export HP_RUNTIME_DIR="$TEST_ROOT/runtime"
 export HP_POSTGRES_PASSWORD_FILE="$TEST_ROOT/runtime/secrets/postgres_password"
 export HP_PUBLIC_PORT_BIND_IP=127.0.0.1
-export HP_ADMIN_PORT_BIND_IP=127.0.0.1
+export HP_ADMIN_PORT_BIND_IP=0.0.0.0
 export HP_ADMIN_PORT=$((20000 + $(od -An -N2 -tu2 /dev/urandom) % 40999))
 export HP_PROFILES=new-api,vllm,ollama,sglang,localai
 export NEW_API_PORT=3000 OLLAMA_PORT=11434 VLLM_PORT=8000 SGLANG_PORT=30000 LOCALAI_PORT=8080

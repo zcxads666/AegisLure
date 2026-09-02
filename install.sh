@@ -141,7 +141,7 @@ if [[ -n "${HP_PROFILES:-}" ]]; then set_env_value HP_PROFILES "$HP_PROFILES"; e
 if ! grep -q '^HP_CONTAINER_UID=' .env; then set_env_value HP_CONTAINER_UID "$CONTAINER_UID_DEFAULT"; fi
 if ! grep -q '^HP_CONTAINER_GID=' .env; then set_env_value HP_CONTAINER_GID "$CONTAINER_GID_DEFAULT"; fi
 if ! grep -q '^HP_PUBLIC_PORT_BIND_IP=' .env; then set_env_value HP_PUBLIC_PORT_BIND_IP "${HP_PUBLIC_PORT_BIND_IP:-0.0.0.0}"; fi
-if ! grep -q '^HP_ADMIN_PORT_BIND_IP=' .env; then set_env_value HP_ADMIN_PORT_BIND_IP "${HP_ADMIN_PORT_BIND_IP:-127.0.0.1}"; fi
+if ! grep -q '^HP_ADMIN_PORT_BIND_IP=' .env; then set_env_value HP_ADMIN_PORT_BIND_IP "${HP_ADMIN_PORT_BIND_IP:-0.0.0.0}"; fi
 
 CONTAINER_UID="$(dotenv_value HP_CONTAINER_UID)"
 CONTAINER_GID="$(dotenv_value HP_CONTAINER_GID)"
