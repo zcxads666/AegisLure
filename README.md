@@ -133,7 +133,7 @@ Windows 的 Hyper-V 防火墙规则中允许对应 TCP 端口。WSL NAT 模式�
 `wsl.exe -- hostname -I` 得到的 WSL 地址；该地址不一定是 Windows 以太网卡地址，不能把它
 与 Windows 主机 IP 混用。Docker Compose 部署仍可单独使用。
 
-`docker-compose.yml` 默认实际启用五个 profile（New API、vLLM、Ollama、SGLang、LocalAI），并为每个 profile 暴露默认端口加 7 个候选端口（共 40 个公开 profile 映射）和一个随机高位管理端口。可通过 `HP_PROFILES` 缩小启用范围；已发布但未启用的候选端口不会返回应用响应。安装器默认将公开蜜罐端口绑定到 `0.0.0.0`，管理端口仍只绑定 `127.0.0.1`；如需本机测试公开入口，可设置 `HP_PUBLIC_PORT_BIND_IP=127.0.0.1`，如需由可信反向代理接管管理入口，再设置 `HP_ADMIN_PORT_BIND_IP`。旧的 `HP_PORT_BIND_IP` 不再控制这两个发布面，避免把管理端口和蜜罐端口一起暴露。PG 部署额外叠加 `docker-compose.pg.yml`；内部数据库只能通过隔离网络访问，不发布主机端口。应用和长期运行的 PostgreSQL 容器采用非 root、只读 rootfs、tmpfs、drop-all-capabilities、no-new-privileges、资源上限和隔离网络；PG 仅有一个 profile-gated 的一次性 root volume-ownership bootstrap，完成后数据库仍以 `postgres` 用户运行。没有 Docker socket、host PID/network、GPU 或模型卷。端口计划由 `hpctl ports plan/apply` 生成并校验签名；apply 后需显式重启 Compose 服务。
+`docker-compose.yml` 默认实际启用五个 profile（New API、vLLM、Ollama、SGLang、LocalAI），并只发布各自正常项目端口：New API `3000`、vLLM `8000`、Ollama `11434`、SGLang `30000`、LocalAI `8080`；只有管理入口使用随机高位端口。可通过 `HP_PROFILES` 缩小启用范围；未启用的 profile 不会返回应用响应。安装器默认将公开蜜罐端口绑定到 `0.0.0.0`，管理端口仍只绑定 `127.0.0.1`；如需本机测试公开入口，可设置 `HP_PUBLIC_PORT_BIND_IP=127.0.0.1`，如需由可信反向代理接管管理入口，再设置 `HP_ADMIN_PORT_BIND_IP`。旧的 `HP_PORT_BIND_IP` 不再控制这两个发布面，避免把管理端口和蜜罐端口一起暴露。PG 部署额外叠加 `docker-compose.pg.yml`；内部数据库只能通过隔离网络访问，不发布主机端口。应用和长期运行的 PostgreSQL 容器采用非 root、只读 rootfs、tmpfs、drop-all-capabilities、no-new-privileges、资源上限和隔离网络；PG 仅有一个 profile-gated 的一次性 root volume-ownership bootstrap，完成后数据库仍以 `postgres` 用户运行。没有 Docker socket、host PID/network、GPU 或模型卷。端口计划由 `hpctl ports plan/apply` 生成并校验签名；apply 后需显式重启 Compose 服务。
 
 ## 安全边界
 

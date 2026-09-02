@@ -25,7 +25,7 @@
 make sbom
 ```
 
-`admin entry rotate` writes a new path into the runtime config; restart the service before using it. It invalidates active web sessions when performed through the authenticated API. A host port change is a signed declarative `PortChangePlan`; `hpctl ports apply` updates the selected profile's runtime mapping and `.env`, but deliberately does not restart the service. For a default pool candidate it updates that profile's `*_PORT_1` … `*_PORT_7` published slot; for a pool-external port it updates the base `*_PORT`/`*_TARGET_PORT` mapping. Confirm the plan is current, then run `hpctl restart` or `docker compose up -d`.
+`admin entry rotate` writes a new path into the runtime config; restart the service before using it. It invalidates active web sessions when performed through the authenticated API. A host port change is a signed declarative `PortChangePlan`; `hpctl ports apply` updates the selected profile's runtime mapping and `.env`, but deliberately does not restart the service. Native deployments may use a default pool candidate; Docker Compose publishes only the base normal project port for each profile, so a Docker port change must update the base `*_PORT`/`*_TARGET_PORT` mapping and then recreate the service. Confirm the plan is current, then run `hpctl restart` or `docker compose up -d`.
 
 `hpctl health` checks the local HTTPS/HTTP setup status endpoint with proxy use disabled. The response includes readiness for every selected public profile and its actual/configured port; verify the host-side published mapping with `ss -ltnp` and the admin instance view. The service refuses to start if a selected profile has no valid configured port.
 
