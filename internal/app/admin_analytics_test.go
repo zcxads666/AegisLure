@@ -129,3 +129,29 @@ func TestDashboardTimeSeriesUsesCalendarBucketsAndRefreshBoundaries(t *testing.T
 		t.Fatalf("month next refresh = %s, want %s", got, want)
 	}
 }
+
+func TestDashboardTimeSeriesUsesAsiaShanghaiWhenInputIsUTC(t *testing.T) {
+	now := time.Date(2026, time.September, 3, 6, 37, 0, 0, time.UTC)
+	events := []model.Event{
+		{EventID: "utc-current-hour", ObservedAt: time.Date(2026, time.September, 3, 6, 12, 0, 0, time.UTC), Score: 55},
+		{EventID: "utc-previous-hour", ObservedAt: time.Date(2026, time.September, 3, 5, 41, 0, 0, time.UTC), Score: 20},
+	}
+
+	series := dashboardTimeSeries(events, now, 24, time.Hour, "01/02 15:00")
+	points := series["points"].([]map[string]any)
+	latest := points[len(points)-1]
+	previous := points[len(points)-2]
+	if got := latest["label"]; got != "09/03 14:00" {
+		t.Fatalf("UTC input must render the Shanghai current-hour label, got %v", got)
+	}
+	if latest["count"] != 1 || previous["count"] != 1 {
+		t.Fatalf("UTC input was not assigned to Shanghai calendar hours: latest=%v previous=%v", latest["count"], previous["count"])
+	}
+	wantNext := time.Date(2026, time.September, 3, 15, 0, 0, 0, dashboardShanghaiLocation).UTC()
+	if got := series["next_refresh_at"].(time.Time); !got.Equal(wantNext) {
+		t.Fatalf("Shanghai next refresh = %s, want %s", got, wantNext)
+	}
+	if got := series["timezone"]; got != model.InteractionChainTimezone {
+		t.Fatalf("dashboard timezone = %v", got)
+	}
+}

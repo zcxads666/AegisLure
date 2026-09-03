@@ -737,8 +737,9 @@ func (a *App) adminDashboard(w http.ResponseWriter) {
 	counts["risk_rate"] = sharePercentage(counts["risk_events"], len(events))
 	activity := make([]map[string]any, 0, 12)
 	now := time.Now().UTC()
+	dashboardNow := now.In(dashboardShanghaiLocation)
 	for i := 11; i >= 0; i-- {
-		end := now.Add(-time.Duration(i) * 2 * time.Hour)
+		end := dashboardNow.Add(-time.Duration(i) * 2 * time.Hour)
 		start := end.Add(-2 * time.Hour)
 		count := 0
 		for _, event := range events {
@@ -746,7 +747,7 @@ func (a *App) adminDashboard(w http.ResponseWriter) {
 				count++
 			}
 		}
-		activity = append(activity, map[string]any{"label": start.Local().Format("15:04"), "count": count})
+		activity = append(activity, map[string]any{"label": start.Format("15:04"), "count": count})
 	}
 	productList := make([]map[string]any, 0, len(products))
 	for product, count := range products {
@@ -757,7 +758,7 @@ func (a *App) adminDashboard(w http.ResponseWriter) {
 	if len(recent) > 8 {
 		recent = recent[:8]
 	}
-	analytics := a.buildDashboardAnalytics(events, indicators, now.In(time.Local))
+	analytics := a.buildDashboardAnalytics(events, indicators, dashboardNow)
 	enabled := append([]string{}, a.cfg.EnabledProfiles...)
 	a.writeJSON(w, http.StatusOK, map[string]any{
 		"service": "AegisLure", "synthetic_only": true, "generated_at": now,

@@ -11,6 +11,17 @@ import (
 
 const dashboardRiskThreshold = 30
 
+var dashboardShanghaiLocation = loadDashboardShanghaiLocation()
+
+func loadDashboardShanghaiLocation() *time.Location {
+	if location, err := time.LoadLocation(model.InteractionChainTimezone); err == nil {
+		return location
+	}
+	// Asia/Shanghai has a stable UTC+08:00 offset. Keep the dashboard usable
+	// in minimal containers that do not ship the IANA tzdata bundle.
+	return time.FixedZone(model.InteractionChainTimezone, 8*60*60)
+}
+
 // dashboardTimeSeries builds calendar-aligned rolling windows. The last point
 // is always the current hour/day, so the axis changes at the selected bucket
 // boundary instead of staying on the same labels for a full window.
@@ -20,13 +31,16 @@ func dashboardTimeSeries(events []model.Event, now time.Time, bucketCount int, b
 	points := make([]map[string]any, 0, bucketCount)
 	total := 0
 	riskTotal := 0
+	now = now.In(dashboardShanghaiLocation)
 	if bucketCount <= 0 {
 		return map[string]any{
+			"bucket":         dashboardBucketName(bucketSize),
 			"bucket_seconds": int(bucketSize / time.Second),
 			"points":         points,
 			"total":          0,
 			"risk_total":     0,
 			"risk_threshold": dashboardRiskThreshold,
+			"timezone":       model.InteractionChainTimezone,
 		}
 	}
 
@@ -70,6 +84,7 @@ func dashboardTimeSeries(events []model.Event, now time.Time, bucketCount int, b
 		"total":           total,
 		"risk_total":      riskTotal,
 		"risk_threshold":  dashboardRiskThreshold,
+		"timezone":        model.InteractionChainTimezone,
 		"window_start_at": firstStart.UTC(),
 		"window_end_at":   currentEnd.UTC(),
 		"next_refresh_at": currentEnd.UTC(),
