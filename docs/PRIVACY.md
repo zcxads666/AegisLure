@@ -10,8 +10,12 @@ request.
 
 - Requests store the real socket peer IP, bounded User-Agent/product/session
   fingerprints, route and status, timing, authentication/execution/effect
-  outcomes, reason codes, and bounded hashes/previews. Request bodies are not
-  retained without the redaction and size limits enforced by the service.
+  outcomes, reason codes, and bounded hashes/previews. New events also retain
+  the parsed original request URL/target, full path, Host, repeated headers and
+  a Base64 request-body prefix for owner/admin-only audit display. The service
+  caps bodies at 1 MiB and headers at 100 values/32 KiB; oversized requests
+  retain only a prefix with an explicit truncation reason. Historical rows
+  created before this field existed are marked as missing rather than inferred.
 - Passwords, recovery codes, honey API keys, OAuth authorization codes and
   provider tokens are never stored as plaintext. The local state keeps keyed
   fingerprints or hashes and the minimum virtual-account metadata required to
@@ -59,6 +63,10 @@ Event retention defaults to 30 days and 100,000 rows. Configure
 `HP_EVENT_RETENTION_DAYS` and `HP_EVENT_MAX_ENTRIES` environment variables.
 Pruning removes expired/over-limit event rows and imported provenance in the
 selected backend; the SQLite event mirror is rewritten from retained rows.
+Management-page deletion is logical: an `event_tombstones` row hides an event
+from active and derived views while leaving the append-only event row intact.
+The deletion action is recorded in the append-only audit hash chain, and the
+event can be restored by an operator recovery tool.
 
 An administrator can inspect safe identity metadata at
 `<admin_path>/admin/api/v1/identities`, revoke an association with
@@ -90,8 +98,9 @@ LinuxDO associations are local-only. A GitHub association is exportable only
 when the operator has set an explicit approved policy reference.
 
 Do not put OAuth secrets in Git, container images, Compose environment values,
-support bundles, backups or issue reports. The standalone backup command
-intentionally excludes the secrets directory.
+support bundles or issue reports. Backups also contain owner/admin-visible raw
+request evidence and must be protected like secrets; the standalone backup
+command intentionally excludes the secrets directory.
 
 ## Operator responsibilities
 

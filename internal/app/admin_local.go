@@ -262,9 +262,16 @@ func (a *App) filteredIndicators(r *http.Request) ([]model.Indicator, map[string
 		decisions[decision.IP] = decision
 	}
 	now := time.Now().UTC()
+	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	if query == "" {
+		query = strings.ToLower(strings.TrimSpace(r.URL.Query().Get("ip")))
+	}
 	filtered := make([]model.Indicator, 0, len(items))
 	for _, item := range items {
 		if item.Score < minScore || item.SensorCount < minSensors || (confidenceFilter != "" && item.Confidence != confidenceFilter) || (!seenSince.IsZero() && item.LastSeen.Before(seenSince)) {
+			continue
+		}
+		if query != "" && !strings.Contains(strings.ToLower(item.IP), query) {
 			continue
 		}
 		if statusFilter != "all" && indicatorDecisionStatus(decisions[item.IP], now) != statusFilter {
@@ -303,6 +310,7 @@ func indicatorView(item model.Indicator, decision model.IndicatorDecision, key s
 func addIndicatorGeoView(view map[string]any, location ipInfoResult) {
 	country := firstNonEmpty(location.Country, sourceCountryLabel(location.IP))
 	view["country"] = country
+	view["country_zh"] = countryNameZH(location.CountryCode, country)
 	view["country_code"] = location.CountryCode
 	view["city"] = location.City
 	view["region"] = location.Region
@@ -904,7 +912,16 @@ func (a *App) adminEventDetail(w http.ResponseWriter, _ *http.Request, eventID s
 	}
 	for _, event := range events {
 		if event.EventID == eventID {
-			a.writeJSON(w, http.StatusOK, map[string]any{"event": event, "raw_payload_available": false, "payload_view": "bounded_redacted_preview_only"})
+			available := event.RawRequest != nil
+			response := map[string]any{"event": event, "raw_payload_available": available}
+			if available {
+				response["payload_view"] = "full_raw_request"
+				response["raw_request"] = event.RawRequest
+			} else {
+				response["payload_view"] = "legacy_missing_raw_request"
+				response["raw_request_note"] = "历史事件未记录原始请求"
+			}
+			a.writeJSON(w, http.StatusOK, response)
 			return
 		}
 	}
@@ -1026,7 +1043,19 @@ func (a *App) adminSessionDetail(w http.ResponseWriter, r *http.Request, session
 		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"session": view, "events": filtered, "raw_payload_available": false, "synthetic_only": true})
+	rawAvailable := false
+	for _, event := range filtered {
+		if event.RawRequest != nil {
+			rawAvailable = true
+			break
+		}
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"session": view, "events": filtered, "raw_payload_available": rawAvailable, "raw_request_note": func() string {
+		if rawAvailable {
+			return ""
+		}
+		return "历史事件未记录原始请求"
+	}(), "synthetic_only": true})
 }
 
 func (a *App) adminInvocationDetail(w http.ResponseWriter, r *http.Request, invocationID string) {
@@ -1077,12 +1106,15 @@ func (a *App) adminInteractionChainDetail(w http.ResponseWriter, _ *http.Request
 func buildInteractionChainView(id, sessionID string, events []model.Event) *interactionChainView {
 	view := &interactionChainView{ID: id, SessionID: sessionID, FirstEventID: "", LastEventID: "", InvocationLevel: model.L0, Events: append([]model.Event(nil), events...)}
 	sessions := make(map[string]bool)
+	products := make(map[string]bool)
 	for _, event := range events {
 		if view.FirstEventID == "" {
 			view.FirstEventID = event.EventID
 		}
 		view.LastEventID = event.EventID
-		view.Product = event.Product
+		if event.Product != "" {
+			products[event.Product] = true
+		}
 		view.EventCount++
 		if event.SessionID != "" {
 			sessions[event.SessionID] = true
@@ -1104,6 +1136,15 @@ func buildInteractionChainView(id, sessionID string, events []model.Event) *inte
 		}
 		view.MatchedRuleIDs = uniqueStrings(append(view.MatchedRuleIDs, event.MatchedRuleIDs...))
 		view.ReasonCodes = uniqueStrings(append(view.ReasonCodes, event.ReasonCodes...))
+	}
+	for product := range products {
+		view.Products = append(view.Products, product)
+	}
+	sort.Strings(view.Products)
+	if len(view.Products) == 1 {
+		view.Product = view.Products[0]
+	} else if len(view.Products) > 1 {
+		view.Product = "multiple"
 	}
 	view.SessionCount = len(sessions)
 	switch view.InvocationLevel {
@@ -1151,7 +1192,7 @@ func (a *App) adminActorDetail(w http.ResponseWriter, _ *http.Request, rawIP str
 	}
 	location := a.resolveIPInfo(ip)
 	a.writeJSON(w, http.StatusOK, map[string]any{
-		"ip": ip, "country": location.Country, "country_code": location.CountryCode,
+		"ip": ip, "country": location.Country, "country_zh": countryNameZH(location.CountryCode, location.Country), "country_code": location.CountryCode,
 		"continent": location.Continent, "continent_code": location.ContinentCode,
 		"asn": location.ASN, "as_name": location.ASName, "as_domain": location.ASDomain,
 		"geo_source": location.Source, "geo_status": location.Status, "geo": location,

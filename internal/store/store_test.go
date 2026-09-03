@@ -228,6 +228,61 @@ func TestImportedEventsAreIdempotent(t *testing.T) {
 	}
 }
 
+func TestEventPageLogicalDeleteKeepsAuthoritativeEventAndSupportsRestore(t *testing.T) {
+	st, err := Open(t.TempDir(), "event-page-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	for index := 0; index < 21; index++ {
+		if err := st.AppendEvent(model.Event{EventID: fmt.Sprintf("page-event-%02d", index), Product: model.ProductOllama, RouteTemplate: "ollama.home", SourceIP: fmt.Sprintf("198.51.100.%d", index+1), ObservedAt: base.Add(time.Duration(index) * time.Minute), Score: index}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := st.EventPage(EventQuery{Page: 1, PageSize: 10})
+	if err != nil || len(page.Events) != 10 || page.Pagination.Total != 21 || page.Pagination.TotalPages != 3 || !page.Pagination.HasNext || page.Pagination.PageSize != 10 {
+		t.Fatalf("first event page = %#v, %v", page, err)
+	}
+	search, err := st.EventPage(EventQuery{Page: 1, PageSize: 10, Query: "page-event-20"})
+	if err != nil || len(search.Events) != 1 || search.Pagination.Total != 1 {
+		t.Fatalf("event search = %#v, %v", search, err)
+	}
+	filtered, err := st.EventPage(EventQuery{Page: 1, PageSize: 10, MinScore: 20})
+	if err != nil || len(filtered.Events) != 1 || filtered.Events[0].EventID != "page-event-20" {
+		t.Fatalf("event score filter = %#v, %v", filtered, err)
+	}
+	lastPage, err := st.EventPage(EventQuery{Page: 3, PageSize: 10})
+	if err != nil || len(lastPage.Events) != 1 || lastPage.Events[0].EventID != "page-event-00" {
+		t.Fatalf("last event page = %#v, %v", lastPage, err)
+	}
+	deleted, err := st.SoftDeleteEventIDs([]string{"page-event-00"})
+	if err != nil || deleted != 1 {
+		t.Fatalf("soft delete = %d, %v", deleted, err)
+	}
+	deletedPage, err := st.EventPage(EventQuery{Page: 3, PageSize: 10})
+	if err != nil || len(deletedPage.Events) != 0 || deletedPage.Pagination.Total != 20 || deletedPage.Pagination.TotalPages != 2 {
+		t.Fatalf("deleted last page = %#v, %v", deletedPage, err)
+	}
+	var eventRows, tombstones int
+	if err := st.db.QueryRow("SELECT count(*) FROM events").Scan(&eventRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.db.QueryRow("SELECT count(*) FROM event_tombstones WHERE event_id = ?", "page-event-00").Scan(&tombstones); err != nil {
+		t.Fatal(err)
+	}
+	if eventRows != 21 || tombstones != 1 {
+		t.Fatalf("logical delete changed append-only storage: events=%d tombstones=%d", eventRows, tombstones)
+	}
+	if restored, err := st.RestoreEventIDs([]string{"page-event-00"}); err != nil || restored != 1 {
+		t.Fatalf("restore = %d, %v", restored, err)
+	}
+	restoredPage, err := st.EventPage(EventQuery{Page: 3, PageSize: 10})
+	if err != nil || len(restoredPage.Events) != 1 || restoredPage.Events[0].EventID != "page-event-00" || restoredPage.Pagination.Total != 21 {
+		t.Fatalf("restored last page = %#v, %v", restoredPage, err)
+	}
+}
+
 func TestLocalReviewAndImportSourceStatePersistsAcrossReopen(t *testing.T) {
 	dir := t.TempDir()
 	st, err := Open(dir, "control-state-key")

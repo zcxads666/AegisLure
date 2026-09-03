@@ -23,6 +23,19 @@ const (
 	L4 InvocationLevel = "L4_post_call_verified"
 )
 
+// RawRequest is the lossless request envelope available to the HTTP handler.
+// BodyBase64 preserves arbitrary request bytes while keeping the event JSON
+// valid. Header values are kept as slices so repeated headers are not lost.
+type RawRequest struct {
+	URL              string              `json:"url"`
+	Route            string              `json:"route"`
+	Host             string              `json:"host"`
+	Headers          map[string][]string `json:"headers"`
+	BodyBase64       string              `json:"body_base64"`
+	Truncated        bool                `json:"truncated"`
+	TruncationReason string              `json:"truncation_reason,omitempty"`
+}
+
 type Event struct {
 	EventID               string            `json:"event_id"`
 	EventType             string            `json:"event_type,omitempty"`
@@ -51,6 +64,7 @@ type Event struct {
 	QueryPreview          string            `json:"query_preview,omitempty"`
 	BodyBytesRead         int64             `json:"body_bytes_read,omitempty"`
 	HeaderNames           []string          `json:"header_names,omitempty"`
+	RawRequest            *RawRequest       `json:"raw_request,omitempty"`
 	OriginClass           string            `json:"origin_class,omitempty"`
 	SessionID             string            `json:"session_id,omitempty"`
 	InvocationID          string            `json:"invocation_id,omitempty"`
@@ -61,6 +75,7 @@ type Event struct {
 	AuthOutcome           string            `json:"auth_outcome,omitempty"`
 	ExecutionOutcome      string            `json:"execution_outcome,omitempty"`
 	EffectOutcome         string            `json:"effect_outcome,omitempty"`
+	RejectionReason       string            `json:"rejection_reason,omitempty"`
 	ResponseObserved      bool              `json:"response_observed"`
 	InvocationLevel       InvocationLevel   `json:"invocation_level,omitempty"`
 	SimulatedInputTokens  int               `json:"simulated_input_tokens,omitempty"`
@@ -230,19 +245,24 @@ type InteractionChainConfig struct {
 	Mode          string `json:"mode"`
 	WindowSeconds int    `json:"window_seconds"`
 	MaxEvents     int    `json:"max_events"`
+	Timezone      string `json:"timezone,omitempty"`
 }
 
 const (
 	InteractionChainBySession          = "session"
 	InteractionChainBySourceIP         = "source_ip"
 	InteractionChainBySourceAndProduct = "source_ip_product"
+	InteractionChainBySourceIPDay      = "source_ip_day"
 )
+
+const InteractionChainTimezone = "Asia/Shanghai"
 
 func DefaultInteractionChainConfig() InteractionChainConfig {
 	return InteractionChainConfig{
-		Mode:          InteractionChainBySession,
-		WindowSeconds: 30 * 60,
+		Mode:          InteractionChainBySourceIPDay,
+		WindowSeconds: 24 * 60 * 60,
 		MaxEvents:     200,
+		Timezone:      InteractionChainTimezone,
 	}
 }
 

@@ -18,6 +18,7 @@ services:
       - aegislure_db_password
     networks:
       - db_net
+      - edge_net
 
   # These one-shot services are intentionally profile-gated. They are the
   # only bundled-PG bootstrap containers that use root: they initialize the
@@ -168,3 +169,8 @@ volumes:
 networks:
   db_net:
     internal: true
+  edge_net:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "true"
+      com.docker.network.bridge.enable_icc: "false"

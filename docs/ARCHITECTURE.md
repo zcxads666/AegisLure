@@ -39,7 +39,7 @@ The checked-in JSON packs are declarative fixtures. No pack can load code, a URL
 
 ## Event contract
 
-Every request becomes an event with product, profile, route template, real socket peer, bounded body hash/preview, status, timing, session, auth outcome, execution outcome, effect outcome, invocation level, intent and reason codes. The store aggregates indicators from those events and applies the configured age/count retention policy. Expired rows and their imported provenance are pruned from SQLite; the JSONL mirror is rewritten from the authoritative rows when it exceeds its bounded policy.
+Every request becomes an event with product, profile, route template, real socket peer, bounded body hash/preview, status, timing, session, auth outcome, execution outcome, effect outcome, invocation level, intent and reason codes. New events additionally retain a bounded parsed original request (URL/target, full path, Host, repeated headers and Base64 body prefix) for authenticated owner/admin audit display, with explicit truncation metadata. The store aggregates indicators from those events and applies the configured age/count retention policy. Expired rows and their imported provenance are pruned from SQLite; the JSONL mirror is rewritten from the authoritative rows when it exceeds its bounded policy.
 
 Invocation levels are orthogonal to risk:
 
@@ -53,7 +53,7 @@ The service never emits a `real_inference` outcome. All accepted model work is d
 
 - SQLite opens `aegislure.sqlite` in WAL mode with foreign keys enabled. PostgreSQL uses `pgx/v5`, an explicit schema and database transactions. `state.json` and `events.jsonl` are SQLite compatibility mirrors, not competing sources of truth; PostgreSQL does not read them.
 - Event retention defaults to 30 days and 100,000 rows. Operators can set `event_retention_days`/`event_max_entries` in the runtime config or use `HP_EVENT_RETENTION_DAYS`/`HP_EVENT_MAX_ENTRIES`; values are bounded by the config loader.
-- `hpctl backup` creates a bounded, checksummed logical snapshot containing config, state, retained events, audit chain and import provenance. `hpctl restore` requires the snapshot backend to match the destination backend and applies it transactionally; it never performs SQLite → PostgreSQL migration or double write.
+- `hpctl backup` creates a bounded, checksummed logical snapshot containing config, state, retained events including raw-request audit fields, tombstones, audit chain and import provenance. `hpctl restore` requires the snapshot backend to match the destination backend and applies it transactionally; it never performs SQLite → PostgreSQL migration or double write.
 - OAuth is an opt-in broker boundary. Its credentials are loaded from an owner-readable-only local file, endpoints are fixed to the official provider hosts, state/PKCE/nonce are short-lived, and provider tokens are not persisted in local state, logs or backups.
 - Local indicator decisions, import-source lifecycle and identity review state are
   persisted in the same WAL-backed state transaction. Approval, challenge and

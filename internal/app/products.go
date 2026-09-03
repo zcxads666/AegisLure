@@ -946,13 +946,13 @@ func (a *App) newAPIInvoke(w *captureWriter, r *http.Request, body []byte, sessi
 		obs.CredentialFingerprint = token.Hash
 	}
 	if auth != "valid_honey_key" && !leakedUserListKey {
-		a.startInvocation(obs, auth, false)
+		a.startInvocation(obs, auth, false, map[string]string{"missing": "missing_authentication", "invalid": "invalid_authentication"}[auth])
 		a.writeNewAPIProtocolError(w, obs.RouteTemplate, http.StatusUnauthorized, "Incorrect API key provided", "invalid_request_error")
 		return
 	}
 	if session.UserID != "" && token.HoneyUserID != session.UserID && !leakedUserListKey {
 		obs.AuthOutcome = "invalid"
-		a.startInvocation(obs, "invalid", false)
+		a.startInvocation(obs, "invalid", false, "session_authentication_mismatch")
 		a.writeNewAPIProtocolError(w, obs.RouteTemplate, http.StatusUnauthorized, "API key is not available to this session", "invalid_request_error")
 		return
 	}
@@ -962,7 +962,7 @@ func (a *App) newAPIInvoke(w *captureWriter, r *http.Request, body []byte, sessi
 	if len(token.ModelAllowlist) > 0 && (!modelResolved || !containsString(token.ModelAllowlist, resolvedEntry.ID)) {
 		obs.ExtraScore += 25
 		obs.ExtraReasons = append(obs.ExtraReasons, "newapi_token_model_restriction_probe")
-		a.startInvocation(obs, auth, false)
+		a.startInvocation(obs, auth, false, "model_not_allowed_for_key")
 		a.writeNewAPIProtocolError(w, obs.RouteTemplate, http.StatusForbidden, "model is not available for this API key", "invalid_request_error")
 		return
 	}
@@ -974,7 +974,11 @@ func (a *App) newAPIInvoke(w *captureWriter, r *http.Request, body []byte, sessi
 		validationErr = validateNewAPIGeminiInvocation(r, body)
 	}
 	if validationErr != "" {
-		a.startInvocation(obs, auth, false)
+		reason := "invalid_request"
+		if validationErr == "quota_overflow" {
+			reason = "quota_overflow"
+		}
+		a.startInvocation(obs, auth, false, reason)
 		message := "invalid request"
 		if validationErr == "quota_overflow" {
 			obs.ExtraScore += 35
@@ -986,8 +990,8 @@ func (a *App) newAPIInvoke(w *captureWriter, r *http.Request, body []byte, sessi
 		a.writeNewAPIProtocolError(w, obs.RouteTemplate, http.StatusBadRequest, message, "invalid_request_error")
 		return
 	}
-	if modelResolved == false && requestedModel != "" && (obs.RouteTemplate == "anthropic.messages" || obs.RouteTemplate == "gemini.generate" || obs.RouteTemplate == "gemini.stream") {
-		a.startInvocation(obs, auth, false)
+	if !modelResolved && requestedModel != "" {
+		a.startInvocation(obs, auth, false, "model_not_found")
 		a.writeNewAPIProtocolError(w, obs.RouteTemplate, http.StatusNotFound, "model not found", "not_found_error")
 		return
 	}
@@ -1006,6 +1010,7 @@ func (a *App) newAPIInvoke(w *captureWriter, r *http.Request, body []byte, sessi
 	if token.Name != newAPIUserListCanaryName {
 		if _, err := a.store.ConsumeQuota(token.HoneyUserID, token.ID, obs.InvocationID, cost); err != nil {
 			obs.ExecutionOutcome = "rejected_before_dispatch"
+			obs.RejectionReason = "quota_exhausted"
 			obs.ExtraReasons = append(obs.ExtraReasons, "newapi_virtual_quota_exhausted")
 			a.writeNewAPIProtocolError(w, obs.RouteTemplate, http.StatusPaymentRequired, "insufficient quota", "insufficient_quota")
 			return
@@ -1707,7 +1712,11 @@ func (a *App) vllmInvoke(w *captureWriter, r *http.Request, profile profiles.Pro
 	value, validationErr := validateVLLMRequest(r, body, obs.RouteTemplate)
 	if validationErr != nil {
 		a.notePersonaError(model.ProductVLLM, profile.Persona.VLLM.MetricsModelName())
-		a.startInvocation(obs, "invalid", false)
+		auth := "invalid"
+		if profile.Scenario == "no-key" {
+			auth = "not_required"
+		}
+		a.startInvocation(obs, auth, false, "invalid_request")
 		a.writeJSON(w, validationErr.Status, map[string]any{"detail": validationErr.Detail})
 		return
 	}
@@ -1715,10 +1724,15 @@ func (a *App) vllmInvoke(w *captureWriter, r *http.Request, profile profiles.Pro
 	if auth == "valid_honey_key" {
 		obs.CredentialFingerprint = token.Hash
 	}
+	invocationAuth := auth
+	if profile.Scenario == "no-key" {
+		invocationAuth = "not_required"
+	}
 	if obs.RouteTemplate == "vllm.invocations" && profile.Scenario == "legacy-gap" && auth == "missing" {
 		modelName, resolved := a.vllmModelName(profile, stringValue(value["model"]))
 		if !resolved {
 			a.notePersonaError(model.ProductVLLM, profile.Persona.VLLM.MetricsModelName())
+			a.startInvocation(obs, "missing", false, "model_not_found")
 			a.writeJSON(w, http.StatusNotFound, map[string]string{"detail": "The requested model does not exist."})
 			return
 		}
@@ -1736,18 +1750,23 @@ func (a *App) vllmInvoke(w *captureWriter, r *http.Request, profile profiles.Pro
 	}
 	if profile.Scenario != "no-key" && auth != "valid_honey_key" {
 		a.notePersonaError(model.ProductVLLM, profile.Persona.VLLM.MetricsModelName())
-		a.startInvocation(obs, auth, false)
+		reason := "invalid_authentication"
+		if auth == "missing" {
+			reason = "missing_authentication"
+		}
+		a.startInvocation(obs, auth, false, reason)
 		a.writeJSON(w, http.StatusUnauthorized, map[string]any{"detail": "Not authenticated"})
 		return
 	}
 	modelName, resolved := a.vllmModelName(profile, stringValue(value["model"]))
 	if !resolved {
 		a.notePersonaError(model.ProductVLLM, profile.Persona.VLLM.MetricsModelName())
+		a.startInvocation(obs, invocationAuth, false, "model_not_found")
 		a.writeJSON(w, http.StatusNotFound, map[string]string{"detail": "The requested model does not exist."})
 		return
 	}
 	obs.ModelID, obs.ModelResolved = modelName, true
-	a.startInvocation(obs, auth, true)
+	a.startInvocation(obs, invocationAuth, true)
 	obs.ExtraScore += 25
 	obs.ExtraReasons = append(obs.ExtraReasons, "vllm_synthetic_compute_use")
 	a.maybeDegradeVLLM(profile, session, body, obs)
@@ -1850,14 +1869,14 @@ func (a *App) handleOllama(w *captureWriter, r *http.Request, profile profiles.P
 		value, validationErr := validateOllamaOpenAIRequest(r, body, "openai.embeddings")
 		if validationErr != nil {
 			a.notePersonaError(model.ProductOllama, profile.Persona.Ollama.Version)
-			a.startInvocation(obs, "invalid", false)
+			a.startInvocation(obs, "not_required", false, "invalid_request")
 			a.writeJSON(w, validationErr.Status, map[string]string{"error": validationErr.Message})
 			return
 		}
 		item, ok := profiles.FindOllamaModelForProfile(a.cfg.InstanceKey, profile.Persona.Ollama, stringValue(value["model"]))
 		if !ok {
 			a.notePersonaError(model.ProductOllama, stringValue(value["model"]))
-			a.startInvocation(obs, "not_required", false)
+			a.startInvocation(obs, "not_required", false, "model_not_found")
 			a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "model not found"})
 			return
 		}
@@ -1895,14 +1914,14 @@ func (a *App) ollamaInvoke(w *captureWriter, r *http.Request, profile profiles.P
 	request, validationErr := validateOllamaRequest(r, body, obs.RouteTemplate, profile.Persona.Ollama.KeepAlive)
 	if validationErr != nil {
 		a.notePersonaError(model.ProductOllama, profile.Persona.Ollama.Version)
-		a.startInvocation(obs, "invalid", false)
+		a.startInvocation(obs, "not_required", false, "invalid_request")
 		a.writeJSON(w, validationErr.Status, map[string]string{"error": validationErr.Message})
 		return
 	}
 	item, ok := profiles.FindOllamaModelForProfile(a.cfg.InstanceKey, profile.Persona.Ollama, request.Model)
 	if !ok {
 		a.notePersonaError(model.ProductOllama, request.Model)
-		a.startInvocation(obs, "not_required", false)
+		a.startInvocation(obs, "not_required", false, "model_not_found")
 		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "model not found"})
 		return
 	}
@@ -1943,14 +1962,14 @@ func (a *App) ollamaOpenAIInvoke(w *captureWriter, r *http.Request, profile prof
 	value, validationErr := validateOllamaOpenAIRequest(r, body, obs.RouteTemplate)
 	if validationErr != nil {
 		a.notePersonaError(model.ProductOllama, profile.Persona.Ollama.Version)
-		a.startInvocation(obs, "invalid", false)
+		a.startInvocation(obs, "not_required", false, "invalid_request")
 		a.writeJSON(w, validationErr.Status, map[string]string{"error": validationErr.Message})
 		return
 	}
 	item, ok := profiles.FindOllamaModelForProfile(a.cfg.InstanceKey, profile.Persona.Ollama, stringValue(value["model"]))
 	if !ok {
 		a.notePersonaError(model.ProductOllama, stringValue(value["model"]))
-		a.startInvocation(obs, "not_required", false)
+		a.startInvocation(obs, "not_required", false, "model_not_found")
 		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "model not found"})
 		return
 	}
@@ -1980,7 +1999,7 @@ func (a *App) ollamaTask(w *captureWriter, r *http.Request, profile profiles.Pro
 	value, validationErr := validateOllamaTaskRequest(r, body, obs.RouteTemplate)
 	if validationErr != nil {
 		a.notePersonaError(model.ProductOllama, profile.Persona.Ollama.Version)
-		a.startInvocation(obs, "invalid", false)
+		a.startInvocation(obs, "not_required", false, "invalid_request")
 		a.writeJSON(w, validationErr.Status, map[string]string{"error": validationErr.Message})
 		return
 	}
@@ -1988,7 +2007,7 @@ func (a *App) ollamaTask(w *captureWriter, r *http.Request, profile profiles.Pro
 	item, ok := profiles.FindOllamaModelForProfile(a.cfg.InstanceKey, profile.Persona.Ollama, name)
 	if !ok {
 		a.notePersonaError(model.ProductOllama, name)
-		a.startInvocation(obs, "not_required", false)
+		a.startInvocation(obs, "not_required", false, "model_not_found")
 		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "model not found"})
 		return
 	}
@@ -2093,20 +2112,46 @@ func (a *App) handleSGLang(w *captureWriter, r *http.Request, profile profiles.P
 }
 
 func (a *App) sglangInvoke(w *captureWriter, r *http.Request, profile profiles.Profile, session Session, body []byte, obs *Observation) {
+	invocationAuth := "not_required"
 	if profile.Scenario == "api-key" {
-		_, auth := a.honeyAuth(r)
+		token, auth := a.honeyAuth(r)
+		if auth == "valid_honey_key" {
+			obs.CredentialFingerprint = token.Hash
+			invocationAuth = auth
+		}
 		if auth != "valid_honey_key" {
-			a.startInvocation(obs, auth, false)
+			reason := "invalid_authentication"
+			if auth == "missing" {
+				reason = "missing_authentication"
+			}
+			a.startInvocation(obs, auth, false, reason)
 			a.writeJSON(w, http.StatusUnauthorized, map[string]string{"detail": "Not authenticated"})
 			return
 		}
 	}
-	a.startInvocation(obs, "not_required", true)
+	if strings.TrimSpace(string(body)) != "" {
+		value, ok := decodeJSONObject(body)
+		if !ok {
+			a.startInvocation(obs, invocationAuth, false, "invalid_request")
+			a.writeJSON(w, http.StatusBadRequest, map[string]string{"detail": "invalid request"})
+			return
+		}
+		if raw, exists := value["model"]; exists {
+			modelName, valid := raw.(string)
+			if !valid || strings.TrimSpace(modelName) == "" || len([]rune(modelName)) > 256 {
+				a.startInvocation(obs, invocationAuth, false, "invalid_request")
+				a.writeJSON(w, http.StatusBadRequest, map[string]string{"detail": "invalid request"})
+				return
+			}
+		}
+	}
 	obs.ExtraScore += 25
 	obs.ExtraReasons = append(obs.ExtraReasons, "sglang_synthetic_compute_use")
 	requestedModel := a.requestModel(body)
 	entry, modelResolved := a.resolveCatalogModelForSession(model.ProductSGLang, requestedModel, "guest", session)
 	if requestedModel != "" && !modelResolved {
+		obs.ModelID = requestedModel
+		a.startInvocation(obs, invocationAuth, false, "model_not_found")
 		a.writeJSON(w, http.StatusNotFound, map[string]string{"detail": "The requested model does not exist."})
 		return
 	}
@@ -2117,29 +2162,37 @@ func (a *App) sglangInvoke(w *captureWriter, r *http.Request, profile profiles.P
 	}
 	obs.ModelID = modelName
 	obs.ModelResolved = modelResolved
+	a.startInvocation(obs, invocationAuth, true)
 	a.writeOpenAIResponseForRoute(w, body, model.ProductSGLang, obs.RouteTemplate, streamRequested(r, body), obs, modelName)
 }
 
 func (a *App) sglangAdminAction(w *captureWriter, r *http.Request, profile profiles.Profile, session Session, body []byte, obs *Observation) {
 	key := a.bearer(r)
-	if key == "" {
-		a.startInvocation(obs, "missing", false)
-		obs.ExtraScore += 25
-		obs.ExtraReasons = append(obs.ExtraReasons, "sglang_admin_route_without_key")
-		a.writeJSON(w, http.StatusUnauthorized, map[string]string{"detail": "Not authenticated"})
-		return
+	auth := "not_required"
+	if profile.Scenario != "no-key" {
+		if key == "" {
+			a.startInvocation(obs, "missing", false, "missing_authentication")
+			obs.ExtraScore += 25
+			a.writeJSON(w, http.StatusUnauthorized, map[string]string{"detail": "Not authenticated"})
+			return
+		}
+		if key != a.derivedHoneyKey(model.ProductSGLang) {
+			a.startInvocation(obs, "invalid", false, "invalid_authentication")
+			obs.ExtraScore += 25
+			a.writeJSON(w, http.StatusForbidden, map[string]string{"detail": "Invalid admin key"})
+			return
+		}
+		auth = "leaked_key_reused"
 	}
-	if key != a.derivedHoneyKey(model.ProductSGLang) {
-		a.startInvocation(obs, "invalid", false)
-		obs.ExtraScore += 25
-		obs.ExtraReasons = append(obs.ExtraReasons, "sglang_admin_route_invalid_key")
-		a.writeJSON(w, http.StatusForbidden, map[string]string{"detail": "Invalid admin key"})
-		return
+	if key == a.derivedHoneyKey(model.ProductSGLang) {
+		obs.CredentialFingerprint = security.Fingerprint(a.cfg.InstanceKey, key)
+		auth = "leaked_key_reused"
 	}
-	obs.CredentialFingerprint = security.Fingerprint(a.cfg.InstanceKey, key)
-	a.startInvocation(obs, "leaked_key_reused", true)
-	obs.ExtraScore += 55
-	obs.ExtraReasons = append(obs.ExtraReasons, "sglang_server_info_honey_key_reused")
+	a.startInvocation(obs, auth, true)
+	if auth == "leaked_key_reused" {
+		obs.ExtraScore += 55
+		obs.ExtraReasons = append(obs.ExtraReasons, "sglang_server_info_honey_key_reused")
+	}
 	effectType := "sglang_weight_update_virtualized"
 	if obs.RouteTemplate == "sglang.lora.load" {
 		effectType = "sglang_lora_adapter_virtualized"
@@ -2188,6 +2241,7 @@ func (a *App) handleLocalAI(w *captureWriter, r *http.Request, profile profiles.
 		}
 		value, ok := decodeJSONObject(body)
 		if !ok {
+			a.startInvocation(obs, localAIInvocationAuth(obs), false, "invalid_request")
 			a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid model installation request"})
 			return
 		}
@@ -2205,11 +2259,12 @@ func (a *App) handleLocalAI(w *captureWriter, r *http.Request, profile profiles.
 			}
 		}
 		if len(modelName) > 256 || strings.ContainsAny(modelName, "\r\n") {
+			a.startInvocation(obs, localAIInvocationAuth(obs), false, "invalid_request")
 			a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid model name"})
 			return
 		}
 		jobID := "job_" + security.MustRandomToken(10)
-		a.startInvocation(obs, "not_required", true)
+		a.startInvocation(obs, localAIInvocationAuth(obs), true)
 		obs.ExtraScore += 50
 		obs.ExtraReasons = append(obs.ExtraReasons, "localai_model_install_probe")
 		obs.EffectOutcome = "applied"
@@ -2223,6 +2278,7 @@ func (a *App) handleLocalAI(w *captureWriter, r *http.Request, profile profiles.
 		}
 		value, ok := decodeJSONObject(body)
 		if !ok {
+			a.startInvocation(obs, localAIInvocationAuth(obs), false, "invalid_request")
 			a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid model delete request"})
 			return
 		}
@@ -2231,10 +2287,11 @@ func (a *App) handleLocalAI(w *captureWriter, r *http.Request, profile profiles.
 			modelName = stringValue(value["name"])
 		}
 		if len(modelName) > 256 || strings.ContainsAny(modelName, "\r\n") {
+			a.startInvocation(obs, localAIInvocationAuth(obs), false, "invalid_request")
 			a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid model name"})
 			return
 		}
-		a.startInvocation(obs, "not_required", true)
+		a.startInvocation(obs, localAIInvocationAuth(obs), true)
 		obs.ExtraScore += 45
 		obs.ExtraReasons = append(obs.ExtraReasons, "localai_model_delete_probe")
 		_, effectOwner, _ := virtualEffectOwner(profile, session)
@@ -2247,14 +2304,14 @@ func (a *App) handleLocalAI(w *captureWriter, r *http.Request, profile profiles.
 		if profile.Scenario == "current-rbac" && !a.localAIUserAuth(r, obs, w) {
 			return
 		}
-		a.startInvocation(obs, "not_required", true)
+		a.startInvocation(obs, localAIInvocationAuth(obs), true)
 		obs.ExtraScore += 25
 		a.writeJSON(w, http.StatusOK, map[string]any{"text": "Transcription completed.", "duration": 1.2, "language": "en"})
 	case "localai.audio.speech":
 		if profile.Scenario == "current-rbac" && !a.localAIUserAuth(r, obs, w) {
 			return
 		}
-		a.startInvocation(obs, "not_required", true)
+		a.startInvocation(obs, localAIInvocationAuth(obs), true)
 		obs.ExtraScore += 25
 		w.Header().Set("Content-Type", "audio/mpeg")
 		w.WriteHeader(http.StatusOK)
@@ -2263,7 +2320,7 @@ func (a *App) handleLocalAI(w *captureWriter, r *http.Request, profile profiles.
 		if profile.Scenario == "current-rbac" && !a.localAIUserAuth(r, obs, w) {
 			return
 		}
-		a.startInvocation(obs, "not_required", true)
+		a.startInvocation(obs, localAIInvocationAuth(obs), true)
 		obs.ExtraScore += 30
 		a.writeJSON(w, http.StatusOK, map[string]any{"created": time.Now().Unix(), "data": []map[string]string{{"b64_json": "c3l1c2VyLWltYWdl"}}})
 	case "openai.models":
@@ -2274,12 +2331,27 @@ func (a *App) handleLocalAI(w *captureWriter, r *http.Request, profile profiles.
 				return
 			}
 		}
-		a.startInvocation(obs, "not_required", true)
-		obs.ExtraScore += 25
-		obs.ExtraReasons = append(obs.ExtraReasons, "localai_synthetic_compute_use")
+		if strings.TrimSpace(string(body)) != "" {
+			value, ok := decodeJSONObject(body)
+			if !ok {
+				a.startInvocation(obs, localAIInvocationAuth(obs), false, "invalid_request")
+				a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+				return
+			}
+			if raw, exists := value["model"]; exists {
+				modelName, valid := raw.(string)
+				if !valid || strings.TrimSpace(modelName) == "" || len([]rune(modelName)) > 256 {
+					a.startInvocation(obs, localAIInvocationAuth(obs), false, "invalid_request")
+					a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+					return
+				}
+			}
+		}
 		requestedModel := a.requestModel(body)
 		entry, modelResolved := a.resolveCatalogModelForSession(model.ProductLocalAI, requestedModel, "guest", session)
 		if requestedModel != "" && !modelResolved {
+			obs.ModelID = requestedModel
+			a.startInvocation(obs, localAIInvocationAuth(obs), false, "model_not_found")
 			a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "model not found"})
 			return
 		}
@@ -2290,6 +2362,9 @@ func (a *App) handleLocalAI(w *captureWriter, r *http.Request, profile profiles.
 		}
 		obs.ModelID = modelName
 		obs.ModelResolved = modelResolved
+		a.startInvocation(obs, localAIInvocationAuth(obs), true)
+		obs.ExtraScore += 25
+		obs.ExtraReasons = append(obs.ExtraReasons, "localai_synthetic_compute_use")
 		a.writeOpenAIResponseForRoute(w, body, model.ProductLocalAI, obs.RouteTemplate, streamRequested(r, body), obs, modelName)
 	default:
 		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
@@ -2299,12 +2374,24 @@ func (a *App) handleLocalAI(w *captureWriter, r *http.Request, profile profiles.
 func (a *App) localAIUserAuth(r *http.Request, obs *Observation, w *captureWriter) bool {
 	token, auth := a.honeyAuth(r)
 	if auth != "valid_honey_key" {
-		a.startInvocation(obs, auth, false)
+		reason := "invalid_authentication"
+		if auth == "missing" {
+			reason = "missing_authentication"
+		}
+		a.startInvocation(obs, auth, false, reason)
 		a.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 		return false
 	}
 	obs.CredentialFingerprint = token.Hash
+	obs.AuthOutcome = auth
 	return true
+}
+
+func localAIInvocationAuth(obs *Observation) string {
+	if obs != nil && obs.AuthOutcome != "" {
+		return obs.AuthOutcome
+	}
+	return "not_required"
 }
 
 func (a *App) localAIAdminAuth(r *http.Request, obs *Observation, w *captureWriter) bool {

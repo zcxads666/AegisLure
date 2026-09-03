@@ -1474,12 +1474,13 @@
     ],
     "chain_aggregation": {
       "allowed_modes": [
+        "source_ip_day",
         "session",
         "source_ip",
         "source_ip_product"
       ],
-      "default_mode": "session",
-      "default_window": "30m"
+      "default_mode": "source_ip_day",
+      "default_window": "Asia/Shanghai calendar day"
     },
     "code_execution": false,
     "regex_engine": "RE2",

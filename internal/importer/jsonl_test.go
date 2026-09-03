@@ -1,6 +1,8 @@
 package importer
 
 import (
+	"encoding/base64"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -45,6 +47,9 @@ func TestImportJSONLRedactsAndTracksProvenance(t *testing.T) {
 	if strings.Contains(event.BodyPreview, "secret-value") || !strings.Contains(event.BodyPreview, "[REDACTED]") {
 		t.Fatalf("imported body was not redacted: %s", event.BodyPreview)
 	}
+	if event.RawRequest == nil || event.RawRequest.Route != "/v1/chat/completions" || event.RawRequest.BodyBase64 != base64.StdEncoding.EncodeToString([]byte(`{"token":"secret-value","url":"http://127.0.0.1/metadata"}`)) {
+		t.Fatalf("raw request was not retained independently of preview: %#v", event.RawRequest)
+	}
 	if event.Score < 45 || event.IntentClass != "exploit_probe" {
 		t.Fatalf("URL classification was not applied: %#v", event)
 	}
@@ -53,5 +58,19 @@ func TestImportJSONLRedactsAndTracksProvenance(t *testing.T) {
 `), Source{ID: "promptpot", FileID: "run-1", Product: model.ProductVLLM, SchemaVersion: "promptpot-jsonl-v1"}, sink)
 	if err != nil || stats.Duplicates != 1 || stats.Imported != 0 {
 		t.Fatalf("duplicate import was not idempotent: %#v %v", stats, err)
+	}
+}
+
+func TestImportJSONLRetainsExplicitRawRequestWithoutTopLevelFields(t *testing.T) {
+	input := strings.NewReader(`{"source_ip":"203.0.113.55","raw_request":{"url":"https://example.test/v1/models?raw=1","route":"/v1/models","host":"example.test","headers":{"X-Repeated":["one","two"]},"body_base64":"cmF3LXNlY3JldA=="}}
+`)
+	sink := &recordingSink{}
+	stats, err := ImportJSONL(input, Source{ID: "explicit-raw", FileID: "run-raw", Product: model.ProductVLLM, SchemaVersion: "raw-v1"}, sink)
+	if err != nil || stats.Imported != 1 || len(sink.events) != 1 {
+		t.Fatalf("explicit raw import = %#v, %v", stats, err)
+	}
+	raw := sink.events[0].RawRequest
+	if raw == nil || raw.URL != "https://example.test/v1/models?raw=1" || raw.Route != "/v1/models" || raw.Host != "example.test" || raw.BodyBase64 != "cmF3LXNlY3JldA==" || !reflect.DeepEqual(raw.Headers["X-Repeated"], []string{"one", "two"}) {
+		t.Fatalf("explicit raw request was dropped or changed: %#v", raw)
 	}
 }

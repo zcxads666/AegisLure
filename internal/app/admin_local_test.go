@@ -39,7 +39,7 @@ func TestLocalAdminDetailRoutesAndInstancePatch(t *testing.T) {
 	}
 	eventID := events["events"].([]any)[0].(map[string]any)["event_id"].(string)
 	resp, eventDetail := doJSON(t, admin, http.MethodGet, cfg.AdminPath+"admin/api/v1/events/"+eventID, nil)
-	if resp.StatusCode != http.StatusOK || eventDetail["event"] == nil || eventDetail["raw_payload_available"] != false {
+	if resp.StatusCode != http.StatusOK || eventDetail["event"] == nil || eventDetail["raw_payload_available"] != true || eventDetail["payload_view"] != "full_raw_request" {
 		t.Fatalf("event detail status = %d %#v", resp.StatusCode, eventDetail)
 	}
 
@@ -146,7 +146,7 @@ func TestNewAPICriticalPathAggregatesOutOfOrderStepsAndExposesStrategyConfig(t *
 		t.Fatalf("critical path was split into multiple chains: %#v", chains)
 	}
 	chain := chainItems[0].(map[string]any)
-	if chain["aggregation_mode"] != "session" || chain["event_count"].(float64) < 7 || chain["latest_observed_at"] == "" {
+	if chain["aggregation_mode"] != "source_ip_day" || chain["calendar_day"] == "" || chain["event_count"].(float64) < 7 || chain["latest_observed_at"] == "" {
 		t.Fatalf("chain aggregation metadata is incomplete: %#v", chain)
 	}
 	matched := false
@@ -160,7 +160,7 @@ func TestNewAPICriticalPathAggregatesOutOfOrderStepsAndExposesStrategyConfig(t *
 	}
 
 	resp, configBody := doJSON(t, admin, http.MethodGet, cfg.AdminPath+"admin/api/v1/chain-config", nil)
-	if resp.StatusCode != http.StatusOK || configBody["config"].(map[string]any)["mode"] != "session" {
+	if resp.StatusCode != http.StatusOK || configBody["config"].(map[string]any)["mode"] != "source_ip_day" {
 		t.Fatalf("chain config GET = %d %#v", resp.StatusCode, configBody)
 	}
 	resp, updated := doJSON(t, admin, http.MethodPut, cfg.AdminPath+"admin/api/v1/chain-config", map[string]any{"mode": "source_ip_product", "window_seconds": 600, "max_events": 100})
@@ -198,14 +198,16 @@ func TestInteractionChainRefreshOrdersByLatestRecordDeterministically(t *testing
 		{EventID: "newer-first", Sequence: 2, SessionID: "session-new", Product: model.ProductOllama, ObservedAt: base.Add(2 * time.Second), EventType: "http.request.classified"},
 		{EventID: "older-first", Sequence: 1, SessionID: "session-old", Product: model.ProductOllama, ObservedAt: base, EventType: "http.request.classified"},
 	}
-	views := a.buildInteractionChainViews(events, model.DefaultInteractionChainConfig())
+	chainConfig := model.DefaultInteractionChainConfig()
+	chainConfig.Mode = model.InteractionChainBySession
+	views := a.buildInteractionChainViews(events, chainConfig)
 	if len(views) != 2 || views[0].SessionID != "session-new" || views[1].SessionID != "session-old" {
 		t.Fatalf("chain ordering was not latest-first: %#v", views)
 	}
 	if len(views[0].Events) != 2 || views[0].Events[0].EventID != "newer-first" || views[0].Events[1].EventID != "newer-last" {
 		t.Fatalf("chain events were not chronological: %#v", views[0].Events)
 	}
-	if config := st.InteractionChainConfig(); config.Mode != model.InteractionChainBySession {
+	if config := st.InteractionChainConfig(); config.Mode != model.InteractionChainBySourceIPDay {
 		t.Fatalf("default interaction chain config changed unexpectedly: %#v", config)
 	}
 }

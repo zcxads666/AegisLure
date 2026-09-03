@@ -171,7 +171,7 @@ func (a *App) handleAdminPackAPI(w http.ResponseWriter, r *http.Request, path st
 	}
 	if len(parts) == 3 && parts[2] == "rules" && kind == model.PackKindDetector {
 		if r.Method == http.MethodGet {
-			a.adminRuleList(w, kind, parts[1])
+			a.adminRuleList(w, r, kind, parts[1])
 		} else if r.Method == http.MethodPost {
 			a.adminRuleAdd(w, r, parts[1])
 		} else {
@@ -529,14 +529,39 @@ func (a *App) adminPackAction(w http.ResponseWriter, r *http.Request, kind, id, 
 	}
 }
 
-func (a *App) adminRuleList(w http.ResponseWriter, kind, id string) {
+func (a *App) adminRuleList(w http.ResponseWriter, r *http.Request, kind, id string) {
 	document, err := a.detectorDefinition(kind, id)
 	if err != nil {
 		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
 	}
 	pack, _ := a.store.GetPack(kind, id)
-	a.writeJSON(w, http.StatusOK, map[string]any{"pack_id": id, "revision": document.Revision, "lifecycle": pack.Lifecycle, "rules": document.Rules, "count": len(document.Rules), "data_only": true})
+	page, query, pageErr := adminPageParams(r)
+	if pageErr != nil {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": pageErr.Error()})
+		return
+	}
+	rules := document.Rules
+	if query != "" {
+		needle := strings.ToLower(query)
+		filtered := make([]packs.DetectorRule, 0, len(rules))
+		for _, rule := range rules {
+			encoded, _ := json.Marshal(rule)
+			if strings.Contains(strings.ToLower(string(encoded)), needle) {
+				filtered = append(filtered, rule)
+			}
+		}
+		rules = filtered
+	}
+	pageRules, pagination := paginateAdminValues(rules, page)
+	response := adminPagePayload(pagination)
+	response["pack_id"] = id
+	response["revision"] = document.Revision
+	response["lifecycle"] = pack.Lifecycle
+	response["rules"] = pageRules
+	response["count"] = len(pageRules)
+	response["data_only"] = true
+	a.writeJSON(w, http.StatusOK, response)
 }
 
 func (a *App) detectorDefinition(kind, id string) (packs.DetectorRulePack, error) {

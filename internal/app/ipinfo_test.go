@@ -237,7 +237,7 @@ func TestDashboardSourceCountryUsesIPInfoAndKeepsFallbackMetadata(t *testing.T) 
 
 	analytics := a.buildDashboardAnalytics(nil, []model.Indicator{{IP: "8.8.8.8", Score: 55}}, time.Now().UTC())
 	countries := analytics["source_countries"].([]map[string]any)
-	if len(countries) != 1 || countries[0]["name"] != "United States" || countries[0]["country_code"] != "US" || countries[0]["geo_source"] != "ipinfo_lite" {
+	if len(countries) != 1 || countries[0]["name"] != "美国" || countries[0]["country_code"] != "US" || countries[0]["geo_source"] != "ipinfo_lite" {
 		t.Fatalf("dashboard IPinfo country aggregation = %#v", countries)
 	}
 }
@@ -320,7 +320,7 @@ func TestAdminIPInfoSwitchRequeriesDashboardAfterUnknown(t *testing.T) {
 	}
 	analytics := a.buildDashboardAnalytics(nil, []model.Indicator{{IP: "8.8.8.8", Score: 55}}, time.Now().UTC())
 	countries := analytics["source_countries"].([]map[string]any)
-	if len(countries) != 1 || countries[0]["name"] != "United States" || countries[0]["geo_source"] != config.GeoIPProviderIPInfoLite || requests.Load() != 1 {
+	if len(countries) != 1 || countries[0]["name"] != "美国" || countries[0]["geo_source"] != config.GeoIPProviderIPInfoLite || requests.Load() != 1 {
 		t.Fatalf("dashboard did not auto-query after provider switch: countries=%#v requests=%d", countries, requests.Load())
 	}
 }

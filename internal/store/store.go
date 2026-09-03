@@ -54,6 +54,36 @@ type Options struct {
 	ConnectDelay   time.Duration
 }
 
+// EventQuery is the bounded, server-side query used by management lists.
+// Page numbers are one-based. The admin API fixes PageSize at ten; the store
+// keeps the type reusable for offline callers and tests.
+type EventQuery struct {
+	Page             int
+	PageSize         int
+	Query            string
+	Product          string
+	SourceIP         string
+	MinScore         int
+	InvocationOnly   bool
+	InvocationLevel  string
+	AuthOutcome      string
+	ExecutionOutcome string
+}
+
+type PageInfo struct {
+	Page        int  `json:"page"`
+	PageSize    int  `json:"page_size"`
+	Total       int  `json:"total"`
+	TotalPages  int  `json:"total_pages"`
+	HasNext     bool `json:"has_next"`
+	HasPrevious bool `json:"has_previous"`
+}
+
+type EventPage struct {
+	Events     []model.Event `json:"events"`
+	Pagination PageInfo      `json:"pagination"`
+}
+
 const (
 	defaultMaxEvents      = 100000
 	defaultRetention      = 30 * 24 * time.Hour
@@ -578,6 +608,13 @@ CREATE INDEX IF NOT EXISTS events_observed_at_idx ON events(observed_at);
 CREATE INDEX IF NOT EXISTS events_product_idx ON events(product, observed_at);
 CREATE INDEX IF NOT EXISTS events_source_ip_idx ON events(source_ip, observed_at);
 CREATE INDEX IF NOT EXISTS events_route_idx ON events(route_template, observed_at);
+CREATE TABLE IF NOT EXISTS event_tombstones (
+	event_id TEXT PRIMARY KEY NOT NULL,
+	deleted_at TEXT NOT NULL,
+	actor TEXT,
+	reason TEXT
+);
+CREATE INDEX IF NOT EXISTS event_tombstones_deleted_at_idx ON event_tombstones(deleted_at);
 CREATE TABLE IF NOT EXISTS external_event_refs (
 	source_id TEXT NOT NULL,
 	source_file_id TEXT NOT NULL,
@@ -625,6 +662,13 @@ CREATE INDEX IF NOT EXISTS events_observed_at_idx ON events(observed_at);
 CREATE INDEX IF NOT EXISTS events_product_idx ON events(product, observed_at);
 CREATE INDEX IF NOT EXISTS events_source_ip_idx ON events(source_ip, observed_at);
 CREATE INDEX IF NOT EXISTS events_route_idx ON events(route_template, observed_at);
+CREATE TABLE IF NOT EXISTS event_tombstones (
+	event_id TEXT PRIMARY KEY NOT NULL,
+	deleted_at TEXT NOT NULL,
+	actor TEXT,
+	reason TEXT
+);
+CREATE INDEX IF NOT EXISTS event_tombstones_deleted_at_idx ON event_tombstones(deleted_at);
 CREATE TABLE IF NOT EXISTS external_event_refs (
 	source_id TEXT NOT NULL,
 	source_file_id TEXT NOT NULL,
@@ -854,6 +898,12 @@ func ensureStateMaps(state *model.State) {
 	}
 	if state.InteractionChain.Mode == "" {
 		state.InteractionChain = model.DefaultInteractionChainConfig()
+	} else if state.InteractionChain.Timezone == "" {
+		state.InteractionChain.Timezone = model.InteractionChainTimezone
+	}
+	if state.InteractionChain.Mode == model.InteractionChainBySourceIPDay {
+		state.InteractionChain.WindowSeconds = 24 * 60 * 60
+		state.InteractionChain.Timezone = model.InteractionChainTimezone
 	}
 	if state.ImportSources == nil {
 		state.ImportSources = make(map[string]model.ImportSource)
@@ -1983,6 +2033,9 @@ func (s *Store) pruneEventsLocked(now time.Time) (bool, error) {
 	if _, err := s.db.Exec(s.bind(`DELETE FROM external_event_refs WHERE event_sequence NOT IN (SELECT sequence FROM events)`)); err != nil {
 		return false, fmt.Errorf("prune imported event provenance: %w", err)
 	}
+	if _, err := s.db.Exec(s.bind(`DELETE FROM event_tombstones WHERE event_id NOT IN (SELECT event_id FROM events)`)); err != nil {
+		return false, fmt.Errorf("prune event tombstones: %w", err)
+	}
 	return changed, nil
 }
 
@@ -2012,7 +2065,7 @@ func (s *Store) rewriteEventMirrorLocked(path string) error {
 	if err != nil {
 		return err
 	}
-	rows, err := s.db.Query(s.bind(`SELECT event_json FROM events ORDER BY sequence ASC`))
+	rows, err := s.db.Query(s.bind(`SELECT e.event_json FROM events e LEFT JOIN event_tombstones t ON t.event_id=e.event_id WHERE t.event_id IS NULL ORDER BY e.sequence ASC`))
 	if err != nil {
 		_ = f.Close()
 		return fmt.Errorf("query event mirror: %w", err)
@@ -2057,8 +2110,27 @@ func (s *Store) Events(limit int, product, sourceIP string) ([]model.Event, erro
 	if limit == 0 || limit > 1000 {
 		limit = 100
 	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	all, err := s.readEventsLocked(product, sourceIP)
+	if err != nil {
+		return nil, err
+	}
+	if limit > 0 && len(all) > limit {
+		all = all[len(all)-limit:]
+	}
+	for i, j := 0, len(all)-1; i < j; i, j = i+1, j-1 {
+		all[i], all[j] = all[j], all[i]
+	}
+	return all, nil
+}
+
+// readEventsLocked returns active events in append order. Callers must hold at
+// least s.mu.RLock; the tombstone join is the single source of truth for all
+// derived views and management lists.
+func (s *Store) readEventsLocked(product, sourceIP string) ([]model.Event, error) {
 	if s.db != nil {
-		rows, err := s.db.Query(s.bind(`SELECT event_json FROM events ORDER BY sequence ASC`))
+		rows, err := s.db.Query(s.bind(`SELECT e.event_json FROM events e LEFT JOIN event_tombstones t ON t.event_id=e.event_id WHERE t.event_id IS NULL ORDER BY e.sequence ASC`))
 		if err != nil {
 			return nil, fmt.Errorf("query %s events: %w", s.driver, err)
 		}
@@ -2083,12 +2155,6 @@ func (s *Store) Events(limit int, product, sourceIP string) ([]model.Event, erro
 		}
 		if err := rows.Err(); err != nil {
 			return nil, err
-		}
-		if limit > 0 && len(all) > limit {
-			all = all[len(all)-limit:]
-		}
-		for i, j := 0, len(all)-1; i < j; i, j = i+1, j-1 {
-			all[i], all[j] = all[j], all[i]
 		}
 		return all, nil
 	}
@@ -2120,13 +2186,232 @@ func (s *Store) Events(limit int, product, sourceIP string) ([]model.Event, erro
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
-	if limit > 0 && len(all) > limit {
-		all = all[len(all)-limit:]
+	return all, nil
+}
+
+func pageInfo(page, pageSize, total int) PageInfo {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 10
+	}
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + pageSize - 1) / pageSize
+	}
+	return PageInfo{Page: page, PageSize: pageSize, Total: total, TotalPages: totalPages, HasNext: page < totalPages, HasPrevious: page > 1 && totalPages > 0}
+}
+
+func (s *Store) EventPage(query EventQuery) (EventPage, error) {
+	if query.Page < 1 {
+		query.Page = 1
+	}
+	if query.PageSize < 1 {
+		query.PageSize = 10
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	all, err := s.readEventsLocked(query.Product, query.SourceIP)
+	if err != nil {
+		return EventPage{}, err
+	}
+	needle := strings.ToLower(strings.TrimSpace(query.Query))
+	if needle != "" {
+		filtered := all[:0]
+		for _, event := range all {
+			if query.InvocationOnly && event.InvocationID == "" {
+				continue
+			}
+			if query.MinScore > 0 && event.Score < query.MinScore {
+				continue
+			}
+			if query.InvocationLevel != "" && string(event.InvocationLevel) != query.InvocationLevel {
+				continue
+			}
+			if query.AuthOutcome != "" && event.AuthOutcome != query.AuthOutcome {
+				continue
+			}
+			if query.ExecutionOutcome != "" && event.ExecutionOutcome != query.ExecutionOutcome {
+				continue
+			}
+			encoded, _ := json.Marshal(event)
+			if strings.Contains(strings.ToLower(string(encoded)), needle) {
+				filtered = append(filtered, event)
+			}
+		}
+		all = filtered
+	} else if query.MinScore > 0 || query.InvocationOnly || query.InvocationLevel != "" || query.AuthOutcome != "" || query.ExecutionOutcome != "" {
+		filtered := all[:0]
+		for _, event := range all {
+			if query.InvocationOnly && event.InvocationID == "" {
+				continue
+			}
+			if query.MinScore > 0 && event.Score < query.MinScore {
+				continue
+			}
+			if query.InvocationLevel != "" && string(event.InvocationLevel) != query.InvocationLevel {
+				continue
+			}
+			if query.AuthOutcome != "" && event.AuthOutcome != query.AuthOutcome {
+				continue
+			}
+			if query.ExecutionOutcome != "" && event.ExecutionOutcome != query.ExecutionOutcome {
+				continue
+			}
+			filtered = append(filtered, event)
+		}
+		all = filtered
 	}
 	for i, j := 0, len(all)-1; i < j; i, j = i+1, j-1 {
 		all[i], all[j] = all[j], all[i]
 	}
-	return all, nil
+	pagination := pageInfo(query.Page, query.PageSize, len(all))
+	start := (pagination.Page - 1) * pagination.PageSize
+	if start >= len(all) {
+		return EventPage{Events: []model.Event{}, Pagination: pagination}, nil
+	}
+	end := start + pagination.PageSize
+	if end > len(all) {
+		end = len(all)
+	}
+	return EventPage{Events: all[start:end], Pagination: pagination}, nil
+}
+
+// SoftDeleteEventIDs adds tombstones without changing or removing event rows.
+// The returned count is the number of active event rows newly hidden.
+func (s *Store) SoftDeleteEventIDs(ids []string) (int, error) {
+	unique := make([]string, 0, len(ids))
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id != "" && !seen[id] {
+			seen[id] = true
+			unique = append(unique, id)
+		}
+	}
+	if len(unique) == 0 {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db == nil {
+		return 0, errors.New("store is closed")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("begin event delete: %w", err)
+	}
+	defer tx.Rollback()
+	deleted := 0
+	for _, id := range unique {
+		var active int
+		if err := tx.QueryRow(s.bind(`SELECT 1 FROM events e LEFT JOIN event_tombstones t ON t.event_id=e.event_id WHERE e.event_id=? AND t.event_id IS NULL`), id).Scan(&active); errors.Is(err, sql.ErrNoRows) {
+			continue
+		} else if err != nil {
+			return 0, fmt.Errorf("check event delete target: %w", err)
+		}
+		result, err := tx.Exec(s.bind(`INSERT INTO event_tombstones(event_id,deleted_at,reason) VALUES(?,?,?) ON CONFLICT DO NOTHING`), id, time.Now().UTC().Format(time.RFC3339Nano), "admin_logical_delete")
+		if err != nil {
+			return 0, fmt.Errorf("write event tombstone: %w", err)
+		}
+		if affected, rowsErr := result.RowsAffected(); rowsErr == nil && affected > 0 {
+			deleted++
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit event delete: %w", err)
+	}
+	if deleted > 0 && s.driver == DriverSQLite {
+		if err := s.rewriteEventMirrorLocked(filepath.Join(s.dir, "events.jsonl")); err != nil {
+			return deleted, err
+		}
+	}
+	return deleted, nil
+}
+
+// RestoreEventIDs removes tombstones only; the append-only event rows remain
+// intact and become visible to derived views again.
+func (s *Store) RestoreEventIDs(ids []string) (int, error) {
+	unique := make([]string, 0, len(ids))
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id != "" && !seen[id] {
+			seen[id] = true
+			unique = append(unique, id)
+		}
+	}
+	if len(unique) == 0 {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db == nil {
+		return 0, errors.New("store is closed")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("begin event restore: %w", err)
+	}
+	defer tx.Rollback()
+	restored := 0
+	for _, id := range unique {
+		result, err := tx.Exec(s.bind(`DELETE FROM event_tombstones WHERE event_id=?`), id)
+		if err != nil {
+			return 0, fmt.Errorf("restore event tombstone: %w", err)
+		}
+		if affected, rowsErr := result.RowsAffected(); rowsErr == nil {
+			restored += int(affected)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit event restore: %w", err)
+	}
+	if restored > 0 && s.driver == DriverSQLite {
+		if err := s.rewriteEventMirrorLocked(filepath.Join(s.dir, "events.jsonl")); err != nil {
+			return restored, err
+		}
+	}
+	return restored, nil
+}
+
+func (s *Store) EventIDsForInvocation(invocationID string) ([]string, error) {
+	invocationID = strings.TrimSpace(invocationID)
+	if invocationID == "" {
+		return nil, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	all, err := s.readEventsLocked("", "")
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0)
+	for _, event := range all {
+		if event.InvocationID == invocationID {
+			ids = append(ids, event.EventID)
+		}
+	}
+	return ids, nil
+}
+
+func (s *Store) EventIDsForSourceIP(sourceIP string) ([]string, error) {
+	sourceIP = strings.TrimSpace(sourceIP)
+	if sourceIP == "" {
+		return nil, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	all, err := s.readEventsLocked("", sourceIP)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(all))
+	for _, event := range all {
+		ids = append(ids, event.EventID)
+	}
+	return ids, nil
 }
 
 func (s *Store) Indicators() ([]model.Indicator, error) {
@@ -2190,7 +2475,15 @@ func (s *Store) Indicators() ([]model.Indicator, error) {
 		}
 		result = append(result, a.item)
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Score > result[j].Score })
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].Score != result[j].Score {
+			return result[i].Score > result[j].Score
+		}
+		if !result[i].LastSeen.Equal(result[j].LastSeen) {
+			return result[i].LastSeen.After(result[j].LastSeen)
+		}
+		return result[i].IP < result[j].IP
+	})
 	return result, nil
 }
 

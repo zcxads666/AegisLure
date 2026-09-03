@@ -604,8 +604,8 @@ func TestSGLangAndLocalAIProfilesRemainSynthetic(t *testing.T) {
 	}
 	key := info["api_key"].(string)
 	resp, result := doJSON(t, client, http.MethodPost, "/load_lora_adapter_from_tensors", map[string]string{"tensors": "pickle __reduce__"})
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("SGLang missing key status = %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK || result["status"] != "accepted" {
+		t.Fatalf("SGLang no-key action status = %d %#v", resp.StatusCode, result)
 	}
 	resp, result = doJSONWithHeaders(t, client, http.MethodPost, "/load_lora_adapter_from_tensors", map[string]string{"tensors": "pickle __reduce__"}, map[string]string{"Authorization": "Bearer " + key})
 	if resp.StatusCode != http.StatusOK || result["status"] != "accepted" || result["weight_id"] == nil {

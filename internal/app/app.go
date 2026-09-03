@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -47,6 +49,7 @@ type Observation struct {
 	AuthOutcome           string
 	ExecutionOutcome      string
 	EffectOutcome         string
+	RejectionReason       string
 	InvocationID          string
 	InvocationLevel       string
 	ResponseObserved      bool
@@ -59,6 +62,7 @@ type Observation struct {
 	MatchedRuleIDs        []string
 	CredentialFingerprint string
 	ScoreOverride         *int
+	RawRequest            *model.RawRequest
 	Metadata              map[string]string
 }
 
@@ -88,6 +92,8 @@ type App struct {
 	exports        map[string]localExportJob
 	ipInfo         *ipInfoClient
 }
+
+const modelCallRiskBonus = 20
 
 type rateBucket struct {
 	StartedAt time.Time
@@ -340,14 +346,26 @@ func (a *App) publicHandler(profile profiles.Profile) http.Handler {
 		body, tooLarge := readBoundedBody(r, 1<<20)
 		cw := &captureWriter{ResponseWriter: w, personaProduct: profile.Product}
 		route := profiles.Route(profile.Product, r.Method, r.URL.Path)
-		obs := &Observation{RouteTemplate: route, ResponseObserved: true, Metadata: map[string]string{"event_type": "http.request.classified", "scenario": profile.Scenario}}
+		headerLimitExceeded := headerValueCount(r) > 100 || headerBytes(r) > 32*1024
+		truncationReason := ""
+		if tooLarge {
+			truncationReason = "body_limit_exceeded"
+		}
+		if headerLimitExceeded {
+			if truncationReason != "" {
+				truncationReason = "headers_and_body_limit_exceeded"
+			} else {
+				truncationReason = "header_limit_exceeded"
+			}
+		}
+		obs := &Observation{RouteTemplate: route, ResponseObserved: true, RawRequest: captureRawRequest(r, body, truncationReason), Metadata: map[string]string{"event_type": "http.request.classified", "scenario": profile.Scenario}}
 		if r.ContentLength >= 0 {
 			obs.Metadata["declared_body_bytes"] = fmt.Sprintf("%d", r.ContentLength)
 		}
 		if tooLarge {
 			obs.Metadata["body_truncated"] = "true"
 		}
-		if len(r.Header) > 100 || headerBytes(r) > 32*1024 {
+		if headerLimitExceeded {
 			obs.ExtraScore = 20
 			obs.ExtraReasons = append(obs.ExtraReasons, "request_header_limit_exceeded")
 			a.writePublicBoundaryError(cw, profile.Product, http.StatusRequestHeaderFieldsTooLarge, "Request headers too large")
@@ -460,6 +478,9 @@ func readBoundedBody(r *http.Request, limit int64) ([]byte, bool) {
 	defer r.Body.Close()
 	b, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
 	if err != nil {
+		if int64(len(b)) > limit {
+			b = b[:limit]
+		}
 		return b, true
 	}
 	if int64(len(b)) > limit {
@@ -479,7 +500,107 @@ func headerBytes(r *http.Request) int {
 			total += len(value)
 		}
 	}
+	if r.Host != "" {
+		total += len("Host") + len(r.Host)
+	}
 	return total
+}
+
+func headerValueCount(r *http.Request) int {
+	count := 0
+	for _, values := range r.Header {
+		count += len(values)
+	}
+	if r.Host != "" {
+		count++
+	}
+	return count
+}
+
+// captureRawRequest records the complete parsed HTTP request envelope that is
+// available to the handler. The event stream remains bounded: normal requests
+// are lossless, while a request that crosses either capture limit keeps the
+// available prefix and states exactly which limit was crossed.
+func captureRawRequest(r *http.Request, body []byte, truncationReason string) *model.RawRequest {
+	if r == nil {
+		return nil
+	}
+	requestURL := r.RequestURI
+	if requestURL == "" && r.URL != nil {
+		requestURL = r.URL.String()
+	}
+	route := ""
+	if r.URL != nil {
+		route = r.URL.EscapedPath()
+		if route == "" {
+			route = r.URL.Path
+		}
+	}
+	host := r.Host
+	if host == "" && r.URL != nil {
+		host = r.URL.Host
+	}
+	result := &model.RawRequest{
+		URL:        requestURL,
+		Route:      route,
+		Host:       host,
+		Headers:    make(map[string][]string),
+		BodyBase64: base64.StdEncoding.EncodeToString(body),
+	}
+	// Go canonicalizes header names, but preserves repeated values. Keep the
+	// parsed values exactly as supplied to the handler and include Host in the
+	// admin-visible envelope even though net/http stores it separately.
+	allHeaders := make(map[string][]string, len(r.Header)+1)
+	for name, values := range r.Header {
+		allHeaders[name] = append([]string(nil), values...)
+	}
+	if host != "" {
+		allHeaders["Host"] = []string{host}
+	}
+	headerNames := make([]string, 0, len(allHeaders))
+	for name := range allHeaders {
+		headerNames = append(headerNames, name)
+	}
+	sort.Strings(headerNames)
+	limitHeaders := strings.Contains(truncationReason, "header")
+	headerCount, headerSize := 0, 0
+	for _, name := range headerNames {
+		values := allHeaders[name]
+		if !limitHeaders {
+			result.Headers[name] = values
+			continue
+		}
+		kept := make([]string, 0, len(values))
+		for _, value := range values {
+			if headerCount >= 100 {
+				result.Truncated = true
+				continue
+			}
+			available := 32*1024 - headerSize - len(name)
+			if available <= 0 {
+				result.Truncated = true
+				continue
+			}
+			if len(value) > available {
+				kept = append(kept, value[:available])
+				headerCount++
+				headerSize += len(name) + available
+				result.Truncated = true
+				continue
+			}
+			kept = append(kept, value)
+			headerCount++
+			headerSize += len(name) + len(value)
+		}
+		if len(kept) > 0 {
+			result.Headers[name] = kept
+		}
+	}
+	if truncationReason != "" {
+		result.Truncated = true
+		result.TruncationReason = truncationReason
+	}
+	return result
 }
 
 func requiredMethod(route string) string {
@@ -586,6 +707,14 @@ func (a *App) record(profile profiles.Profile, r *http.Request, body []byte, cw 
 	digest, preview := security.BodyDigest(body, 2048)
 	analysis := detect.Analyze(profile.Product, obs.RouteTemplate, string(body))
 	score := analysis.Score + obs.ExtraScore
+	modelCallAttempted := obs.InvocationAttempted || obs.InvocationID != ""
+	if modelCallAttempted {
+		score += modelCallRiskBonus
+		obs.ExtraReasons = append(obs.ExtraReasons, "model_call_attempted")
+		if obs.ExecutionOutcome == "rejected_before_dispatch" {
+			obs.ExtraReasons = append(obs.ExtraReasons, "model_call_rejected")
+		}
+	}
 	if score > 100 {
 		score = 100
 	}
@@ -653,7 +782,7 @@ func (a *App) record(profile profiles.Profile, r *http.Request, body []byte, cw 
 		EventID: security.MustRandomToken(16), EventType: eventType, ObservedAt: time.Now().UTC(), Product: profile.Product, ProfileID: profile.ID, RouteTemplate: obs.RouteTemplate,
 		Method: r.Method, SourceIP: sourceIP, SourcePort: sourcePort, UserAgent: security.RedactPreview(r.UserAgent(), 256), ContentType: r.Header.Get("Content-Type"), Status: cw.status,
 		RequestBytes: int64(len(body)), ResponseBytes: cw.bytes, DurationMS: duration.Milliseconds(), BodySHA256: digest, BodyPreview: preview, QueryPreview: security.RedactPreview(r.URL.RawQuery, 1024), BodyBytesRead: int64(len(body)),
-		HeaderNames: headerNames(r), OriginClass: requestOriginClass(r), SessionID: session.ID, InvocationID: obs.InvocationID, CredentialFingerprint: obs.CredentialFingerprint, ModelID: modelID, ModelResolved: modelResolved, InvocationAttempted: obs.InvocationAttempted || obs.InvocationID != "", AuthOutcome: obs.AuthOutcome, ExecutionOutcome: obs.ExecutionOutcome, EffectOutcome: obs.EffectOutcome,
+		HeaderNames: headerNames(r), RawRequest: obs.RawRequest, OriginClass: requestOriginClass(r), SessionID: session.ID, InvocationID: obs.InvocationID, CredentialFingerprint: obs.CredentialFingerprint, ModelID: modelID, ModelResolved: modelResolved, InvocationAttempted: modelCallAttempted, AuthOutcome: obs.AuthOutcome, ExecutionOutcome: obs.ExecutionOutcome, EffectOutcome: obs.EffectOutcome, RejectionReason: obs.RejectionReason,
 		ResponseObserved: obs.ResponseObserved, InvocationLevel: model.InvocationLevel(level), SimulatedInputTokens: obs.SimulatedInputTokens, SimulatedOutputTokens: obs.SimulatedOutputTokens, SimulatedCost: obs.SimulatedCost, IntentClass: intent, Score: score, Confidence: analysis.Confidence, ReasonCodes: uniqueStrings(reasons), MatchedRuleIDs: uniqueStrings(matchedRuleIDs), Metadata: obs.Metadata,
 	}
 	if event.Score >= 60 {
@@ -679,6 +808,11 @@ func (a *App) record(profile profiles.Profile, r *http.Request, body []byte, cw 
 		if event.Score > 100 {
 			event.Score = 100
 		}
+	}
+	// A score override may tune the detector result, but cannot erase the fact
+	// that a model call was attempted. Keep the fixed attempt floor intact.
+	if modelCallAttempted && event.Score < modelCallRiskBonus {
+		event.Score = modelCallRiskBonus
 	}
 	if err := a.store.AppendEvent(event); err != nil {
 		a.log.Printf("event append failed: %v", err)
@@ -978,7 +1112,7 @@ func syntheticText(body []byte, product string) string {
 	return personaResponseText(body, product)
 }
 
-func (a *App) startInvocation(obs *Observation, auth string, accepted bool) {
+func (a *App) startInvocation(obs *Observation, auth string, accepted bool, rejectionReason ...string) {
 	id, err := security.RandomToken(12)
 	if err != nil {
 		id = fmt.Sprintf("inv-%d", time.Now().UnixNano())
@@ -991,6 +1125,18 @@ func (a *App) startInvocation(obs *Observation, auth string, accepted bool) {
 		obs.ExecutionOutcome = "synthetic_accepted"
 	} else {
 		obs.ExecutionOutcome = "rejected_before_dispatch"
+		if len(rejectionReason) > 0 && strings.TrimSpace(rejectionReason[0]) != "" {
+			obs.RejectionReason = strings.TrimSpace(rejectionReason[0])
+		} else {
+			switch auth {
+			case "missing":
+				obs.RejectionReason = "missing_authentication"
+			case "invalid":
+				obs.RejectionReason = "invalid_authentication"
+			default:
+				obs.RejectionReason = "request_rejected"
+			}
+		}
 	}
 }
 

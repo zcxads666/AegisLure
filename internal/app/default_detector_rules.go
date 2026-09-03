@@ -82,7 +82,7 @@ func defaultDetectorRulePack() packs.DetectorRulePack {
 			"sequence_modes":    []string{"ordered", "unordered"},
 			"regex_engine":      "RE2",
 			"code_execution":    false,
-			"chain_aggregation": map[string]any{"default_mode": "session", "default_window": "30m", "allowed_modes": []string{"session", "source_ip", "source_ip_product"}},
+			"chain_aggregation": map[string]any{"default_mode": model.InteractionChainBySourceIPDay, "default_window": "Asia/Shanghai calendar day", "allowed_modes": []string{model.InteractionChainBySourceIPDay, "session", "source_ip", "source_ip_product"}},
 		},
 		Rules: []packs.DetectorRule{
 			{ID: "SSRF_URL_CLASS_V1", Type: "atomic", ReasonCode: "exploit_probe_ssrf", Score: 45, Confidence: "high", URLClasses: []string{"loopback", "unspecified", "link_local", "private", "file_scheme"}},

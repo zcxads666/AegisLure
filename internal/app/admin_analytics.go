@@ -169,7 +169,7 @@ func (a *App) dashboardCountryShares(indicators []model.Indicator) []map[string]
 		}
 		sort.Strings(ips)
 		result = append(result, map[string]any{
-			"key": country, "name": country, "count": count,
+			"key": country, "name": countryNameZH(metadataByCountry[country].CountryCode, country), "count": count,
 			"percentage": sharePercentage(count, total), "ips": ips,
 			"country_code":   metadataByCountry[country].CountryCode,
 			"continent":      metadataByCountry[country].Continent,

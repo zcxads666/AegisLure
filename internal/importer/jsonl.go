@@ -1,18 +1,21 @@
 // Package importer contains the optional, offline-only third-party event
 // importer. It accepts bounded JSONL and emits the same model.Event envelope
-// used by native listeners without exposing a host path or raw source body to
-// the HTTP control plane.
+// used by native listeners. Source paths remain provenance metadata only; an
+// explicitly supplied bounded raw-request object is retained for the
+// authenticated owner/admin audit view.
 package importer
 
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -23,8 +26,11 @@ import (
 )
 
 const (
-	maxLineBytes   = 2 * 1024 * 1024
-	maxStringBytes = 256 * 1024
+	maxLineBytes       = 2 * 1024 * 1024
+	maxStringBytes     = 256 * 1024
+	maxRawBodyBytes    = 1 << 20
+	maxRawHeaderBytes  = 32 * 1024
+	maxRawHeaderValues = 100
 )
 
 type Source struct {
@@ -52,6 +58,8 @@ var allowedFields = map[string]bool{
 	"user_agent": true, "content_type": true, "status": true, "status_code": true,
 	"request_bytes": true, "response_bytes": true, "duration_ms": true, "body": true,
 	"request_body": true, "prompt": true, "headers": true, "metadata": true,
+	"url": true, "request_uri": true, "request_target": true, "host": true, "raw_request": true,
+	"rejection_reason": true,
 }
 
 func (s Source) validate() error {
@@ -166,7 +174,7 @@ func normalize(line []byte, source Source, offset int64, hash string) (model.Eve
 			return model.Event{}, fmt.Errorf("unsupported source field %q", key)
 		}
 	}
-	event := model.Event{EventID: stringField(raw, "event_id"), EventType: stringField(raw, "event_type"), EventOrigin: "third_party", SourceProduct: source.Product, SourceSchemaVersion: source.SchemaVersion, SourceEventHash: hash, SourceFileID: source.FileID, SourceOffset: offset, Product: source.Product, ProfileID: stringField(raw, "profile_id"), Method: stringField(raw, "method"), UserAgent: security.RedactPreview(stringField(raw, "user_agent"), 256), ContentType: security.RedactPreview(stringField(raw, "content_type"), 128), Status: intField(raw, "status", intField(raw, "status_code", 0)), RequestBytes: int64Field(raw, "request_bytes"), ResponseBytes: int64Field(raw, "response_bytes"), DurationMS: int64Field(raw, "duration_ms"), Metadata: map[string]string{}}
+	event := model.Event{EventID: stringField(raw, "event_id"), EventType: stringField(raw, "event_type"), EventOrigin: "third_party", SourceProduct: source.Product, SourceSchemaVersion: source.SchemaVersion, SourceEventHash: hash, SourceFileID: source.FileID, SourceOffset: offset, Product: source.Product, ProfileID: stringField(raw, "profile_id"), Method: stringField(raw, "method"), UserAgent: security.RedactPreview(stringField(raw, "user_agent"), 256), ContentType: security.RedactPreview(stringField(raw, "content_type"), 128), Status: intField(raw, "status", intField(raw, "status_code", 0)), RequestBytes: int64Field(raw, "request_bytes"), ResponseBytes: int64Field(raw, "response_bytes"), DurationMS: int64Field(raw, "duration_ms"), RejectionReason: stringField(raw, "rejection_reason"), Metadata: map[string]string{}}
 	if event.EventType == "" {
 		event.EventType = "http.request.classified"
 	}
@@ -178,13 +186,17 @@ func normalize(line []byte, source Source, offset int64, hash string) (model.Eve
 	if event.SourceIP == "" {
 		return model.Event{}, errors.New("source IP is required")
 	}
-	event.RouteTemplate, _ = safeRoute(raw)
-	if event.RouteTemplate == "" {
-		event.RouteTemplate = "imported.unknown"
-	}
-	body := rawBody(raw)
+	body, bodyTruncated := rawBody(raw)
 	event.BodySHA256, event.BodyPreview = security.BodyDigest(body, 2048)
 	event.BodyBytesRead = int64(len(body))
+	event.RouteTemplate, _ = safeRoute(raw)
+	if event.RouteTemplate == "" {
+		// Keep an internal, stable classification value for storage. The admin
+		// UI uses the absence of RawRequest to explain that the legacy route
+		// cannot be reconstructed; it never exposes a fabricated .unknown path.
+		event.RouteTemplate = "imported_unclassified"
+	}
+	event.RawRequest = rawRequest(raw, body, bodyTruncated)
 	analysis := detect.Analyze(event.Product, event.RouteTemplate, event.BodyPreview)
 	event.Score, event.Confidence, event.IntentClass, event.ReasonCodes = analysis.Score, analysis.Confidence, analysis.IntentClass, unique(analysis.Reasons)
 	event.ResponseObserved = event.ResponseBytes > 0 || event.Status > 0
@@ -197,6 +209,182 @@ func normalize(line []byte, source Source, offset int64, hash string) (model.Eve
 		event.InvocationLevel = model.L2
 	}
 	return event, nil
+}
+
+func rawRequest(fields map[string]json.RawMessage, body []byte, bodyTruncated bool) *model.RawRequest {
+	requestURL := ""
+	for _, name := range []string{"url", "request_uri", "request_target"} {
+		if value := stringField(fields, name); value != "" {
+			requestURL = value
+			break
+		}
+	}
+	if requestURL == "" {
+		requestURL = stringField(fields, "path")
+		if requestURL == "" {
+			requestURL = stringField(fields, "route")
+		}
+	}
+	route, _ := safeRoute(fields)
+	host := stringField(fields, "host")
+	headers := rawHeaders(fields)
+	if userAgent := stringField(fields, "user_agent"); userAgent != "" && !hasHeader(headers, "user-agent") {
+		headers["User-Agent"] = []string{userAgent}
+	}
+	if contentType := stringField(fields, "content_type"); contentType != "" && !hasHeader(headers, "content-type") {
+		headers["Content-Type"] = []string{contentType}
+	}
+	if host != "" && !hasHeader(headers, "host") {
+		headers["Host"] = []string{host}
+	}
+	request := &model.RawRequest{URL: requestURL, Route: route, Host: host, Headers: headers, BodyBase64: base64.StdEncoding.EncodeToString(body), Truncated: bodyTruncated}
+	if bodyTruncated {
+		request.TruncationReason = "body_limit_exceeded"
+	}
+	var suppliedPresent bool
+	if data, ok := fields["raw_request"]; ok {
+		var supplied model.RawRequest
+		if json.Unmarshal(data, &supplied) == nil {
+			suppliedPresent = true
+			if supplied.URL != "" {
+				request.URL = supplied.URL
+			}
+			if supplied.Route != "" {
+				request.Route = supplied.Route
+			}
+			if supplied.Host != "" {
+				request.Host = supplied.Host
+			}
+			if len(supplied.Headers) > 0 {
+				request.Headers = supplied.Headers
+			}
+			if supplied.BodyBase64 != "" {
+				request.BodyBase64 = supplied.BodyBase64
+			}
+			request.Truncated = request.Truncated || supplied.Truncated
+			if supplied.TruncationReason != "" {
+				request.TruncationReason = supplied.TruncationReason
+			}
+		}
+	}
+	if request.URL == "" && request.Route == "" && request.Host == "" && len(request.Headers) == 0 && request.BodyBase64 == "" && !suppliedPresent {
+		return nil
+	}
+	var rawBodyTruncated bool
+	request.BodyBase64, rawBodyTruncated = boundRawBodyBase64(request.BodyBase64)
+	if rawBodyTruncated {
+		request.Truncated = true
+		if request.TruncationReason == "" {
+			request.TruncationReason = "raw_body_base64_limit_exceeded"
+		} else if request.TruncationReason == "body_limit_exceeded" {
+			request.TruncationReason = "body_and_raw_body_base64_limit_exceeded"
+		}
+	}
+	var headerTruncated bool
+	request.Headers, headerTruncated = boundRawHeaders(request.Headers)
+	if headerTruncated {
+		request.Truncated = true
+		if request.TruncationReason == "" {
+			request.TruncationReason = "header_limit_exceeded"
+		} else if request.TruncationReason == "body_limit_exceeded" {
+			request.TruncationReason = "headers_and_body_limit_exceeded"
+		}
+	}
+	return request
+}
+
+func boundRawBodyBase64(value string) (string, bool) {
+	if value == "" {
+		return "", false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		// Keep a bounded source value for forensic review even when an imported
+		// producer supplied malformed Base64. Native capture always emits valid
+		// Base64; this branch only protects the optional importer boundary.
+		limit := maxRawBodyBytes * 2
+		if len(value) > limit {
+			return value[:limit], true
+		}
+		return value, false
+	}
+	if len(decoded) <= maxRawBodyBytes {
+		return base64.StdEncoding.EncodeToString(decoded), false
+	}
+	return base64.StdEncoding.EncodeToString(decoded[:maxRawBodyBytes]), true
+}
+
+func rawHeaders(fields map[string]json.RawMessage) map[string][]string {
+	result := make(map[string][]string)
+	data, ok := fields["headers"]
+	if !ok {
+		return result
+	}
+	var values map[string]json.RawMessage
+	if json.Unmarshal(data, &values) != nil {
+		return result
+	}
+	for name, data := range values {
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		var repeated []string
+		if json.Unmarshal(data, &repeated) == nil {
+			result[name] = append([]string(nil), repeated...)
+			continue
+		}
+		var value string
+		if json.Unmarshal(data, &value) == nil {
+			result[name] = []string{value}
+		}
+	}
+	return result
+}
+
+func boundRawHeaders(headers map[string][]string) (map[string][]string, bool) {
+	if len(headers) == 0 {
+		return map[string][]string{}, false
+	}
+	names := make([]string, 0, len(headers))
+	for name := range headers {
+		if strings.TrimSpace(name) != "" {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	result := make(map[string][]string, len(names))
+	count, size := 0, 0
+	truncated := false
+	for _, name := range names {
+		for _, value := range headers[name] {
+			if count >= maxRawHeaderValues {
+				truncated = true
+				continue
+			}
+			available := maxRawHeaderBytes - size - len(name)
+			if available <= 0 {
+				truncated = true
+				continue
+			}
+			if len(value) > available {
+				value = value[:available]
+				truncated = true
+			}
+			result[name] = append(result[name], value)
+			count++
+			size += len(name) + len(value)
+		}
+	}
+	return result, truncated
+}
+
+func hasHeader(headers map[string][]string, name string) bool {
+	for key := range headers {
+		if strings.EqualFold(key, name) {
+			return true
+		}
+	}
+	return false
 }
 
 func stringField(fields map[string]json.RawMessage, name string) string {
@@ -291,20 +479,28 @@ func safeRoute(fields map[string]json.RawMessage) (string, bool) {
 	return value, true
 }
 
-func rawBody(fields map[string]json.RawMessage) []byte {
+func rawBody(fields map[string]json.RawMessage) ([]byte, bool) {
 	for _, name := range []string{"body", "request_body", "prompt"} {
 		if value, ok := fields[name]; ok {
 			if len(value) > maxLineBytes {
-				return value[:maxLineBytes]
+				return value[:maxRawBodyBytes], true
 			}
 			var text string
 			if json.Unmarshal(value, &text) == nil {
-				return []byte(text)
+				body := []byte(text)
+				if len(body) > maxRawBodyBytes {
+					return body[:maxRawBodyBytes], true
+				}
+				return body, false
 			}
-			return append([]byte(nil), value...)
+			body := append([]byte(nil), value...)
+			if len(body) > maxRawBodyBytes {
+				return body[:maxRawBodyBytes], true
+			}
+			return body, false
 		}
 	}
-	return nil
+	return nil, false
 }
 
 func unique(values []string) []string {

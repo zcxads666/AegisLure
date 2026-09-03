@@ -16,6 +16,7 @@ import (
 	"github.com/zcxads666/AegisLure/internal/config"
 	"github.com/zcxads666/AegisLure/internal/model"
 	"github.com/zcxads666/AegisLure/internal/security"
+	"github.com/zcxads666/AegisLure/internal/store"
 )
 
 type AdminSession struct {
@@ -375,6 +376,8 @@ func (a *App) handleAdminAPI(w http.ResponseWriter, r *http.Request, path string
 		a.adminExportRoute(w, r, path)
 	case path == "events":
 		a.adminEvents(w, r)
+	case strings.HasPrefix(path, "events/") && r.Method == http.MethodDelete:
+		a.adminDeleteEvent(w, r, strings.TrimPrefix(path, "events/"))
 	case strings.HasPrefix(path, "events/") && r.Method == http.MethodGet:
 		a.adminEventDetail(w, r, strings.TrimPrefix(path, "events/"))
 	case path == "sessions" && r.Method == http.MethodGet:
@@ -383,10 +386,14 @@ func (a *App) handleAdminAPI(w http.ResponseWriter, r *http.Request, path string
 		a.adminSessionDetail(w, r, strings.TrimPrefix(path, "sessions/"))
 	case path == "invocations":
 		a.adminInvocations(w, r)
+	case strings.HasPrefix(path, "invocations/") && r.Method == http.MethodDelete:
+		a.adminDeleteInvocation(w, r, strings.TrimPrefix(path, "invocations/"))
 	case strings.HasPrefix(path, "invocations/") && r.Method == http.MethodGet:
 		a.adminInvocationDetail(w, r, strings.TrimPrefix(path, "invocations/"))
 	case path == "interaction-chains":
 		a.adminInteractionChains(w, r)
+	case strings.HasPrefix(path, "interaction-chains/") && r.Method == http.MethodDelete:
+		a.adminDeleteInteractionChain(w, r, strings.TrimPrefix(path, "interaction-chains/"))
 	case strings.HasPrefix(path, "interaction-chains/") && r.Method == http.MethodGet:
 		a.adminInteractionChainDetail(w, r, strings.TrimPrefix(path, "interaction-chains/"))
 	case path == "chain-config":
@@ -395,6 +402,8 @@ func (a *App) handleAdminAPI(w http.ResponseWriter, r *http.Request, path string
 		a.adminActorDetail(w, r, strings.TrimPrefix(path, "actors/"))
 	case path == "indicators" || path == "indicators/ips":
 		a.adminIndicators(w, r)
+	case strings.HasPrefix(path, "indicators/") && r.Method == http.MethodDelete:
+		a.adminDeleteIndicator(w, r, strings.TrimPrefix(path, "indicators/"))
 	case strings.HasPrefix(path, "indicators/") && r.Method == http.MethodPost:
 		a.adminIndicatorAction(w, r, strings.TrimPrefix(path, "indicators/"))
 	case path == "identity-indicators" && r.Method == http.MethodGet:
@@ -769,59 +778,61 @@ func (a *App) adminDashboard(w http.ResponseWriter) {
 }
 
 func (a *App) adminEvents(w http.ResponseWriter, r *http.Request) {
-	limit := 100
-	if value := r.URL.Query().Get("limit"); value != "" {
-		_, _ = fmt.Sscanf(value, "%d", &limit)
-	}
-	if limit < 1 || limit > 1000 {
-		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "limit must be between 1 and 1000"})
+	if r.Method != http.MethodGet {
+		a.writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	events, err := a.store.Events(limit, r.URL.Query().Get("product"), r.URL.Query().Get("ip"))
+	page, query, err := adminPageParams(r)
+	if err != nil {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	minScore, scoreErr := indicatorQueryInt(r, "min_score", 0)
+	if scoreErr != nil || minScore < 0 || minScore > 100 {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "min_score must be between 0 and 100"})
+		return
+	}
+	result, err := a.store.EventPage(store.EventQuery{Page: page, PageSize: adminPageSize, Query: query, Product: r.URL.Query().Get("product"), SourceIP: r.URL.Query().Get("ip"), MinScore: minScore})
 	if err != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "event query failed"})
 		return
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"events": events, "count": len(events), "synthetic_only": true})
+	response := adminPagePayload(result.Pagination)
+	response["events"] = result.Events
+	response["count"] = len(result.Events)
+	response["synthetic_only"] = true
+	a.writeJSON(w, http.StatusOK, response)
 }
 
 func (a *App) adminInvocations(w http.ResponseWriter, r *http.Request) {
-	limit := queryInt(r, "limit", 100)
-	if limit < 1 || limit > 1000 {
-		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "limit must be between 1 and 1000"})
+	if r.Method != http.MethodGet {
+		a.writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	events, err := a.store.Events(-1, r.URL.Query().Get("product"), r.URL.Query().Get("ip"))
+	page, query, err := adminPageParams(r)
+	if err != nil {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	result, err := a.store.EventPage(store.EventQuery{Page: page, PageSize: adminPageSize, Query: query, Product: r.URL.Query().Get("product"), SourceIP: r.URL.Query().Get("ip"), InvocationOnly: true, InvocationLevel: r.URL.Query().Get("level"), AuthOutcome: r.URL.Query().Get("auth"), ExecutionOutcome: r.URL.Query().Get("execution")})
 	if err != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "invocation query failed"})
 		return
 	}
-	items := make([]model.Event, 0, limit)
-	for _, event := range events {
-		if event.InvocationID == "" {
-			continue
-		}
-		if value := r.URL.Query().Get("level"); value != "" && string(event.InvocationLevel) != value {
-			continue
-		}
-		if value := r.URL.Query().Get("auth"); value != "" && event.AuthOutcome != value {
-			continue
-		}
-		if value := r.URL.Query().Get("execution"); value != "" && event.ExecutionOutcome != value {
-			continue
-		}
-		items = append(items, event)
-		if len(items) == limit {
-			break
-		}
-	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"invocations": items, "count": len(items), "synthetic_only": true})
+	response := adminPagePayload(result.Pagination)
+	response["invocations"] = result.Events
+	response["count"] = len(result.Events)
+	response["synthetic_only"] = true
+	a.writeJSON(w, http.StatusOK, response)
 }
 
 type interactionChainView struct {
 	ID               string                `json:"id"`
 	SessionID        string                `json:"session_id,omitempty"`
+	SourceIP         string                `json:"source_ip,omitempty"`
+	CalendarDay      string                `json:"calendar_day,omitempty"`
 	Product          string                `json:"product"`
+	Products         []string              `json:"products,omitempty"`
 	AggregationMode  string                `json:"aggregation_mode"`
 	AggregationKey   string                `json:"aggregation_key,omitempty"`
 	SessionCount     int                   `json:"session_count"`
@@ -840,6 +851,15 @@ type interactionChainView struct {
 }
 
 func (a *App) adminInteractionChains(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		a.writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	page, query, err := adminPageParams(r)
+	if err != nil {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	events, err := a.store.Events(-1, r.URL.Query().Get("product"), r.URL.Query().Get("ip"))
 	if err != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "chain query failed"})
@@ -847,10 +867,24 @@ func (a *App) adminInteractionChains(w http.ResponseWriter, r *http.Request) {
 	}
 	config := a.store.InteractionChainConfig()
 	result := a.buildInteractionChainViews(events, config)
-	if limit := queryInt(r, "limit", 100); limit >= 1 && limit < len(result) {
-		result = result[:limit]
+	if query != "" {
+		needle := strings.ToLower(query)
+		filtered := result[:0]
+		for _, chain := range result {
+			encoded, _ := json.Marshal(chain)
+			if strings.Contains(strings.ToLower(string(encoded)), needle) {
+				filtered = append(filtered, chain)
+			}
+		}
+		result = filtered
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"chains": result, "count": len(result), "aggregation": config, "synthetic_only": true})
+	pageResult, pagination := paginateAdminValues(result, page)
+	response := adminPagePayload(pagination)
+	response["chains"] = pageResult
+	response["count"] = len(pageResult)
+	response["aggregation"] = normalizeInteractionChainConfig(config)
+	response["synthetic_only"] = true
+	a.writeJSON(w, http.StatusOK, response)
 }
 
 type interactionChainBucket struct {
@@ -874,7 +908,7 @@ func (a *App) buildInteractionChainViews(events []model.Event, config model.Inte
 			bucket = &interactionChainBucket{identityKey: identityKey, displayKey: displayKey, sessions: make(map[string]bool), latest: event.ObservedAt}
 			buckets[identityKey] = bucket
 		}
-		if !bucket.latest.IsZero() && !event.ObservedAt.IsZero() && bucket.latest.Sub(event.ObservedAt) > time.Duration(config.WindowSeconds)*time.Second {
+		if config.Mode != model.InteractionChainBySourceIPDay && !bucket.latest.IsZero() && !event.ObservedAt.IsZero() && bucket.latest.Sub(event.ObservedAt) > time.Duration(config.WindowSeconds)*time.Second {
 			continue
 		}
 		if len(bucket.events) >= config.MaxEvents {
@@ -916,6 +950,12 @@ func (a *App) buildInteractionChainViews(events []model.Event, config model.Inte
 		view.AggregationMode = config.Mode
 		view.AggregationKey = bucket.displayKey
 		view.SessionCount = len(bucket.sessions)
+		view.SourceIP = bucket.events[0].SourceIP
+		if config.Mode == model.InteractionChainBySourceIPDay {
+			if location, err := time.LoadLocation(model.InteractionChainTimezone); err == nil {
+				view.CalendarDay = bucket.events[0].ObservedAt.In(location).Format("2006-01-02")
+			}
+		}
 		result = append(result, view)
 	}
 	sort.SliceStable(result, func(i, j int) bool {
@@ -949,6 +989,16 @@ func interactionChainKey(event model.Event, mode string) (string, string, bool) 
 			return "", "", false
 		}
 		return "source_product:" + event.Product + "\x00" + event.SourceIP, event.Product + " @ " + event.SourceIP, true
+	case model.InteractionChainBySourceIPDay:
+		if event.SourceIP == "" || event.ObservedAt.IsZero() {
+			return "", "", false
+		}
+		location, err := time.LoadLocation(model.InteractionChainTimezone)
+		if err != nil {
+			location = time.FixedZone("Asia/Shanghai", 8*60*60)
+		}
+		day := event.ObservedAt.In(location).Format("2006-01-02")
+		return "source_ip_day:" + event.SourceIP + "\x00" + day, "source_ip:" + event.SourceIP + " @ " + day, true
 	default:
 		if event.SessionID == "" {
 			return "", "", false
@@ -960,7 +1010,7 @@ func interactionChainKey(event model.Event, mode string) (string, string, bool) 
 
 func normalizeInteractionChainConfig(config model.InteractionChainConfig) model.InteractionChainConfig {
 	defaults := model.DefaultInteractionChainConfig()
-	if config.Mode != model.InteractionChainBySession && config.Mode != model.InteractionChainBySourceIP && config.Mode != model.InteractionChainBySourceAndProduct {
+	if config.Mode != model.InteractionChainBySession && config.Mode != model.InteractionChainBySourceIP && config.Mode != model.InteractionChainBySourceAndProduct && config.Mode != model.InteractionChainBySourceIPDay {
 		config.Mode = defaults.Mode
 	}
 	if config.WindowSeconds < 60 || config.WindowSeconds > 24*60*60 {
@@ -969,13 +1019,20 @@ func normalizeInteractionChainConfig(config model.InteractionChainConfig) model.
 	if config.MaxEvents < 10 || config.MaxEvents > 1000 {
 		config.MaxEvents = defaults.MaxEvents
 	}
+	if config.Timezone == "" {
+		config.Timezone = model.InteractionChainTimezone
+	}
+	if config.Mode == model.InteractionChainBySourceIPDay {
+		config.WindowSeconds = 24 * 60 * 60
+		config.Timezone = model.InteractionChainTimezone
+	}
 	return config
 }
 
 func (a *App) adminInteractionChainConfig(w http.ResponseWriter, r *http.Request) {
 	config := a.store.InteractionChainConfig()
 	if r.Method == http.MethodGet {
-		a.writeJSON(w, http.StatusOK, map[string]any{"config": normalizeInteractionChainConfig(config), "allowed_modes": []string{model.InteractionChainBySession, model.InteractionChainBySourceIP, model.InteractionChainBySourceAndProduct}, "data_only": true})
+		a.writeJSON(w, http.StatusOK, map[string]any{"config": normalizeInteractionChainConfig(config), "allowed_modes": []string{model.InteractionChainBySourceIPDay, model.InteractionChainBySession, model.InteractionChainBySourceIP, model.InteractionChainBySourceAndProduct}, "timezone": model.InteractionChainTimezone, "data_only": true})
 		return
 	}
 	if r.Method != http.MethodPut && r.Method != http.MethodPatch {
@@ -1019,7 +1076,7 @@ func (a *App) adminInteractionChainConfig(w http.ResponseWriter, r *http.Request
 		return
 	}
 	a.recordAudit(r, "interaction-chain.config.update", "interaction-chain", "success", map[string]string{"mode": config.Mode, "window_seconds": strconv.Itoa(config.WindowSeconds), "max_events": strconv.Itoa(config.MaxEvents)})
-	a.writeJSON(w, http.StatusOK, map[string]any{"config": config, "allowed_modes": []string{model.InteractionChainBySession, model.InteractionChainBySourceIP, model.InteractionChainBySourceAndProduct}, "data_only": true})
+	a.writeJSON(w, http.StatusOK, map[string]any{"config": normalizeInteractionChainConfig(config), "allowed_modes": []string{model.InteractionChainBySourceIPDay, model.InteractionChainBySession, model.InteractionChainBySourceIP, model.InteractionChainBySourceAndProduct}, "timezone": model.InteractionChainTimezone, "data_only": true})
 }
 
 func invocationRank(level model.InvocationLevel) int {
@@ -1038,6 +1095,10 @@ func invocationRank(level model.InvocationLevel) int {
 }
 
 func (a *App) adminIndicators(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		a.writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
 	items, decisions, err := a.filteredIndicators(r)
 	if err != nil {
 		status := http.StatusInternalServerError
@@ -1072,13 +1133,19 @@ func (a *App) adminIndicators(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(content))
 		return
 	}
-	views := make([]map[string]any, 0, len(items))
+	page, _, pageErr := adminPageParams(r)
+	if pageErr != nil {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": pageErr.Error()})
+		return
+	}
+	pageItems, pagination := paginateAdminValues(items, page)
+	views := make([]map[string]any, 0, len(pageItems))
 	rawIPs := make([]string, 0, len(items))
-	for _, item := range items {
+	for _, item := range pageItems {
 		rawIPs = append(rawIPs, item.IP)
 	}
 	locations := a.lookupIPInfoForRiskList(rawIPs)
-	for _, item := range items {
+	for _, item := range pageItems {
 		view := indicatorView(item, decisions[item.IP], a.cfg.InstanceKey)
 		location, ok := locations[item.IP]
 		if !ok {
@@ -1087,7 +1154,12 @@ func (a *App) adminIndicators(w http.ResponseWriter, r *http.Request) {
 		addIndicatorGeoView(view, location)
 		views = append(views, view)
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"items": views, "count": len(views), "approved_only": r.URL.Query().Get("status") == "approved", "note": "Standalone decisions require manual approval and always carry a TTL; no permanent block is emitted."})
+	response := adminPagePayload(pagination)
+	response["items"] = views
+	response["count"] = len(views)
+	response["approved_only"] = r.URL.Query().Get("status") == "approved"
+	response["note"] = "Standalone decisions require manual approval and always carry a TTL; no permanent block is emitted."
+	a.writeJSON(w, http.StatusOK, response)
 }
 
 func (a *App) adminInstances(w http.ResponseWriter) {
@@ -1158,7 +1230,7 @@ func (a *App) adminPacks(w http.ResponseWriter) {
 		"bindings":               bindings,
 		"bound_revisions":        boundRevisions,
 		"chain_aggregation":      chainConfig,
-		"allowed_chain_modes":    []string{model.InteractionChainBySession, model.InteractionChainBySourceIP, model.InteractionChainBySourceAndProduct},
+		"allowed_chain_modes":    []string{model.InteractionChainBySourceIPDay, model.InteractionChainBySession, model.InteractionChainBySourceIP, model.InteractionChainBySourceAndProduct},
 		"strategies":             a.adminPackStrategies(chainConfig),
 		"data_only":              true,
 	})
@@ -1198,6 +1270,59 @@ func queryInt(r *http.Request, name string, fallback int) int {
 		return fallback
 	}
 	return result
+}
+
+const adminPageSize = 10
+
+func adminPageParams(r *http.Request) (int, string, error) {
+	page := 1
+	if raw := strings.TrimSpace(r.URL.Query().Get("page")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 {
+			return 0, "", errors.New("page must be a positive integer")
+		}
+		page = parsed
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("page_size")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed != adminPageSize {
+			return 0, "", fmt.Errorf("page_size is fixed at %d", adminPageSize)
+		}
+	}
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if len(query) > 256 {
+		return 0, "", errors.New("q is too long")
+	}
+	return page, query, nil
+}
+
+func adminPagination(total, page int) store.PageInfo {
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + adminPageSize - 1) / adminPageSize
+	}
+	return store.PageInfo{Page: page, PageSize: adminPageSize, Total: total, TotalPages: totalPages, HasNext: page < totalPages, HasPrevious: page > 1 && totalPages > 0}
+}
+
+func adminPagePayload(info store.PageInfo) map[string]any {
+	return map[string]any{
+		"page": info.Page, "page_size": info.PageSize, "total": info.Total,
+		"total_pages": info.TotalPages, "has_next": info.HasNext, "has_previous": info.HasPrevious,
+		"pagination": info,
+	}
+}
+
+func paginateAdminValues[T any](values []T, page int) ([]T, store.PageInfo) {
+	info := adminPagination(len(values), page)
+	start := (page - 1) * adminPageSize
+	if start >= len(values) {
+		return []T{}, info
+	}
+	end := start + adminPageSize
+	if end > len(values) {
+		end = len(values)
+	}
+	return values[start:end], info
 }
 
 func sameOriginRequest(r *http.Request) bool {
