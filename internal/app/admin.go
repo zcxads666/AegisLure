@@ -748,7 +748,7 @@ func (a *App) adminDashboard(w http.ResponseWriter) {
 	if len(recent) > 8 {
 		recent = recent[:8]
 	}
-	analytics := a.buildDashboardAnalytics(events, indicators, now)
+	analytics := a.buildDashboardAnalytics(events, indicators, now.In(time.Local))
 	enabled := append([]string{}, a.cfg.EnabledProfiles...)
 	a.writeJSON(w, http.StatusOK, map[string]any{
 		"service": "AegisLure", "synthetic_only": true, "generated_at": now,

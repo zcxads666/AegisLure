@@ -11,17 +11,31 @@ import (
 
 const dashboardRiskThreshold = 30
 
-// dashboardTimeSeries builds relative windows so a newly arriving event is
-// visible immediately instead of waiting for the next wall-clock boundary.
+// dashboardTimeSeries builds calendar-aligned rolling windows. The last point
+// is always the current hour/day, so the axis changes at the selected bucket
+// boundary instead of staying on the same labels for a full window.
 // risk_count intentionally uses the same medium-risk threshold as the rest
 // of the admin console.
 func dashboardTimeSeries(events []model.Event, now time.Time, bucketCount int, bucketSize time.Duration, labelFormat string) map[string]any {
 	points := make([]map[string]any, 0, bucketCount)
 	total := 0
 	riskTotal := 0
-	for index := bucketCount - 1; index >= 0; index-- {
-		end := now.Add(-time.Duration(index) * bucketSize)
-		start := end.Add(-bucketSize)
+	if bucketCount <= 0 {
+		return map[string]any{
+			"bucket_seconds": int(bucketSize / time.Second),
+			"points":         points,
+			"total":          0,
+			"risk_total":     0,
+			"risk_threshold": dashboardRiskThreshold,
+		}
+	}
+
+	currentStart := dashboardBucketStart(now, bucketSize)
+	firstStart := dashboardAddBuckets(currentStart, bucketSize, -(bucketCount - 1))
+	currentEnd := dashboardAddBuckets(currentStart, bucketSize, 1)
+	for index := 0; index < bucketCount; index++ {
+		start := dashboardAddBuckets(firstStart, bucketSize, index)
+		end := dashboardAddBuckets(start, bucketSize, 1)
 		count := 0
 		riskCount := 0
 		peakScore := 0
@@ -40,7 +54,8 @@ func dashboardTimeSeries(events []model.Event, now time.Time, bucketCount int, b
 		total += count
 		riskTotal += riskCount
 		points = append(points, map[string]any{
-			"label":      start.Local().Format(labelFormat),
+			"key":        start.UTC().Format(time.RFC3339Nano),
+			"label":      start.Format(labelFormat),
 			"start_at":   start.UTC(),
 			"end_at":     end.UTC(),
 			"count":      count,
@@ -49,18 +64,57 @@ func dashboardTimeSeries(events []model.Event, now time.Time, bucketCount int, b
 		})
 	}
 	return map[string]any{
-		"bucket_seconds": int(bucketSize / time.Second),
-		"points":         points,
-		"total":          total,
-		"risk_total":     riskTotal,
-		"risk_threshold": dashboardRiskThreshold,
+		"bucket":          dashboardBucketName(bucketSize),
+		"bucket_seconds":  int(bucketSize / time.Second),
+		"points":          points,
+		"total":           total,
+		"risk_total":      riskTotal,
+		"risk_threshold":  dashboardRiskThreshold,
+		"window_start_at": firstStart.UTC(),
+		"window_end_at":   currentEnd.UTC(),
+		"next_refresh_at": currentEnd.UTC(),
+	}
+}
+
+func dashboardBucketStart(now time.Time, bucketSize time.Duration) time.Time {
+	local := now.In(now.Location())
+	year, month, day := local.Date()
+	switch bucketSize {
+	case time.Hour:
+		return time.Date(year, month, day, local.Hour(), 0, 0, 0, local.Location())
+	case 24 * time.Hour:
+		return time.Date(year, month, day, 0, 0, 0, 0, local.Location())
+	default:
+		return local.Truncate(bucketSize)
+	}
+}
+
+func dashboardAddBuckets(start time.Time, bucketSize time.Duration, count int) time.Time {
+	if bucketSize == 24*time.Hour {
+		return start.AddDate(0, 0, count)
+	}
+	return start.Add(time.Duration(count) * bucketSize)
+}
+
+func dashboardBucketName(bucketSize time.Duration) string {
+	switch bucketSize {
+	case time.Hour:
+		return "hour"
+	case 24 * time.Hour:
+		return "day"
+	default:
+		return "custom"
 	}
 }
 
 func (a *App) buildDashboardAnalytics(events []model.Event, indicators []model.Indicator, now time.Time) map[string]any {
+	hour := dashboardTimeSeries(events, now, 24, time.Hour, "01/02 15:00")
 	return map[string]any{
 		"risk_activity": map[string]any{
-			"day":   dashboardTimeSeries(events, now, 12, 2*time.Hour, "15:04"),
+			// day remains as a compatibility alias for older UI clients. New
+			// clients should use hour/week/month explicitly.
+			"hour":  hour,
+			"day":   hour,
 			"week":  dashboardTimeSeries(events, now, 7, 24*time.Hour, "01/02"),
 			"month": dashboardTimeSeries(events, now, 30, 24*time.Hour, "01/02"),
 		},
