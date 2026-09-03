@@ -12,6 +12,10 @@ Internet
    │                                      └── event JSONL + virtual state
    │
    └── random admin port + exact random path → authenticated control API
+
+When IPinfo API/Lite is explicitly selected, the authenticated control-plane
+provider client also uses the Compose `edge_net` for fixed HTTPS lookups. The
+public profile handlers do not share a user-controlled URL-fetch path.
 ```
 
 The current binary combines the first-stage `hp-edge`, `hp-core`, `hp-collector`, `hp-controller` and `hp-admin-gateway` responsibilities so it can run on a single small node. SQLite WAL is the default authoritative local store; PostgreSQL is an alternative authoritative backend for a new single-node deployment. SQLite's `events.jsonl` and `state.json` remain bounded compatibility mirrors, while PostgreSQL keeps the same logical data in its schema. The code keeps product routing, event storage, detection and admin paths separated behind package boundaries so they can become processes in Distributed v2 without changing the event contract.

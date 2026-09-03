@@ -217,6 +217,29 @@ compose() {
   docker compose "${COMPOSE_FILES[@]}" "$@"
 }
 
+compose_has_edge_egress() {
+  local rendered
+  rendered="$(compose config 2>/dev/null)" || return 1
+  awk '
+    $0 == "  edge_net:" { in_edge = 1; next }
+    in_edge && $0 ~ /^  [^[:space:]][^:]*:/ { in_edge = 0 }
+    in_edge && $0 ~ /com\.docker\.network\.bridge\.enable_ip_masquerade:/ {
+      value = $0
+      sub(/^.*enable_ip_masquerade:[[:space:]]*/, "", value)
+      gsub(/[^[:alnum:]_]/, "", value)
+      found = (value == "true")
+    }
+    END { exit found ? 0 : 1 }
+  ' <<<"$rendered"
+}
+
+require_edge_egress() {
+  if ! compose_has_edge_egress; then
+    echo "AegisLure requires edge_net outbound egress (enable_ip_masquerade=true) for IPinfo API queries." >&2
+    return 1
+  fi
+}
+
 compose_container_id() {
   local service="$1"
   compose ps -q "$service" 2>/dev/null | head -n 1
@@ -301,6 +324,10 @@ show_startup_diagnostics() {
 
 if ! compose config >/dev/null; then
   echo "AegisLure installation failed during Compose configuration validation." >&2
+  exit 1
+fi
+if ! require_edge_egress; then
+  echo "AegisLure installation failed during edge network validation." >&2
   exit 1
 fi
 if [[ "$NO_BUILD" -eq 0 ]]; then

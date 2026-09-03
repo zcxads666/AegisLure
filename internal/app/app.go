@@ -105,7 +105,8 @@ func New(cfg *config.Config, st *store.Store) *App {
 }
 
 // SetOAuthBroker attaches the optional, fixed-endpoint identity broker. A
-// nil broker leaves all OAuth routes disabled and performs no outbound work.
+// nil broker leaves all OAuth routes disabled; the broker itself performs no
+// outbound work. IPinfo provider lookups are configured independently.
 // Deployments should keep the broker in its own process/network boundary.
 func (a *App) SetOAuthBroker(broker *oauth.Broker) {
 	a.mu.Lock()

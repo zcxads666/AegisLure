@@ -112,6 +112,9 @@ For Docker deployments using an IPinfo API provider, keep the Compose
 `edge_net` masquerading setting enabled: the application must have outbound
 HTTPS access to reach IPinfo. The bait and admin networks remain internal;
 operators can further restrict outbound destinations with the host firewall.
+The checked-in Compose file enables this setting, and `install.sh` plus the
+`hpctl` start/restart/upgrade/rollback paths reject a deployment whose
+rendered `edge_net` disables it.
 
 Download GeoLite2 through an authorized MaxMind account and follow its license
 terms. See the [MaxMind GeoLite2 download documentation](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data/),
@@ -164,7 +167,12 @@ Compose, a file under `runtime/secrets` is visible inside the container under
 
 ## Incident response
 
-If a decoy appears to make an outbound connection, stop the public listener, preserve only the bounded event hashes and process/container metadata, block egress at the host firewall, and inspect the exact image digest and config pack revision. Do not reproduce the payload on a production machine.
+If a public decoy handler appears to make an outbound connection outside the
+operator-selected IPinfo or OAuth provider endpoints, stop the public
+listener, preserve only the bounded event hashes and process/container
+metadata, block egress at the host firewall, and inspect the exact image
+digest and config pack revision. Do not reproduce the payload on a production
+machine.
 
 The native helper validates its PID against the exact AegisLure binary and config path before stopping it, and scans for a matching process if the PID file is stale. This avoids leaving an old listener behind after a failed start while refusing to kill an unrelated PID.
 

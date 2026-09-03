@@ -21,7 +21,9 @@ interface ProfileSettingsCardProps {
 
 /**
  * The upstream settings card includes email, OAuth, webhook and notification
- * controls. They are intentionally read-only/omitted for the no-egress bait.
+ * controls. They are intentionally read-only/omitted for the bait; the only
+ * application egress exception is the separate, operator-selected provider
+ * lookup path.
  */
 export function ProfileSettingsCard({
   profile: _profile,

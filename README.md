@@ -75,6 +75,8 @@ SQLite 是默认数据库。PostgreSQL 模式使用 `docker-compose.pg.yml`，�
 
 IP 情报默认使用本地 MaxMind GeoLite2 City 和 ASN 数据库。数据库缺失、未命中或查询失败时，服务会回退到本地地址分类和“未知”。如果使用 IPinfo 的离线数据下载，将 `ipinfo_location.mmdb` 与 `ipinfo_asn.mmdb` 放入 `runtime/data/geoip/`，再把 provider 设置为 `ipinfo_mmdb`；项目会按 IPinfo 的扁平 MMDB 字段读取，不需要转换文件。也可以在管理设置中切换到 IPinfo API（含 City）或 Lite API 并配置访问密钥；密钥只由后端使用。provider 或 token 切换后，下一次总览刷新会自动清除旧缓存并重新查询。
 
+Docker Compose 的 `edge_net` 默认开启 masquerade，为 IPinfo API/Lite 的查询提供出站 HTTPS；`bait_net` 和 `admin_net` 仍保持 internal。若主机防火墙限制出站，请至少允许 `ipinfo.io`、`api.ipinfo.io` 的 TCP 443，离线 MaxMind/IPinfo MMDB 模式不需要该出站权限。
+
 备份只能恢复到相同数据库类型，SQLite 与 PostgreSQL 之间不执行隐式迁移。
 
 ## 安全与数据边界

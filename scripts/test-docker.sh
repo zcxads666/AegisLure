@@ -90,6 +90,16 @@ wait_for_health() {
   return 1
 }
 
+assert_edge_network_egress() {
+  local network masquerade
+  network="${PROJECT_NAME}_edge_net"
+  masquerade="$(docker network inspect "$network" --format '{{index .Options "com.docker.network.bridge.enable_ip_masquerade"}}' 2>/dev/null || true)"
+  [[ "$masquerade" == "true" ]] || {
+    echo "edge_net must enable outbound egress for IPinfo API queries: $masquerade" >&2
+    return 1
+  }
+}
+
 assert_public_port() {
   local id="$1"
   local port="$2"
@@ -129,6 +139,7 @@ run_mode() {
     "${mode_compose[@]}" --profile bundled-pg logs --no-color --tail=100 aegislure >&2 || true
     return 1
   }
+  assert_edge_network_egress
   local admin_path
   admin_path="$(awk -F'"' '/"admin_path"/ { print $4; exit }' "$TEST_ROOT/runtime/config.json")"
   [[ -n "$admin_path" ]] || { echo "admin path was not initialized" >&2; return 1; }

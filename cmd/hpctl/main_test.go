@@ -70,3 +70,18 @@ func TestValidateRegisteredImportSource(t *testing.T) {
 		t.Fatal("product mismatch accepted")
 	}
 }
+
+func TestComposeConfigHasEdgeEgress(t *testing.T) {
+	valid := "networks:\n  edge_net:\n    driver: bridge\n    driver_opts:\n      com.docker.network.bridge.enable_ip_masquerade: \"true\"\n  bait_net:\n    internal: true\n"
+	if !composeConfigHasEdgeEgress(valid) {
+		t.Fatal("enabled edge_net masquerade was not detected")
+	}
+	for _, rendered := range []string{
+		"networks:\n  edge_net:\n    driver_opts:\n      com.docker.network.bridge.enable_ip_masquerade: \"false\"\n",
+		"networks:\n  other_net:\n    driver_opts:\n      com.docker.network.bridge.enable_ip_masquerade: \"true\"\n",
+	} {
+		if composeConfigHasEdgeEgress(rendered) {
+			t.Fatalf("invalid edge network config accepted: %q", rendered)
+		}
+	}
+}

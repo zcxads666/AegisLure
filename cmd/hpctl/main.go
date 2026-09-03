@@ -215,6 +215,9 @@ func composeLifecycle(action string, args []string) {
 	default:
 		fatal(errors.New("unsupported lifecycle action"))
 	}
+	if action == "start" || action == "restart" {
+		requireComposeEdgeEgress(*projectDir)
+	}
 	runDockerCompose(*projectDir, composeArgs, "")
 }
 
@@ -227,6 +230,7 @@ func imageCommand(action string, args []string) {
 	if !validImageReference(*image) {
 		fatal(errors.New("--image must be a safe immutable image reference containing @sha256:"))
 	}
+	requireComposeEdgeEgress(*projectDir)
 	if action == "upgrade" && *pull {
 		runDockerCompose(*projectDir, []string{"pull"}, *image)
 	}
@@ -290,6 +294,36 @@ func runDockerCompose(projectDir string, args []string, image string) {
 	if err := command.Run(); err != nil {
 		fatal(fmt.Errorf("docker compose %v: %w", args, err))
 	}
+}
+
+func requireComposeEdgeEgress(projectDir string) {
+	command := exec.Command("docker", "compose", "-f", "docker-compose.yml", "config")
+	command.Dir = projectDir
+	output, err := command.Output()
+	if err != nil {
+		fatal(fmt.Errorf("validate Compose edge network: %w", err))
+	}
+	if !composeConfigHasEdgeEgress(string(output)) {
+		fatal(errors.New("docker-compose.yml must enable edge_net outbound egress (enable_ip_masquerade=true) for IPinfo API queries"))
+	}
+}
+
+func composeConfigHasEdgeEgress(rendered string) bool {
+	inEdge := false
+	for _, line := range strings.Split(rendered, "\n") {
+		if line == "  edge_net:" {
+			inEdge = true
+			continue
+		}
+		if inEdge && strings.HasPrefix(line, "  ") && !strings.HasPrefix(line, "    ") && strings.TrimSpace(line) != "" {
+			return false
+		}
+		if inEdge && strings.Contains(line, "com.docker.network.bridge.enable_ip_masquerade:") {
+			_, value, ok := strings.Cut(line, ":")
+			return ok && strings.EqualFold(strings.Trim(strings.TrimSpace(value), "\"'"), "true")
+		}
+	}
+	return false
 }
 
 func projectUsesPostgres(projectDir string) bool {

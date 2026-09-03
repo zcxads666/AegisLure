@@ -51,6 +51,33 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 &
     docker_project_configured=1
   fi
 
+  compose_has_edge_egress() {
+    local rendered
+    rendered="$("${compose_command[@]}" config 2>/dev/null)" || return 1
+    awk '
+      $0 == "  edge_net:" { in_edge = 1; next }
+      in_edge && $0 ~ /^  [^[:space:]][^:]*:/ { in_edge = 0 }
+      in_edge && $0 ~ /com\.docker\.network\.bridge\.enable_ip_masquerade:/ {
+        value = $0
+        sub(/^.*enable_ip_masquerade:[[:space:]]*/, "", value)
+        gsub(/[^[:alnum:]_]/, "", value)
+        found = (value == "true")
+      }
+      END { exit found ? 0 : 1 }
+    ' <<<"$rendered"
+  }
+
+  require_edge_egress() {
+    if ! compose_has_edge_egress; then
+      echo "AegisLure requires edge_net outbound egress (enable_ip_masquerade=true) for IPinfo API queries." >&2
+      exit 1
+    fi
+  }
+
+  case "${1:-}" in
+    start|restart|upgrade|rollback) require_edge_egress ;;
+  esac
+
   docker_service_running() {
     local service="$1"
     local container_id state
