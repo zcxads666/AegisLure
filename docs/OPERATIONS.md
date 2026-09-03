@@ -108,6 +108,11 @@ each row. This uses the same cache and re-query behavior, so switching from a
 previously unknown provider causes the next list refresh to resolve old IPs;
 the dashboard's 128-IP bound does not apply to the authenticated risk list.
 
+For Docker deployments using an IPinfo API provider, keep the Compose
+`edge_net` masquerading setting enabled: the application must have outbound
+HTTPS access to reach IPinfo. The bait and admin networks remain internal;
+operators can further restrict outbound destinations with the host firewall.
+
 Download GeoLite2 through an authorized MaxMind account and follow its license
 terms. See the [MaxMind GeoLite2 download documentation](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data/),
 the [GeoIP2 Go reader documentation](https://github.com/oschwald/geoip2-golang),

@@ -89,8 +89,8 @@ services:
       # Docker Desktop does not create a host-side port publisher when the
       # container's default network is `internal: true`. Keep the bait and
       # admin networks isolated, but put the published listeners on this
-      # dedicated edge bridge. Masquerading is disabled because the process
-      # has no legitimate outbound dependency.
+      # dedicated edge bridge. GeoIP API providers such as IPinfo require
+      # outbound HTTPS, so only this published edge network has egress.
       - edge_net
       - bait_net
       - admin_net
@@ -99,7 +99,7 @@ networks:
   edge_net:
     driver: bridge
     driver_opts:
-      com.docker.network.bridge.enable_ip_masquerade: "false"
+      com.docker.network.bridge.enable_ip_masquerade: "true"
       com.docker.network.bridge.enable_icc: "false"
   bait_net:
     internal: true

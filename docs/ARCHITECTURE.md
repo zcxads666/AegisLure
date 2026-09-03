@@ -63,7 +63,7 @@ The service never emits a `real_inference` outcome. All accepted model work is d
 
 ## Standalone v1 gates
 
-1. Before public deployment, validate the host firewall/VPN restriction for the random admin port, the no-egress container behavior and the broker's fixed OAuth egress separately from unit tests.
+1. Before public deployment, validate the host firewall/VPN restriction for the random admin port, the no-egress behavior of offline deployments, the explicitly allowed IPinfo API egress when selected, and the broker's fixed OAuth egress separately from unit tests.
 2. Build and publish only an immutable image digest after running the Go tests, `go vet`, compatibility scripts where available, SBOM generation and the operator's image-signing workflow.
 3. Run the standalone installation through restart, backup/restore, failed-image rollback and retention checks on the target architecture. The repository includes the deterministic controls; a multi-week production soak is an operational gate, not something a source checkout can claim to have completed.
 
