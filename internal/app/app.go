@@ -83,6 +83,7 @@ type App struct {
 	sub2APIAccessTokens map[string]sub2APIAccessToken
 	adminSessions       map[string]AdminSession
 	setupMu             sync.Mutex
+	newAPIRootMu        sync.Mutex
 	rateMu              sync.Mutex
 	rateBuckets         map[string]rateBucket
 	publicSem           chan struct{}
@@ -113,6 +114,9 @@ func New(cfg *config.Config, st *store.Store) *App {
 	a.ruleEngine = detect.NewRuleEngine()
 	seedBuiltinPacks(a)
 	loadPersistedRuleEngine(a)
+	if err := a.ensureNewAPIRootAccount(); err != nil {
+		a.log.Printf("New API root account initialization failed: %v", err)
+	}
 	return a
 }
 
@@ -338,6 +342,11 @@ func (a *App) Shutdown(ctx context.Context) error {
 
 func (a *App) publicHandler(profile profiles.Profile) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if profile.Product == model.ProductNewAPI {
+			if err := a.ensureNewAPIRootAccount(); err != nil {
+				a.log.Printf("New API root account maintenance failed: %v", err)
+			}
+		}
 		session := a.sessionFor(r, profile.Product)
 		profile = a.applyRuntimePacksForSession(profile, session)
 		setPublicPersonaHeaders(w, profile.Product)

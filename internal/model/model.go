@@ -113,6 +113,8 @@ type HoneyUser struct {
 	LastSeen             time.Time `json:"last_seen"`
 	CheckedInAt          time.Time `json:"checked_in_at,omitempty"`
 	CheckinDay           string    `json:"checkin_day,omitempty"`
+	AccountClass         string    `json:"account_class,omitempty"`
+	ResetAt              time.Time `json:"reset_at,omitempty"`
 }
 
 type HoneyToken struct {

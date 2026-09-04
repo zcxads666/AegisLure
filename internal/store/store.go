@@ -1670,6 +1670,36 @@ func (s *Store) TouchHoneyUser(id string, update func(*model.HoneyUser)) error {
 	})
 }
 
+// ResetHoneyUser replaces the mutable state of a honey account and removes
+// its issued keys and quota ledger entries atomically. Historical events are
+// intentionally retained so an account reset cannot erase the observation
+// trail that caused it.
+func (s *Store) ResetHoneyUser(user model.HoneyUser) error {
+	if user.ID == "" {
+		return errors.New("honey user id is required")
+	}
+	return s.Update(func(state *model.State) error {
+		if _, ok := state.HoneyUsers[user.ID]; !ok {
+			return errors.New("honey user not found")
+		}
+		state.HoneyUsers[user.ID] = user
+		state.Quotas[user.ID] = user.VirtualQuota
+		for tokenID, token := range state.HoneyTokens {
+			if token.HoneyUserID == user.ID {
+				delete(state.HoneyTokens, tokenID)
+			}
+		}
+		ledger := make([]model.QuotaEntry, 0, len(state.QuotaLedger))
+		for _, entry := range state.QuotaLedger {
+			if entry.HoneyUserID != user.ID {
+				ledger = append(ledger, entry)
+			}
+		}
+		state.QuotaLedger = ledger
+		return nil
+	})
+}
+
 func (s *Store) AddToken(token model.HoneyToken) error {
 	return s.Update(func(state *model.State) error {
 		state.HoneyTokens[token.ID] = token

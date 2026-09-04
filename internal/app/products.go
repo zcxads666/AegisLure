@@ -170,7 +170,7 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		lengthBucket, passwordClasses, weakClass := passwordProfile(password)
 		userID := "hu_" + security.MustRandomToken(10)
 		now := time.Now().UTC()
-		user := model.HoneyUser{ID: userID, InstanceID: a.cfg.InstanceID, UsernameFP: security.Fingerprint(a.cfg.InstanceKey, username), UsernameHint: security.RedactPreview(username, 3), EmailLocalFP: emailLocalFingerprint(a.cfg.InstanceKey, email), EmailDomain: emailDomain(email), PasswordFP: security.Fingerprint(a.cfg.InstanceKey, password), PasswordLengthBucket: lengthBucket, PasswordClasses: passwordClasses, PasswordWeakClass: weakClass, VirtualQuota: 0, CreatedAt: now, LastSeen: now}
+		user := model.HoneyUser{ID: userID, InstanceID: a.cfg.InstanceID, UsernameFP: security.Fingerprint(a.cfg.InstanceKey, username), UsernameHint: security.RedactPreview(username, 3), EmailLocalFP: emailLocalFingerprint(a.cfg.InstanceKey, email), EmailDomain: emailDomain(email), PasswordFP: security.Fingerprint(a.cfg.InstanceKey, password), PasswordLengthBucket: lengthBucket, PasswordClasses: passwordClasses, PasswordWeakClass: weakClass, VirtualQuota: newAPIRegisteredUserQuota, CreatedAt: now, LastSeen: now}
 		if err := a.store.CreateHoneyUser(user); err != nil {
 			// Keep duplicate usernames indistinguishable from other invalid
 			// registration attempts; the username fingerprint never leaves the
@@ -196,20 +196,31 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		}
 		value := requestValues(r, body)
 		username := normalizeHoneyUsername(value["username"])
+		rootUsername := username == newAPIRootUsername
 		accountRateOK := username == "" || a.allowRate("newapi-login-user:"+security.Fingerprint(a.cfg.InstanceKey, username), 8, time.Minute)
 		if !a.allowRate("newapi-login-ip:"+requestSourceIP(r), 20, time.Minute) || !accountRateOK {
 			obs.ExtraScore += 20
 			obs.ExtraReasons = append(obs.ExtraReasons, "newapi_login_rate_limited")
+			if rootUsername {
+				markNewAPIRootMonitoring(obs, "password_attempt_rejected", newAPIRootPasswordScore, "newapi_root_password_attempt")
+			}
 			a.writeJSON(w, http.StatusTooManyRequests, map[string]any{"success": false, "message": "login temporarily unavailable"})
 			return
 		}
 		user, ok := a.store.FindHoneyUser(security.Fingerprint(a.cfg.InstanceKey, username))
 		if !ok || user.PasswordFP != security.Fingerprint(a.cfg.InstanceKey, value["password"]) {
 			addNewAPILoginFailureRisk(obs)
+			if rootUsername {
+				markNewAPIRootMonitoring(obs, "password_attempt_rejected", newAPIRootPasswordScore, "newapi_root_password_attempt")
+			}
 			a.writeJSON(w, http.StatusUnauthorized, map[string]any{"success": false, "message": "invalid username or password"})
 			return
 		}
 		_ = a.store.TouchHoneyUser(user.ID, func(u *model.HoneyUser) { u.LastSeen = time.Now().UTC() })
+		if a.isNewAPIRootUser(user) {
+			markNewAPIRootMonitoring(obs, "login_success", newAPIRootLoginScore, "newapi_root_login_success")
+			obs.AuthOutcome = "session_authenticated"
+		}
 		a.setSessionUser(session.ID, user.ID)
 		session.UserID = user.ID
 		session.LastSeen = time.Now().UTC()
@@ -255,9 +266,9 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 			"wechat_login":               false,
 			"passkey_login":              false,
 			"checkin_enabled":            true,
-			"display_in_currency":        false,
+			"display_in_currency":        true,
 			"display_token_stat_enabled": true,
-			"quota_display_type":         "TOKENS",
+			"quota_display_type":         "USD",
 			"quota_per_unit":             1,
 			"demo_site_enabled":          false,
 			"user_agreement_enabled":     false,
@@ -372,6 +383,10 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		a.rememberNewAPIRawKey(token.ID, raw)
 		obs.ExtraScore += 20
 		obs.ExtraReasons = append(obs.ExtraReasons, "newapi_honey_token_created")
+		if a.isNewAPIRootUser(user) {
+			annotateNewAPIRootMonitoring(obs, "key_created", "newapi_root_key_created")
+			obs.Metadata["root_token_id"] = token.ID
+		}
 		if actual {
 			a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": newAPIPublicTokenView(token)})
 			return
@@ -481,6 +496,10 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		if raw == "" {
 			a.writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "message": "key is no longer available after restart"})
 			return
+		}
+		if a.isNewAPIRootUser(user) {
+			annotateNewAPIRootMonitoring(obs, "key_revealed", "newapi_root_key_revealed")
+			obs.Metadata["root_token_id"] = token.ID
 		}
 		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]string{"key": newAPIKeySuffix(raw)}})
 	case "newapi.user.list":
@@ -940,6 +959,7 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 func (a *App) newAPIInvoke(w *captureWriter, r *http.Request, body []byte, session Session, obs *Observation) {
 	token, auth := a.newAPIHoneyAuth(r, obs.RouteTemplate)
 	leakedUserListKey := auth == "valid_honey_key" && token.Name == newAPIUserListCanaryName
+	rootKey := auth == "valid_honey_key" && a.isNewAPIRootUserID(token.HoneyUserID)
 	if leakedUserListKey {
 		auth = "leaked_key_reused"
 		obs.ExtraReasons = append(obs.ExtraReasons, "newapi_user_list_honey_token_reused")
@@ -1008,6 +1028,12 @@ func (a *App) newAPIInvoke(w *captureWriter, r *http.Request, body []byte, sessi
 	obs.ExtraScore += 25
 	obs.ExtraReasons = append(obs.ExtraReasons, "newapi_synthetic_compute_use")
 	a.startInvocation(obs, auth, true)
+	if rootKey {
+		annotateNewAPIRootMonitoring(obs, "key_llm_invocation", "newapi_root_key_llm_invocation")
+		obs.Metadata["root_token_id"] = token.ID
+		score := newAPIRootLLMScore
+		obs.ScoreOverride = &score
+	}
 	cost := int64(maxInt(1, len(body)/4))
 	if token.Name != newAPIUserListCanaryName {
 		if _, err := a.store.ConsumeQuota(token.HoneyUserID, token.ID, obs.InvocationID, cost); err != nil {
@@ -1065,7 +1091,7 @@ func (a *App) bindHoneyOAuthIdentity(identity oauth.Identity, policyMode string)
 		PasswordFP:           security.Fingerprint(a.cfg.InstanceKey, "oauth-password:"+identity.SubjectHMAC),
 		PasswordLengthBucket: "oauth",
 		PasswordClasses:      []string{"oauth"},
-		VirtualQuota:         0,
+		VirtualQuota:         newAPIRegisteredUserQuota,
 		CreatedAt:            now,
 		LastSeen:             now,
 	}
