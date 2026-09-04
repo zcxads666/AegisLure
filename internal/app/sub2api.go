@@ -187,7 +187,9 @@ func (a *App) handleSub2APIAuth(w *captureWriter, r *http.Request, _ profiles.Pr
 func (a *App) sub2APIRegister(w *captureWriter, r *http.Request, session Session, values map[string]string, obs *Observation) {
 	email, emailOK := normalizeHoneyEmail(values["email"])
 	password := values["password"]
-	if email == "" || !emailOK || password == "" || len([]rune(password)) < 8 || len([]rune(password)) > 1024 {
+	// The official Sub2API registration contract accepts passwords from six
+	// characters onward (frontend validation and backend binding both use 6).
+	if email == "" || !emailOK || password == "" || len([]rune(password)) < 6 || len([]rune(password)) > 1024 {
 		obs.EventType = "sub2api.user.register.failed"
 		obs.AuthOutcome = "invalid"
 		obs.ExtraScore += 20

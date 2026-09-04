@@ -35,6 +35,29 @@ func decodeSub2APIJSON(t *testing.T, body []byte) map[string]any {
 	return value
 }
 
+func TestSub2APIRegistrationUsesOfficialPasswordMinimum(t *testing.T) {
+	a, cfg, st := newTestApp(t, true)
+	defer st.Close()
+	profile := sub2APIProfileForTest(a, cfg)
+	client := &inProcessClient{handler: a.publicHandler(profile), cookies: map[string]string{}}
+
+	resp, body := doRawJSON(t, client, http.MethodPost, "/api/v1/auth/register", map[string]any{
+		"email":    "six-character@example.com",
+		"password": "abc123",
+	}, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("official six-character registration = %d %s", resp.StatusCode, body)
+	}
+
+	resp, _ = doRawJSON(t, client, http.MethodPost, "/api/v1/auth/register", map[string]any{
+		"email":    "five-character@example.com",
+		"password": "abc12",
+	}, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("short registration password = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
 func TestSub2APICompatibilitySharesStateAndRecordsSafeTelemetry(t *testing.T) {
 	a, cfg, st := newTestApp(t, true)
 	defer st.Close()
