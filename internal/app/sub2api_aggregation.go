@@ -14,19 +14,71 @@ const (
 	sub2APIHomeDisplayRoute        = "sub2api首页"
 	sub2APIHomeAggregationWindow   = 15 * time.Second
 	sub2APIHomeAggregationMetadata = "sub2api_home_frontend_get"
+	newAPIHomeDisplayRoute         = "newapi首页"
+	newAPIHomeAggregationMetadata  = "newapi_home_frontend_get"
+)
+
+type homeFrontendAggregationSpec struct {
+	product              string
+	displayRoute         string
+	aggregationMetadata  string
+	spaRouteTemplate     string
+	homePaths            map[string]struct{}
+	staticRouteTemplates map[string]struct{}
+}
+
+var (
+	sub2APIHomeAggregationSpec = homeFrontendAggregationSpec{
+		product:             model.ProductSub2API,
+		displayRoute:        sub2APIHomeDisplayRoute,
+		aggregationMetadata: sub2APIHomeAggregationMetadata,
+		spaRouteTemplate:    "sub2api.spa",
+		homePaths: map[string]struct{}{
+			"":      {},
+			"/":     {},
+			"/home": {},
+		},
+		staticRouteTemplates: map[string]struct{}{
+			"sub2api.asset": {},
+			"sub2api.logo":  {},
+		},
+	}
+	newAPIHomeAggregationSpec = homeFrontendAggregationSpec{
+		product:             model.ProductNewAPI,
+		displayRoute:        newAPIHomeDisplayRoute,
+		aggregationMetadata: newAPIHomeAggregationMetadata,
+		spaRouteTemplate:    "newapi.spa",
+		homePaths: map[string]struct{}{
+			"":  {},
+			"/": {},
+		},
+		staticRouteTemplates: map[string]struct{}{
+			"newapi.asset": {},
+			"newapi.logo":  {},
+		},
+	}
 )
 
 // adminDisplayEvents creates the presentation projection used by management
 // lists. The event store remains append-only and keeps every raw frontend GET.
 func adminDisplayEvents(events []model.Event) []model.Event {
-	return aggregateSub2APIHomeEvents(events)
+	events = aggregateHomeFrontendEvents(events, sub2APIHomeAggregationSpec)
+	return aggregateHomeFrontendEvents(events, newAPIHomeAggregationSpec)
+}
+
+func isFrontendGET(event model.Event, spec homeFrontendAggregationSpec) bool {
+	return event.Product == spec.product && strings.EqualFold(strings.TrimSpace(event.Method), "GET")
 }
 
 func isSub2APIFrontendGET(event model.Event) bool {
-	return event.Product == model.ProductSub2API && strings.EqualFold(strings.TrimSpace(event.Method), "GET")
+	return isFrontendGET(event, sub2APIHomeAggregationSpec)
 }
 
-func sub2APIFrontendPath(event model.Event) string {
+func isNewAPIFrontendGET(event model.Event) bool {
+	return isFrontendGET(event, newAPIHomeAggregationSpec)
+}
+
+func frontendRequestPath(event model.Event) string {
 	if event.RawRequest == nil {
 		return ""
 	}
@@ -46,42 +98,66 @@ func sub2APIFrontendPath(event model.Event) string {
 	return candidate
 }
 
-func isSub2APIHomeNavigationEvent(event model.Event) bool {
-	if !isSub2APIFrontendGET(event) || event.RouteTemplate != "sub2api.spa" {
+// Kept as a compatibility wrapper for the existing Sub2API aggregation tests.
+func sub2APIFrontendPath(event model.Event) string {
+	return frontendRequestPath(event)
+}
+
+func isHomeNavigationEvent(event model.Event, spec homeFrontendAggregationSpec) bool {
+	if !isFrontendGET(event, spec) || event.RouteTemplate != spec.spaRouteTemplate {
 		return false
 	}
 	// A missing raw envelope is a legacy/synthetic event. The route template is
 	// still the only available signal, so keep the old behavior for it.
-	switch sub2APIFrontendPath(event) {
-	case "", "/", "/home":
-		return true
-	default:
+	_, ok := spec.homePaths[frontendRequestPath(event)]
+	return ok
+}
+
+func isSub2APIHomeNavigationEvent(event model.Event) bool {
+	return isHomeNavigationEvent(event, sub2APIHomeAggregationSpec)
+}
+
+func isNewAPIHomeNavigationEvent(event model.Event) bool {
+	return isHomeNavigationEvent(event, newAPIHomeAggregationSpec)
+}
+
+func isHomeStaticEvent(event model.Event, spec homeFrontendAggregationSpec) bool {
+	if !isFrontendGET(event, spec) {
 		return false
 	}
+	_, ok := spec.staticRouteTemplates[event.RouteTemplate]
+	return ok
 }
 
 func isSub2APIHomeStaticEvent(event model.Event) bool {
-	if !isSub2APIFrontendGET(event) {
-		return false
-	}
-	switch event.RouteTemplate {
-	case "sub2api.asset", "sub2api.logo":
-		return true
-	default:
-		return false
-	}
+	return isHomeStaticEvent(event, sub2APIHomeAggregationSpec)
+}
+
+func isNewAPIHomeStaticEvent(event model.Event) bool {
+	return isHomeStaticEvent(event, newAPIHomeAggregationSpec)
+}
+
+func isHomeFrontendEvent(event model.Event, spec homeFrontendAggregationSpec) bool {
+	return isHomeNavigationEvent(event, spec) || isHomeStaticEvent(event, spec)
 }
 
 func isSub2APIHomeFrontendEvent(event model.Event) bool {
-	return isSub2APIHomeNavigationEvent(event) || isSub2APIHomeStaticEvent(event)
+	return isHomeFrontendEvent(event, sub2APIHomeAggregationSpec)
+}
+
+func isNewAPIHomeFrontendEvent(event model.Event) bool {
+	return isHomeFrontendEvent(event, newAPIHomeAggregationSpec)
+}
+
+func isNonHomeSPAEvent(event model.Event, spec homeFrontendAggregationSpec) bool {
+	return isFrontendGET(event, spec) && event.RouteTemplate == spec.spaRouteTemplate && !isHomeNavigationEvent(event, spec)
 }
 
 func isSub2APINonHomeSPAEvent(event model.Event) bool {
-	return isSub2APIFrontendGET(event) && event.RouteTemplate == "sub2api.spa" && !isSub2APIHomeNavigationEvent(event)
+	return isNonHomeSPAEvent(event, sub2APIHomeAggregationSpec)
 }
 
-type sub2APIHomeAggregationGroup struct {
-	key          string
+type homeAggregationGroup struct {
 	navigation   []int
 	staticAssets []int
 	latest       time.Time
@@ -93,6 +169,16 @@ type sub2APIHomeAggregationGroup struct {
 // after the short coalescing window gets its own display row, while all source
 // event IDs stay attached to the aggregate for deletion and audit purposes.
 func aggregateSub2APIHomeEvents(events []model.Event) []model.Event {
+	return aggregateHomeFrontendEvents(events, sub2APIHomeAggregationSpec)
+}
+
+// aggregateNewAPIHomeEvents applies the same lossless presentation projection
+// to the official New API home shell at /. Non-home SPA routes remain raw rows.
+func aggregateNewAPIHomeEvents(events []model.Event) []model.Event {
+	return aggregateHomeFrontendEvents(events, newAPIHomeAggregationSpec)
+}
+
+func aggregateHomeFrontendEvents(events []model.Event, spec homeFrontendAggregationSpec) []model.Event {
 	if len(events) == 0 {
 		return []model.Event{}
 	}
@@ -101,28 +187,28 @@ func aggregateSub2APIHomeEvents(events []model.Event) []model.Event {
 		return adminEventOldestFirst(ordered[i], ordered[j])
 	})
 
-	groupsByKey := make(map[string][]*sub2APIHomeAggregationGroup)
+	groupsByKey := make(map[string][]*homeAggregationGroup)
 	nonHomeByKey := make(map[string][]model.Event)
 	for index, event := range ordered {
-		key := sub2APIHomeAggregationKey(event)
-		if isSub2APINonHomeSPAEvent(event) {
+		key := homeAggregationKey(event)
+		if isNonHomeSPAEvent(event, spec) {
 			nonHomeByKey[key] = append(nonHomeByKey[key], event)
 			continue
 		}
-		if !isSub2APIHomeNavigationEvent(event) {
+		if !isHomeNavigationEvent(event, spec) {
 			continue
 		}
 
 		groups := groupsByKey[key]
-		var group *sub2APIHomeAggregationGroup
+		var group *homeAggregationGroup
 		if len(groups) > 0 {
 			candidate := groups[len(groups)-1]
-			if sub2APIHomeEventsWithinWindow(candidate.latest, event.ObservedAt) && !sub2APIHomeBoundaryBetween(nonHomeByKey[key], candidate.latest, event.ObservedAt) {
+			if homeEventsWithinWindow(candidate.latest, event.ObservedAt) && !homeBoundaryBetween(nonHomeByKey[key], candidate.latest, event.ObservedAt) {
 				group = candidate
 			}
 		}
 		if group == nil {
-			group = &sub2APIHomeAggregationGroup{key: key}
+			group = &homeAggregationGroup{}
 			groupsByKey[key] = append(groups, group)
 		}
 		group.navigation = append(group.navigation, index)
@@ -131,21 +217,21 @@ func aggregateSub2APIHomeEvents(events []model.Event) []model.Event {
 		}
 	}
 
-	assigned := make(map[int]*sub2APIHomeAggregationGroup)
+	assigned := make(map[int]*homeAggregationGroup)
 	for index, event := range ordered {
-		if !isSub2APIHomeStaticEvent(event) {
+		if !isHomeStaticEvent(event, spec) {
 			continue
 		}
-		key := sub2APIHomeAggregationKey(event)
-		var best *sub2APIHomeAggregationGroup
+		key := homeAggregationKey(event)
+		var best *homeAggregationGroup
 		bestDelta := time.Duration(1<<63 - 1)
 		for _, group := range groupsByKey[key] {
 			for _, navigationIndex := range group.navigation {
 				navigation := ordered[navigationIndex]
-				if !sub2APIHomeEventsWithinWindow(navigation.ObservedAt, event.ObservedAt) || sub2APIHomeBoundaryBetween(nonHomeByKey[key], navigation.ObservedAt, event.ObservedAt) {
+				if !homeEventsWithinWindow(navigation.ObservedAt, event.ObservedAt) || homeBoundaryBetween(nonHomeByKey[key], navigation.ObservedAt, event.ObservedAt) {
 					continue
 				}
-				delta := sub2APIHomeEventDelta(navigation.ObservedAt, event.ObservedAt)
+				delta := homeEventDelta(navigation.ObservedAt, event.ObservedAt)
 				if best == nil || delta < bestDelta || (delta == bestDelta && navigation.ObservedAt.After(ordered[best.navigation[0]].ObservedAt)) {
 					best = group
 					bestDelta = delta
@@ -168,9 +254,9 @@ func aggregateSub2APIHomeEvents(events []model.Event) []model.Event {
 			sort.SliceStable(indices, func(i, j int) bool {
 				return adminEventNewestFirst(ordered[indices[i]], ordered[indices[j]])
 			})
-			aggregate := newSub2APIHomeAggregate(ordered[indices[0]])
+			aggregate := newHomeAggregate(ordered[indices[0]], spec)
 			for _, index := range indices[1:] {
-				mergeSub2APIHomeEvent(&aggregate, ordered[index])
+				mergeHomeEvent(&aggregate, ordered[index], spec)
 			}
 			for _, index := range indices {
 				assigned[index] = group
@@ -189,7 +275,7 @@ func aggregateSub2APIHomeEvents(events []model.Event) []model.Event {
 	return result
 }
 
-func sub2APIHomeBoundaryBetween(events []model.Event, left, right time.Time) bool {
+func homeBoundaryBetween(events []model.Event, left, right time.Time) bool {
 	if left.IsZero() || right.IsZero() {
 		return false
 	}
@@ -208,7 +294,7 @@ func sub2APIHomeBoundaryBetween(events []model.Event, left, right time.Time) boo
 	return false
 }
 
-func sub2APIHomeEventDelta(left, right time.Time) time.Duration {
+func homeEventDelta(left, right time.Time) time.Duration {
 	if left.IsZero() || right.IsZero() {
 		return 0
 	}
@@ -219,7 +305,7 @@ func sub2APIHomeEventDelta(left, right time.Time) time.Duration {
 	return delta
 }
 
-func sub2APIHomeAggregationKey(event model.Event) string {
+func homeAggregationKey(event model.Event) string {
 	if sessionID := strings.TrimSpace(event.SessionID); sessionID != "" {
 		return "session:" + sessionID
 	}
@@ -234,7 +320,7 @@ func sub2APIHomeAggregationKey(event model.Event) string {
 	return "source:" + event.SourceIP + "\x00" + event.UserAgent + "\x00" + day
 }
 
-func sub2APIHomeEventsWithinWindow(latest, observedAt time.Time) bool {
+func homeEventsWithinWindow(latest, observedAt time.Time) bool {
 	if latest.IsZero() || observedAt.IsZero() {
 		return true
 	}
@@ -245,27 +331,27 @@ func sub2APIHomeEventsWithinWindow(latest, observedAt time.Time) bool {
 	return delta <= sub2APIHomeAggregationWindow
 }
 
-func newSub2APIHomeAggregate(event model.Event) model.Event {
+func newHomeAggregate(event model.Event, spec homeFrontendAggregationSpec) model.Event {
 	aggregate := event
-	aggregate.DisplayRoute = sub2APIHomeDisplayRoute
-	aggregate.AggregateCount = sub2APIEventCount(event)
-	aggregate.AggregateRoutes = uniqueStrings(sub2APIHomeEventRoutes(event))
-	aggregate.AggregateEventIDs = uniqueStrings(sub2APIHomeEventIDs(event))
+	aggregate.DisplayRoute = spec.displayRoute
+	aggregate.AggregateCount = homeEventCount(event)
+	aggregate.AggregateRoutes = uniqueStrings(homeEventRoutes(event))
+	aggregate.AggregateEventIDs = uniqueStrings(homeEventIDs(event))
 	aggregate.Metadata = cloneEventMetadata(event.Metadata)
-	aggregate.Metadata["display_route"] = sub2APIHomeDisplayRoute
-	aggregate.Metadata["aggregation"] = sub2APIHomeAggregationMetadata
+	aggregate.Metadata["display_route"] = spec.displayRoute
+	aggregate.Metadata["aggregation"] = spec.aggregationMetadata
 	aggregate.Metadata["aggregate_count"] = strconv.Itoa(aggregate.AggregateCount)
 	return aggregate
 }
 
-func mergeSub2APIHomeEvent(aggregate *model.Event, event model.Event) {
+func mergeHomeEvent(aggregate *model.Event, event model.Event, spec homeFrontendAggregationSpec) {
 	if aggregate == nil {
 		return
 	}
 	if aggregate.AggregateCount < 1 {
 		aggregate.AggregateCount = 1
 	}
-	aggregate.AggregateCount += sub2APIEventCount(event)
+	aggregate.AggregateCount += homeEventCount(event)
 	aggregate.RequestBytes += event.RequestBytes
 	aggregate.ResponseBytes += event.ResponseBytes
 	aggregate.DurationMS += event.DurationMS
@@ -284,17 +370,47 @@ func mergeSub2APIHomeEvent(aggregate *model.Event, event model.Event) {
 	}
 	aggregate.ReasonCodes = uniqueStrings(append(aggregate.ReasonCodes, event.ReasonCodes...))
 	aggregate.MatchedRuleIDs = uniqueStrings(append(aggregate.MatchedRuleIDs, event.MatchedRuleIDs...))
-	aggregate.AggregateRoutes = uniqueStrings(append(aggregate.AggregateRoutes, sub2APIHomeEventRoutes(event)...))
-	aggregate.AggregateEventIDs = uniqueStrings(append(aggregate.AggregateEventIDs, sub2APIHomeEventIDs(event)...))
+	aggregate.AggregateRoutes = uniqueStrings(append(aggregate.AggregateRoutes, homeEventRoutes(event)...))
+	aggregate.AggregateEventIDs = uniqueStrings(append(aggregate.AggregateEventIDs, homeEventIDs(event)...))
 	if aggregate.Metadata == nil {
 		aggregate.Metadata = cloneEventMetadata(event.Metadata)
 	}
-	aggregate.Metadata["display_route"] = sub2APIHomeDisplayRoute
-	aggregate.Metadata["aggregation"] = sub2APIHomeAggregationMetadata
+	aggregate.Metadata["display_route"] = spec.displayRoute
+	aggregate.Metadata["aggregation"] = spec.aggregationMetadata
 	aggregate.Metadata["aggregate_count"] = strconv.Itoa(aggregate.AggregateCount)
 }
 
+// Compatibility wrappers retain the previous Sub2API helper surface for
+// package-local tests while the implementation is shared with New API.
+func sub2APIHomeBoundaryBetween(events []model.Event, left, right time.Time) bool {
+	return homeBoundaryBetween(events, left, right)
+}
+
+func sub2APIHomeEventDelta(left, right time.Time) time.Duration {
+	return homeEventDelta(left, right)
+}
+
+func sub2APIHomeAggregationKey(event model.Event) string {
+	return homeAggregationKey(event)
+}
+
+func sub2APIHomeEventsWithinWindow(latest, observedAt time.Time) bool {
+	return homeEventsWithinWindow(latest, observedAt)
+}
+
+func newSub2APIHomeAggregate(event model.Event) model.Event {
+	return newHomeAggregate(event, sub2APIHomeAggregationSpec)
+}
+
+func mergeSub2APIHomeEvent(aggregate *model.Event, event model.Event) {
+	mergeHomeEvent(aggregate, event, sub2APIHomeAggregationSpec)
+}
+
 func sub2APIEventCount(event model.Event) int {
+	return homeEventCount(event)
+}
+
+func homeEventCount(event model.Event) int {
 	if event.AggregateCount > 0 {
 		return event.AggregateCount
 	}
@@ -302,6 +418,10 @@ func sub2APIEventCount(event model.Event) int {
 }
 
 func sub2APIHomeEventRoutes(event model.Event) []string {
+	return homeEventRoutes(event)
+}
+
+func homeEventRoutes(event model.Event) []string {
 	routes := append([]string(nil), event.AggregateRoutes...)
 	if event.RawRequest != nil {
 		if route := strings.TrimSpace(event.RawRequest.Route); route != "" {
@@ -318,6 +438,10 @@ func sub2APIHomeEventRoutes(event model.Event) []string {
 }
 
 func sub2APIHomeEventIDs(event model.Event) []string {
+	return homeEventIDs(event)
+}
+
+func homeEventIDs(event model.Event) []string {
 	ids := append([]string(nil), event.AggregateEventIDs...)
 	if event.EventID != "" {
 		ids = append(ids, event.EventID)
