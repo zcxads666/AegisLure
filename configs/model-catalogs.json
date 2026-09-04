@@ -12,7 +12,7 @@
       "id": "sub2api-popular-closed-2026q3",
       "origin_policy": "closed",
       "products": ["sub2api"],
-      "models": ["gpt-4o-mini", "claude-3-5-sonnet", "gemini-1.5-pro"]
+      "models": ["gpt-5.6-sol", "gpt-5.6-codex", "claude-3-5-sonnet", "gemini-1.5-pro"]
     },
     {
       "id": "selfhosted-popular-open-2026q3",

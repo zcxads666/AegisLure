@@ -498,12 +498,12 @@ func sub2APIAvailableChannels(catalog []profiles.CatalogEntry) []map[string]any 
 	return []map[string]any{
 		sub2APIAvailableChannel(
 			"OpenAI",
-			[]string{"gpt-6-astra", "gpt-4o-mini"},
+			[]string{"gpt-5.6-sol"},
 			catalog,
 		),
 		sub2APIAvailableChannel(
 			"OpenAI Codex",
-			[]string{"gpt-5.3-codex"},
+			[]string{"gpt-5.6-codex"},
 			catalog,
 		),
 	}
@@ -549,22 +549,16 @@ func sub2APIDefaultGroup() map[string]any {
 }
 
 func sub2APIModelPricing(modelID string) map[string]any {
-	var inputPrice, outputPrice, cacheReadPrice float64
-	switch modelID {
-	case "gpt-4o-mini":
-		inputPrice, outputPrice, cacheReadPrice = 1.5e-7, 6e-7, 7.5e-8
-	case "gpt-5.3-codex":
-		inputPrice, outputPrice, cacheReadPrice = 1.75e-6, 1.4e-5, 1.75e-7
-	default:
+	if modelID != "gpt-5.6-sol" {
 		return nil
 	}
 	return map[string]any{
 		"billing_mode":         "token",
-		"input_price":          inputPrice,
-		"output_price":         outputPrice,
-		"cache_write_price":    nil,
+		"input_price":          5e-6,
+		"output_price":         3e-5,
+		"cache_write_price":    6.25e-6,
 		"cache_write_1h_price": nil,
-		"cache_read_price":     cacheReadPrice,
+		"cache_read_price":     5e-7,
 		"image_input_price":    nil,
 		"image_output_price":   nil,
 		"per_request_price":    nil,
@@ -590,8 +584,8 @@ func sub2APIOfficialModelPricing(modelID string) map[string]any {
 }
 
 func sub2APIModelPlaza(catalog []profiles.CatalogEntry) map[string]any {
-	models := make([]any, 0, 3)
-	for _, modelID := range []string{"gpt-6-astra", "gpt-4o-mini", "gpt-5.3-codex"} {
+	models := make([]any, 0, 2)
+	for _, modelID := range []string{"gpt-5.6-sol", "gpt-5.6-codex"} {
 		entry, ok := sub2APICatalogEntry(catalog, modelID)
 		if !ok {
 			continue

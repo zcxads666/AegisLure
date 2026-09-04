@@ -92,8 +92,9 @@ func TestSub2APICompatibilitySharesStateAndRecordsSafeTelemetry(t *testing.T) {
 	group, groupOK := groups[0].(map[string]any)
 	plazaModels, modelsOK := group["models"].([]any)
 	modelJSON, _ := json.Marshal(plazaModels)
-	if !groupOK || !modelsOK || group["name"] != "default" || group["platform"] != "openai" || len(plazaModels) != 3 ||
-		!strings.Contains(string(modelJSON), "gpt-6-astra") || !strings.Contains(string(modelJSON), "gpt-5.3-codex") {
+	if !groupOK || !modelsOK || group["name"] != "default" || group["platform"] != "openai" || len(plazaModels) != 2 ||
+		!strings.Contains(string(modelJSON), "gpt-5.6-sol") || !strings.Contains(string(modelJSON), "gpt-5.6-codex") ||
+		strings.Contains(string(modelJSON), "gpt-6-astra") || strings.Contains(string(modelJSON), "gpt-4o-mini") {
 		t.Fatalf("model plaza models = %d %#v", resp.StatusCode, plazaEnvelope)
 	}
 
@@ -141,7 +142,7 @@ func TestSub2APICompatibilitySharesStateAndRecordsSafeTelemetry(t *testing.T) {
 		t.Fatalf("available channels = %d %#v", resp.StatusCode, channelsEnvelope)
 	}
 	channelJSON, _ := json.Marshal(channels)
-	if !strings.Contains(string(channelJSON), "\"name\":\"OpenAI\"") || !strings.Contains(string(channelJSON), "\"name\":\"OpenAI Codex\"") || !strings.Contains(string(channelJSON), "gpt-6-astra") || !strings.Contains(string(channelJSON), "gpt-5.3-codex") || !strings.Contains(string(channelJSON), "supported_models") {
+	if !strings.Contains(string(channelJSON), "\"name\":\"OpenAI\"") || !strings.Contains(string(channelJSON), "\"name\":\"OpenAI Codex\"") || !strings.Contains(string(channelJSON), "gpt-5.6-sol") || !strings.Contains(string(channelJSON), "gpt-5.6-codex") || strings.Contains(string(channelJSON), "gpt-6-astra") || strings.Contains(string(channelJSON), "gpt-4o-mini") || !strings.Contains(string(channelJSON), "supported_models") {
 		t.Fatalf("available channels missed latest GPT/Codex models: %s", channelJSON)
 	}
 	resp, body = doRawJSON(t, client, http.MethodPost, "/v1/messages/count_tokens", map[string]any{"model": "claude-3-5-sonnet", "messages": []any{map[string]any{"role": "user", "content": "hello"}}}, map[string]string{"x-api-key": rawKey})
@@ -155,7 +156,7 @@ func TestSub2APICompatibilitySharesStateAndRecordsSafeTelemetry(t *testing.T) {
 		t.Fatalf("alpha search = %d", resp.StatusCode)
 	}
 
-	request := map[string]any{"model": "gpt-4o-mini", "messages": []any{map[string]any{"role": "user", "content": "hello"}}, "stream": false}
+	request := map[string]any{"model": "gpt-5.6-sol", "messages": []any{map[string]any{"role": "user", "content": "hello"}}, "stream": false}
 	if resp, _ := doRawJSON(t, client, http.MethodPost, "/v1/chat/completions", request, nil); resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("missing gateway key status = %d", resp.StatusCode)
 	}
@@ -163,32 +164,32 @@ func TestSub2APICompatibilitySharesStateAndRecordsSafeTelemetry(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"chat.completion"`) {
 		t.Fatalf("chat completion = %d %s", resp.StatusCode, body)
 	}
-	streamRequest := map[string]any{"model": "gpt-4o-mini", "messages": []any{map[string]any{"role": "user", "content": "stream"}}, "stream": true}
+	streamRequest := map[string]any{"model": "gpt-5.6-sol", "messages": []any{map[string]any{"role": "user", "content": "stream"}}, "stream": true}
 	resp, body = doRawJSON(t, client, http.MethodPost, "/chat/completions", streamRequest, map[string]string{"Authorization": "Bearer " + rawKey})
 	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") || !strings.Contains(string(body), "[DONE]") {
 		t.Fatalf("chat streaming = %d %#v %s", resp.StatusCode, resp.Header, body)
 	}
-	if resp, _ := doRawJSON(t, client, http.MethodPost, "/v1/embeddings", map[string]any{"model": "gpt-4o-mini", "input": "hello"}, map[string]string{"x-api-key": rawKey}); resp.StatusCode != http.StatusOK {
+	if resp, _ := doRawJSON(t, client, http.MethodPost, "/v1/embeddings", map[string]any{"model": "gpt-5.6-sol", "input": "hello"}, map[string]string{"x-api-key": rawKey}); resp.StatusCode != http.StatusOK {
 		t.Fatalf("embedding gateway = %d", resp.StatusCode)
 	}
 	resp, body = doRawJSON(t, client, http.MethodGet, "/v1/models?client_version=0.147.0", nil, map[string]string{"Authorization": "Bearer " + rawKey})
 	codexManifest := decodeSub2APIJSON(t, body)
-	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"models"`) || !strings.Contains(string(body), "gpt-5.3-codex") {
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"models"`) || !strings.Contains(string(body), "gpt-5.6-sol") || !strings.Contains(string(body), "gpt-5.6-codex") || strings.Contains(string(body), "gpt-6-astra") || strings.Contains(string(body), "gpt-4o-mini") {
 		t.Fatalf("Codex manifest through /v1/models = %d %#v", resp.StatusCode, codexManifest)
 	}
 	resp, body = doRawJSON(t, client, http.MethodGet, "/backend-api/codex/models", nil, map[string]string{"Authorization": "Bearer " + rawKey, "User-Agent": "codex_cli_rs/0.147.0"})
-	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"models"`) || !strings.Contains(string(body), "gpt-5.3-codex") {
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"models"`) || !strings.Contains(string(body), "gpt-5.6-sol") || !strings.Contains(string(body), "gpt-5.6-codex") || strings.Contains(string(body), "gpt-6-astra") || strings.Contains(string(body), "gpt-4o-mini") {
 		t.Fatalf("Codex direct manifest = %d %s", resp.StatusCode, body)
 	}
-	codexRequest := map[string]any{"model": "gpt-5.3-codex", "input": []any{map[string]any{"type": "message", "role": "user", "content": "codex-call-content-marker"}}, "stream": false}
+	codexRequest := map[string]any{"model": "gpt-5.6-codex", "input": []any{map[string]any{"type": "message", "role": "user", "content": "codex-call-content-marker"}}, "stream": false}
 	resp, body = doRawJSON(t, client, http.MethodPost, "/backend-api/codex/responses", codexRequest, map[string]string{"Authorization": "Bearer " + rawKey, "User-Agent": "codex_cli_rs/0.147.0", "Originator": "codex_cli_rs"})
-	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"model":"gpt-5.3-codex"`) || !strings.Contains(string(body), `"usage"`) {
-		t.Fatalf("Codex synthetic response = %d %s", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"model":"gpt-5.6-codex"`) || !strings.Contains(string(body), `"usage"`) {
+		t.Fatalf("Codex response = %d %s", resp.StatusCode, body)
 	}
-	latestGPTRequest := map[string]any{"model": "gpt-6-astra", "messages": []any{map[string]any{"role": "user", "content": "latest-gpt-call-content-marker"}}, "stream": false}
+	latestGPTRequest := map[string]any{"model": "gpt-5.6-sol", "messages": []any{map[string]any{"role": "user", "content": "latest-gpt-call-content-marker"}}, "stream": false}
 	resp, body = doRawJSON(t, client, http.MethodPost, "/v1/chat/completions", latestGPTRequest, map[string]string{"Authorization": "Bearer " + rawKey})
-	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"model":"gpt-6-astra"`) || !strings.Contains(string(body), `"usage"`) {
-		t.Fatalf("latest GPT synthetic response = %d %s", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"model":"gpt-5.6-sol"`) || !strings.Contains(string(body), `"usage"`) {
+		t.Fatalf("latest GPT response = %d %s", resp.StatusCode, body)
 	}
 	otherClient := &inProcessClient{handler: a.publicHandler(profile), cookies: map[string]string{}}
 	if resp, _ := doRawJSON(t, otherClient, http.MethodPost, "/v1/chat/completions", request, map[string]string{"Authorization": "Bearer " + rawKey, "User-Agent": "sub2api-sdk/1.0"}); resp.StatusCode != http.StatusOK {
@@ -201,7 +202,7 @@ func TestSub2APICompatibilitySharesStateAndRecordsSafeTelemetry(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || !ok || !totalOK || total < 1 {
 		t.Fatalf("account-scoped usage = %d %#v", resp.StatusCode, usageEnvelope)
 	}
-	if !strings.Contains(string(body), "gpt-5.3-codex") || !strings.Contains(string(body), "codex-call-content-marker") || !strings.Contains(string(body), "model_provider") {
+	if !strings.Contains(string(body), "gpt-5.6-codex") || !strings.Contains(string(body), "codex-call-content-marker") || !strings.Contains(string(body), "model_provider") {
 		t.Fatalf("usage records missed model/content metadata: %s", body)
 	}
 	resp, body = doRawJSON(t, client, http.MethodGet, "/api/v1/usage/dashboard/stats", nil, nil)
@@ -254,9 +255,9 @@ func TestSub2APICompatibilitySharesStateAndRecordsSafeTelemetry(t *testing.T) {
 	if groups, ok := snapshot["groups"].([]any); !ok || len(groups) == 0 {
 		t.Fatalf("dashboard snapshot groups = %#v", snapshot)
 	}
-	ssrfRequest := map[string]any{"model": "gpt-4o-mini", "messages": []any{map[string]any{"role": "user", "content": "inspect"}}, "image_url": "http://127.0.0.1:9/internal"}
+	ssrfRequest := map[string]any{"model": "gpt-5.6-sol", "messages": []any{map[string]any{"role": "user", "content": "inspect"}}, "image_url": "http://127.0.0.1:9/internal"}
 	if resp, _ := doRawJSON(t, client, http.MethodPost, "/v1/chat/completions", ssrfRequest, map[string]string{"Authorization": "Bearer " + rawKey}); resp.StatusCode != http.StatusOK {
-		t.Fatalf("SSRF-shaped synthetic request = %d", resp.StatusCode)
+		t.Fatalf("SSRF-shaped request = %d", resp.StatusCode)
 	}
 	resp, body = doRawJSON(t, client, http.MethodPost, "/api/v1/auth/register", map[string]any{"email": "isolation@example.com", "password": password}, nil)
 	if resp.StatusCode != http.StatusOK {
@@ -292,12 +293,12 @@ func TestSub2APICompatibilitySharesStateAndRecordsSafeTelemetry(t *testing.T) {
 				t.Fatalf("accepted invocation fields = %#v", event)
 			}
 			sawAccepted = true
-			if event.ModelID == "gpt-6-astra" {
+			if event.ModelID == "gpt-5.6-sol" {
 				sawLatestGPT = true
 			}
 		case "sub2api.gateway.responses.accepted":
-			if event.ModelID == "gpt-5.3-codex" {
-				if event.Metadata["model_requested"] != "gpt-5.3-codex" || event.Metadata["model_resolved"] != "gpt-5.3-codex" || event.Metadata["model_provider"] != "openai-codex" || event.Metadata["client_surface"] != "codex" || event.Metadata["api_family"] != "codex.responses" || !strings.Contains(event.Metadata["request_content_preview"], "codex-call-content-marker") || event.Metadata["request_content_sha256"] == "" || event.Metadata["response_content_preview"] == "" {
+			if event.ModelID == "gpt-5.6-codex" {
+				if event.Metadata["model_requested"] != "gpt-5.6-codex" || event.Metadata["model_resolved"] != "gpt-5.6-codex" || event.Metadata["model_provider"] != "openai-codex" || event.Metadata["client_surface"] != "codex" || event.Metadata["api_family"] != "codex.responses" || !strings.Contains(event.Metadata["request_content_preview"], "codex-call-content-marker") || event.Metadata["request_content_sha256"] == "" || event.Metadata["response_content_preview"] == "" {
 					t.Fatalf("Codex invocation model/content metadata = %#v", event.Metadata)
 				}
 				sawCodex = true
