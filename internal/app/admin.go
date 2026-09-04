@@ -1182,7 +1182,7 @@ func (a *App) adminInstances(w http.ResponseWriter) {
 	}
 	a.serverMu.RUnlock()
 	instances := make([]map[string]any, 0, len(a.profiles))
-	for _, name := range []string{model.ProductNewAPI, model.ProductVLLM, model.ProductOllama, model.ProductSGLang, model.ProductLocalAI} {
+	for _, name := range model.Products() {
 		profile := a.profiles[name]
 		profile = a.applyRuntimePacks(profile)
 		state := "stopped"
@@ -1207,7 +1207,7 @@ func (a *App) adminPacks(w http.ResponseWriter) {
 	}
 	bindings := a.store.PackBindings()
 	boundRevisions := make(map[string]string)
-	for _, name := range []string{model.ProductNewAPI, model.ProductVLLM, model.ProductOllama, model.ProductSGLang, model.ProductLocalAI} {
+	for _, name := range model.Products() {
 		for _, kind := range []string{model.PackKindFingerprint, model.PackKindModel, model.PackKindScenario, model.PackKindDetector} {
 			if pack, ok := a.store.BoundPack(kind, "inst_"+name); ok {
 				boundRevisions[name+"/"+kind] = pack.Revision

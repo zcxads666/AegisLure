@@ -44,7 +44,7 @@ services:
       HP_IPINFO_LITE_TOKEN_FILE: ${HP_IPINFO_LITE_TOKEN_FILE:-}
       # Docker deployments expose all honeypot protocols by default. Set
       # HP_PROFILES explicitly to run only a selected subset.
-      HP_PROFILES: ${HP_PROFILES:-new-api,vllm,ollama,sglang,localai}
+      HP_PROFILES: ${HP_PROFILES:-new-api,vllm,ollama,sglang,localai,sub2api}
       HP_ADMIN_PORT: ${HP_ADMIN_PORT:-28443}
       HP_COOKIE_SECURE: "1"
       HP_REQUIRE_TLS: "1"
@@ -81,6 +81,9 @@ services:
         host_ip: "${HP_PUBLIC_PORT_BIND_IP:-0.0.0.0}"
       - target: ${LOCALAI_TARGET_PORT:-8080}
         published: "${LOCALAI_PORT:-8080}"
+        host_ip: "${HP_PUBLIC_PORT_BIND_IP:-0.0.0.0}"
+      - target: ${SUB2API_TARGET_PORT:-8081}
+        published: "${SUB2API_PORT:-8081}"
         host_ip: "${HP_PUBLIC_PORT_BIND_IP:-0.0.0.0}"
       - target: ${HP_ADMIN_PORT:-28443}
         published: "${HP_ADMIN_PORT:-28443}"

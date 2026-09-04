@@ -165,7 +165,7 @@ func validateImportSourceDeclaration(request importSourceRequest) error {
 		return errors.New("root_path_alias must be a non-path installation alias")
 	}
 	switch request.Product {
-	case model.ProductNewAPI, model.ProductVLLM, model.ProductOllama, model.ProductSGLang, model.ProductLocalAI:
+	case model.ProductNewAPI, model.ProductVLLM, model.ProductOllama, model.ProductSGLang, model.ProductLocalAI, model.ProductSub2API:
 	default:
 		return errors.New("product is not allowlisted")
 	}
@@ -895,6 +895,7 @@ func compatibilityRoutes(product string) []string {
 		model.ProductOllama:  {"/", "/api/version", "/api/tags", "/api/ps", "/api/show", "/api/generate", "/api/chat", "/api/embeddings", "/v1/models", "/v1/chat/completions", "/v1/embeddings"},
 		model.ProductSGLang:  {"/health", "/get_model_info", "/metrics", "/docs", "/redoc", "/openapi.json", "/server_info", "/dumper", "/generate", "/load_lora_adapter_from_tensors", "/update_weights_from_disk", "/flush_cache", "/get_weights_by_name", "/v1/models", "/v1/chat/completions"},
 		model.ProductLocalAI: {"/", "/readyz", "/healthz", "/metrics", "/swagger", "/openapi.json", "/models/available", "/models/apply", "/models/installed", "/models/delete", "/models/jobs/{id}", "/v1/models", "/v1/chat/completions", "/v1/completions", "/v1/responses", "/v1/embeddings", "/v1/audio/transcriptions", "/v1/audio/speech", "/v1/images/generations"},
+		model.ProductSub2API: {"/", "/login", "/register", "/dashboard", "/keys", "/usage", "/redeem", "/profile", "/health", "/setup/status", "/api/v1/settings/public", "/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/auth/login/2fa", "/api/v1/auth/refresh", "/api/v1/auth/logout", "/api/v1/auth/me", "/api/v1/auth/revoke-all-sessions", "/api/v1/auth/oauth/bind-token", "/api/v1/auth/oauth/{provider}/start", "/api/v1/auth/oauth/{provider}/callback", "/api/v1/auth/oauth/{provider}/bind/start", "/api/v1/auth/oauth/{provider}/complete-registration", "/api/v1/auth/oauth/{provider}/bind-login", "/api/v1/auth/oauth/{provider}/create-account", "/api/v1/auth/oauth/wechat/payment/{action}", "/api/v1/auth/oauth/pending/{action}", "/api/v1/user/profile", "/api/v1/user/password", "/api/v1/user", "/api/v1/keys", "/api/v1/keys/{id}", "/api/v1/usage", "/api/v1/usage/stats", "/api/v1/usage/errors", "/api/v1/usage/{id}", "/api/v1/usage/dashboard/stats", "/api/v1/usage/dashboard/trend", "/api/v1/usage/dashboard/models", "/api/v1/redeem", "/api/v1/redeem/history", "/api/v1/groups/available", "/api/v1/channels/available", "/api/v1/subscriptions", "/api/v1/models", "/v1/models", "/models", "/v1/models/{model}", "/v1/sub2api/billing", "/v1/messages", "/v1/messages/count_tokens", "/messages/count_tokens", "/v1/chat/completions", "/chat/completions", "/v1/responses", "/responses", "/v1/embeddings", "/embeddings", "/v1/completions", "/completions", "/v1/alpha/search", "/alpha/search", "/v1/usage", "/v1/live", "/v1/live/{call_id}", "/api/event_logging/batch"},
 	}
 	return append([]string(nil), routes[product]...)
 }
@@ -1231,33 +1232,46 @@ func (a *App) adminIdentityPolicyAction(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	provider, ok := oauth.ParseProvider(providerText)
-	if !ok {
+	if !ok && !containsString(model.Sub2APIOAuthProviders(), providerText) {
 		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported identity provider"})
 		return
 	}
 	mode := "local_only"
-	if provider == oauth.Discord {
-		mode = "blocked"
-	} else if provider == oauth.LinuxDO {
-		mode = "pending_approval"
+	if ok {
+		if provider == oauth.Discord {
+			mode = "blocked"
+		} else if provider == oauth.LinuxDO {
+			mode = "pending_approval"
+		}
+	} else if policy, policyOK := a.store.GetSub2APIOAuthChannelPolicy(providerText); policyOK {
+		mode = policy.Mode
 	}
 	a.recordAudit(r, "identity.policy.validate", "identity-policy/"+providerText, "success", map[string]string{"mode": mode})
-	a.writeJSON(w, http.StatusOK, map[string]any{"provider": provider, "valid": true, "mode": mode, "cross_site_feed": false, "raw_provider_id": false, "email": false, "token": false})
+	a.writeJSON(w, http.StatusOK, map[string]any{"provider": providerText, "valid": true, "mode": mode, "cross_site_feed": false, "raw_provider_id": false, "email": false, "token": false})
 }
 
 func (a *App) adminIdentityPolicies(w http.ResponseWriter) {
 	policies := a.store.ListOAuthChannelPolicies()
 	items := make([]map[string]any, 0, len(policies))
 	for _, policy := range policies {
-		items = append(items, map[string]any{
-			"provider":   policy.Provider,
-			"enabled":    policy.Enabled,
-			"mode":       policy.Mode,
-			"cross_site": policy.CrossSite,
-			"updated_at": policy.UpdatedAt,
-		})
+		items = append(items, identityPolicyView(policy))
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"providers": items})
+	sub2APIPolicies := a.store.ListSub2APIOAuthChannelPolicies()
+	sub2APIItems := make([]map[string]any, 0, len(sub2APIPolicies))
+	for _, policy := range sub2APIPolicies {
+		sub2APIItems = append(sub2APIItems, identityPolicyView(policy))
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"providers": items, "sub2api_providers": sub2APIItems})
+}
+
+func identityPolicyView(policy model.OAuthChannelPolicy) map[string]any {
+	return map[string]any{
+		"provider":   policy.Provider,
+		"enabled":    policy.Enabled,
+		"mode":       policy.Mode,
+		"cross_site": policy.CrossSite,
+		"updated_at": policy.UpdatedAt,
+	}
 }
 
 type identityPolicyUpdateRequest struct {
@@ -1271,7 +1285,9 @@ func (a *App) adminIdentityPolicyUpdate(w http.ResponseWriter, r *http.Request, 
 	}
 	providerText := strings.TrimSpace(path)
 	provider, ok := oauth.ParseProvider(providerText)
-	if !ok || providerText != string(provider) {
+	legacy := ok && providerText == string(provider)
+	sub2APIProvider := containsString(model.Sub2APIOAuthProviders(), providerText)
+	if !legacy && !sub2APIProvider {
 		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported identity provider"})
 		return
 	}
@@ -1286,17 +1302,30 @@ func (a *App) adminIdentityPolicyUpdate(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	policy, ok := a.store.GetOAuthChannelPolicy(string(provider))
+	if sub2APIProvider && !legacy {
+		policy, ok = a.store.GetSub2APIOAuthChannelPolicy(providerText)
+	}
 	if !ok {
 		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "identity policy not found"})
 		return
 	}
 	policy.Enabled = *request.Enabled
-	if err := a.store.SetOAuthChannelPolicy(policy); err != nil {
+	var updateErr error
+	if sub2APIProvider && !legacy {
+		updateErr = a.store.SetSub2APIOAuthChannelPolicy(policy)
+	} else {
+		updateErr = a.store.SetOAuthChannelPolicy(policy)
+	}
+	if updateErr != nil {
 		a.writeJSON(w, http.StatusConflict, map[string]string{"error": "identity policy update failed"})
 		return
 	}
-	policy, _ = a.store.GetOAuthChannelPolicy(string(provider))
-	a.recordAudit(r, "identity.policy.update", "identity-policy/"+string(provider), "success", map[string]string{"enabled": fmt.Sprintf("%t", policy.Enabled)})
+	if sub2APIProvider && !legacy {
+		policy, _ = a.store.GetSub2APIOAuthChannelPolicy(providerText)
+	} else {
+		policy, _ = a.store.GetOAuthChannelPolicy(string(provider))
+	}
+	a.recordAudit(r, "identity.policy.update", "identity-policy/"+providerText, "success", map[string]string{"enabled": fmt.Sprintf("%t", policy.Enabled)})
 	a.writeJSON(w, http.StatusOK, map[string]any{
 		"provider":   policy.Provider,
 		"enabled":    policy.Enabled,

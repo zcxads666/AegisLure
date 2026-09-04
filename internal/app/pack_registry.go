@@ -81,9 +81,11 @@ func builtinPacks() []model.ConfigPack {
 		{SchemaVersion: 1, ID: "ollama-native-0.1-lure", Product: model.ProductOllama, DisplayVersion: "0.1.33", DefaultPort: 11434, Routeset: "ollama-native-openai"},
 		{SchemaVersion: 1, ID: "sglang-http-legacy-lure", Product: model.ProductSGLang, DisplayVersion: "0.5.10", DefaultPort: 30000, Routeset: "sglang-http-openapi"},
 		{SchemaVersion: 1, ID: "localai-2x-legacy-lure", Product: model.ProductLocalAI, DisplayVersion: "2.19.4", DefaultPort: 8080, Routeset: "localai-web-gallery"},
+		{SchemaVersion: 1, ID: "sub2api-web-v1", Product: model.ProductSub2API, DisplayVersion: "0.2.0", DefaultPort: 8081, Routeset: "sub2api-web-gateway"},
 	}, CompatibilityManifest: map[string]any{"fixture_source": "public-documentation-and-safe-local-contracts", "dangerous_parsers": false, "outbound_network": false, "max_body_bytes": 1048576, "liveness_operators": []string{"exact", "contains", "starts_with", "ends_with"}}}
 	modelCatalog := packs.ModelCatalogPack{SchemaVersion: 1, Revision: "seed-2026q3", Catalogs: []packs.ModelCatalog{
 		{ID: "newapi-popular-closed-2026q3", OriginPolicy: "closed", Products: []string{model.ProductNewAPI}, Models: []string{"gpt-5.6-sol", "claude-sonnet-5", "gemini-3.7-flash"}},
+		{ID: "sub2api-popular-closed-2026q3", OriginPolicy: "closed", Products: []string{model.ProductSub2API}, Models: []string{"gpt-4o-mini", "claude-3-5-sonnet", "gemini-1.5-pro"}},
 		{ID: "selfhosted-popular-open-2026q3", OriginPolicy: "open", Products: []string{model.ProductVLLM, model.ProductOllama, model.ProductSGLang, model.ProductLocalAI}, Models: []string{"Qwen/Qwen3.6-35B-A3B", "openai/gpt-oss-20b", "meta-llama/Llama-4-Scout-17B-16E-Instruct"}},
 	}, SafetyContract: map[string]bool{"contains_endpoint": false, "contains_secret": false, "contains_download_url": false, "real_inference": false}}
 	scenarios := packs.ScenarioPackDocument{SchemaVersion: 1, Revision: "builtin-safe-v1", Packs: []packs.ScenarioPack{
@@ -92,6 +94,7 @@ func builtinPacks() []model.ConfigPack {
 		{ID: "ollama-no-key-v1", Product: model.ProductOllama, AuthPosture: "none", OpenAIRoutes: "no_key", EffectTTLSec: 90},
 		{ID: "sglang-http-safe-v1", Product: model.ProductSGLang, AuthPosture: "no_key", ServerInfo: "honey_key", DangerousEffects: "virtual_only", EffectTTLSec: 900},
 		{ID: "localai-legacy-safe-v1", Product: model.ProductLocalAI, AuthPosture: "legacy-unauth", ModelInstall: "synthetic_task", EffectTTLSec: 90},
+		{ID: "sub2api-fresh-v1", Product: model.ProductSub2API, AuthPosture: "api_key", OpenAIRoutes: "require_key", ServerInfo: "local_synthetic_oauth", DangerousEffects: "virtual_only", EffectTTLSec: 90},
 	}}
 	rules := defaultDetectorRulePack()
 	rulesV1 := rules
@@ -254,7 +257,7 @@ func (a *App) packForTarget(kind, target string) (model.ConfigPack, bool) {
 
 func (a *App) adminPackStrategies(chainConfig model.InteractionChainConfig) []map[string]any {
 	items := make([]map[string]any, 0, len(a.profiles))
-	for _, product := range []string{model.ProductNewAPI, model.ProductVLLM, model.ProductOllama, model.ProductSGLang, model.ProductLocalAI} {
+	for _, product := range model.Products() {
 		profile, ok := a.profiles[product]
 		if !ok {
 			continue

@@ -31,6 +31,8 @@ func (a *App) handleProduct(w *captureWriter, r *http.Request, profile profiles.
 		a.handleSGLang(w, r, profile, session, body, obs)
 	case model.ProductLocalAI:
 		a.handleLocalAI(w, r, profile, session, body, obs)
+	case model.ProductSub2API:
+		a.handleSub2API(w, r, profile, session, body, obs)
 	default:
 		a.writeJSON(w, http.StatusNotFound, map[string]any{"error": "profile not found"})
 	}
@@ -2490,10 +2492,10 @@ func emailDomain(email string) string {
 	return ""
 }
 
-func publicUsageEvents(events []model.Event, sessionID string) []map[string]any {
+func publicUsageEvents(events []model.Event, sessionID, userID string) []map[string]any {
 	result := make([]map[string]any, 0, len(events))
 	for _, event := range events {
-		if sessionID != "" && event.SessionID != sessionID {
+		if sessionID != "" && event.SessionID != sessionID && (userID == "" || event.Metadata["honey_user_id"] != userID) {
 			continue
 		}
 		// Account/page requests are observations, not usage rows. Keep the

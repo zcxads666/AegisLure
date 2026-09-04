@@ -6,7 +6,8 @@
     {"id": "vllm-openai-0.17-lure", "product": "vllm", "display_version": "0.17.0", "default_port": 8000, "routeset": "vllm-openai-invocations"},
     {"id": "ollama-native-0.1-lure", "product": "ollama", "display_version": "0.1.33", "default_port": 11434, "routeset": "ollama-native-openai"},
     {"id": "sglang-http-legacy-lure", "product": "sglang", "display_version": "0.5.10", "default_port": 30000, "routeset": "sglang-http-openapi"},
-    {"id": "localai-2x-legacy-lure", "product": "localai", "display_version": "2.19.4", "default_port": 8080, "routeset": "localai-web-gallery"}
+    {"id": "localai-2x-legacy-lure", "product": "localai", "display_version": "2.19.4", "default_port": 8080, "routeset": "localai-web-gallery"},
+    {"id": "sub2api-web-v1", "product": "sub2api", "display_version": "0.2.0", "default_port": 8081, "routeset": "sub2api-web-gateway"}
   ],
   "compatibility_manifest": {
     "fixture_source": "public-documentation-and-safe-local-contracts",

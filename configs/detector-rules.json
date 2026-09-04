@@ -414,6 +414,216 @@
       }
     },
     {
+      "id": "SUB2API_AUTH_SSRF_V1",
+      "type": "atomic",
+      "reason_code": "sub2api_auth_ssrf_probe",
+      "score": 55,
+      "confidence": "high",
+      "url_classes": [
+        "loopback",
+        "unspecified",
+        "link_local",
+        "private",
+        "file_scheme"
+      ],
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "sub2api"
+          },
+          {
+            "field": "route_template",
+            "op": "in",
+            "value": [
+              "sub2api.gateway.messages",
+              "sub2api.gateway.count_tokens",
+              "sub2api.gateway.chat",
+              "sub2api.gateway.responses",
+              "sub2api.gateway.embeddings",
+              "sub2api.gateway.completions",
+              "sub2api.gateway.billing",
+              "sub2api.gateway.alpha_search",
+              "sub2api.gateway.usage",
+              "sub2api.gateway.live"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "SUB2API_OAUTH_ENUMERATION_V1",
+      "type": "atomic",
+      "reason_code": "sub2api_oauth_provider_enumeration",
+      "score": 40,
+      "confidence": "medium",
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "sub2api"
+          },
+          {
+            "field": "route_template",
+            "op": "eq",
+            "value": "sub2api.auth.oauth"
+          },
+          {
+            "any": [
+              {
+                "field": "auth_outcome",
+                "op": "eq",
+                "value": "missing"
+              },
+              {
+                "field": "auth_outcome",
+                "op": "eq",
+                "value": "invalid"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "SUB2API_GATEWAY_UNAUTHORIZED_ENUM_V1",
+      "type": "atomic",
+      "reason_code": "sub2api_gateway_unauthorized_enumeration",
+      "score": 35,
+      "confidence": "medium",
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "sub2api"
+          },
+          {
+            "field": "route_template",
+            "op": "in",
+            "value": [
+              "sub2api.gateway.messages",
+              "sub2api.gateway.count_tokens",
+              "sub2api.gateway.chat",
+              "sub2api.gateway.responses",
+              "sub2api.gateway.embeddings",
+              "sub2api.gateway.completions",
+              "sub2api.gateway.billing",
+              "sub2api.gateway.alpha_search",
+              "sub2api.gateway.usage",
+              "sub2api.gateway.live"
+            ]
+          },
+          {
+            "any": [
+              {
+                "field": "auth_outcome",
+                "op": "eq",
+                "value": "missing"
+              },
+              {
+                "field": "auth_outcome",
+                "op": "eq",
+                "value": "invalid"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "SUB2API_GATEWAY_KEY_REUSE_V1",
+      "type": "atomic",
+      "reason_code": "sub2api_gateway_honey_key_reuse",
+      "score": 55,
+      "confidence": "high",
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "sub2api"
+          },
+          {
+            "field": "route_template",
+            "op": "in",
+            "value": [
+              "sub2api.gateway.messages",
+              "sub2api.gateway.count_tokens",
+              "sub2api.gateway.chat",
+              "sub2api.gateway.responses",
+              "sub2api.gateway.embeddings",
+              "sub2api.gateway.completions",
+              "sub2api.gateway.billing",
+              "sub2api.gateway.alpha_search",
+              "sub2api.gateway.usage",
+              "sub2api.gateway.live"
+            ]
+          },
+          {
+            "field": "auth_outcome",
+            "op": "eq",
+            "value": "leaked_key_reused"
+          }
+        ]
+      }
+    },
+    {
+      "id": "SUB2API_QUOTA_PROBE_V1",
+      "type": "atomic",
+      "reason_code": "sub2api_quota_probe",
+      "score": 55,
+      "confidence": "high",
+      "where": {
+        "all": [
+          {
+            "field": "product",
+            "op": "eq",
+            "value": "sub2api"
+          },
+          {
+            "field": "route_template",
+            "op": "in",
+            "value": [
+              "sub2api.gateway.messages",
+              "sub2api.gateway.count_tokens",
+              "sub2api.gateway.chat",
+              "sub2api.gateway.responses",
+              "sub2api.gateway.embeddings",
+              "sub2api.gateway.completions",
+              "sub2api.gateway.billing",
+              "sub2api.gateway.alpha_search",
+              "sub2api.gateway.usage",
+              "sub2api.gateway.live"
+            ]
+          },
+          {
+            "field": "body_preview",
+            "op": "regex",
+            "value": "(?i)(?:max_tokens|max_output_tokens|n|best_of).{0,64}(?:[1-9][0-9]{6,}|1e\\+?0?6)"
+          }
+        ]
+      }
+    },
+    {
+      "id": "SUB2API_ACCOUNT_TO_GATEWAY_V1",
+      "type": "sequence",
+      "reason_code": "sub2api_account_to_gateway_chain",
+      "score": 35,
+      "confidence": "medium",
+      "within": "30m",
+      "sequence_mode": "unordered",
+      "steps": [
+        "sub2api.user.register.success",
+        "sub2api.user.login.success",
+        "sub2api.key.created",
+        "sub2api.models.listed",
+        "sub2api.gateway"
+      ]
+    },
+    {
       "id": "VLLM_MEDIACONNECTOR_SSRF_V1",
       "type": "atomic",
       "reason_code": "vllm_mediaconnector_ssrf_probe",

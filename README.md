@@ -2,16 +2,16 @@
 
 AI/LLM 服务蜜罐与 IP 风险情报平台。
 
-AegisLure 面向单机部署，提供 New API、vLLM、Ollama、SGLang 和 LocalAI 的协议兼容入口，用于记录访问、认证、模型目录、调用行为和风险事件。服务返回合成数据，不连接真实模型供应商，不执行真实推理，也不下载、解析或转发访问者提交的内容。
+AegisLure 面向单机部署，提供 New API、vLLM、Ollama、SGLang、LocalAI 和 Sub2API 的协议兼容入口，用于记录访问、认证、模型目录、调用行为和风险事件。服务返回合成数据，不连接真实模型供应商，不执行真实推理，也不下载、解析或转发访问者提交的内容。
 
 ## 功能
 
-- 五类 AI/LLM 服务协议兼容入口和模型目录仿真。
+- 六类 AI/LLM 服务协议兼容入口和模型目录仿真。
 - New API 风格的首页、登录、注册、模型、密钥、用量和调用日志页面。
 - 管理控制台：总览、观测记录、调用分析、交互链路、IP 情报、蜜罐实例、规则策略和系统设置。
 - 规则与策略管理：支持规则、正则条件、身份策略、OAuth 渠道和风险等级的查看与维护。
 - IP 情报：支持本地地址分类、MaxMind GeoLite2、IPinfo Location + ASN MMDB、IPinfo API 和 IPinfo Lite API，并在查询失败时回退到可用结果或“未知”。
-- GitHub、LinuxDO 和 Discord 注册入口，可按身份策略启用或停用。
+- GitHub、LinuxDO 和 Discord 注册入口，以及 Sub2API 的 GitHub、LinuxDO、Google、WeChat、OIDC、DingTalk 入口，可按身份策略启用或停用；所有入口均为本地合成流程。
 - 风险事件、审计记录、IP/身份指标、JSON/CSV/plain/STIX2/nftables 导出和有界保留策略。
 - SQLite 默认存储，也支持 PostgreSQL 新部署模式；两种模式均会自动加载默认规则和模型目录。
 
@@ -49,7 +49,7 @@ curl -fsSL https://raw.githubusercontent.com/zcxads666/AegisLure/main/install-re
 
 ## 网络入口
 
-Docker 默认启用全部五类公开 profile，并使用正常项目端口：
+Docker 默认启用全部六类公开 profile，并使用正常项目端口：
 
 | 服务 | 端口 |
 | --- | ---: |
@@ -58,11 +58,12 @@ Docker 默认启用全部五类公开 profile，并使用正常项目端口：
 | Ollama | 11434 |
 | SGLang | 30000 |
 | LocalAI | 8080 |
+| Sub2API | 8081 |
 
 管理入口使用 `HP_ADMIN_PORT` 指定的高位端口，默认绑定到 `0.0.0.0`，以便从公网访问。公开蜜罐端口同样默认绑定到 `0.0.0.0`。可在 `.env` 中设置：
 
 ```env
-HP_PROFILES=new-api,vllm,ollama,sglang,localai
+HP_PROFILES=new-api,vllm,ollama,sglang,localai,sub2api
 HP_PUBLIC_PORT_BIND_IP=0.0.0.0
 HP_ADMIN_PORT_BIND_IP=0.0.0.0
 ```

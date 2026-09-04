@@ -36,6 +36,24 @@ func TestLoadAppliesSecureRuntimeDefaultsAndEnvironmentOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadMigratesSub2APIProfileWithoutCollidingWithExistingPorts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"instance_id":"instance","instance_key":"key","admin_port":28443,"profile_ports":{"localai":8081}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HP_SUB2API_VERSION", "")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sub2APIVersion != "0.2.0" || cfg.ProfilePorts["sub2api"] != 8082 || cfg.Scenario["sub2api"] != "fresh" {
+		t.Fatalf("Sub2API migration did not preserve a collision-free default: %#v", cfg)
+	}
+	if !PortInPool(cfg, "sub2api", 8082) {
+		t.Fatalf("migrated Sub2API port was not added to the normalized pool: %#v", cfg.PortPools["sub2api"])
+	}
+}
+
 func TestLoadNormalizesGeoIPProviderAndRuntimeDatabasePaths(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(`{"instance_id":"instance","instance_key":"key"}`), 0600); err != nil {

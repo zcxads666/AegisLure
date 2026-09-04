@@ -69,7 +69,7 @@ func (s Source) validate() error {
 		}
 	}
 	switch s.Product {
-	case model.ProductNewAPI, model.ProductVLLM, model.ProductOllama, model.ProductSGLang, model.ProductLocalAI:
+	case model.ProductNewAPI, model.ProductVLLM, model.ProductOllama, model.ProductSGLang, model.ProductLocalAI, model.ProductSub2API:
 		return nil
 	default:
 		return fmt.Errorf("unsupported source product %q", s.Product)

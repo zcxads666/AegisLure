@@ -11,7 +11,15 @@ const (
 	ProductOllama  = "ollama"
 	ProductSGLang  = "sglang"
 	ProductLocalAI = "localai"
+	ProductSub2API = "sub2api"
 )
+
+// Products is the canonical product order used by the control plane. Keep
+// Sub2API last so older API consumers that render the original five profiles
+// retain their existing ordering.
+func Products() []string {
+	return []string{ProductNewAPI, ProductVLLM, ProductOllama, ProductSGLang, ProductLocalAI, ProductSub2API}
+}
 
 type InvocationLevel string
 
@@ -162,6 +170,26 @@ func DefaultOAuthChannelPolicies() map[string]OAuthChannelPolicy {
 	}
 }
 
+// Sub2APIOAuthProviders mirrors the provider set registered by Sub2API's
+// authentication router. These policies are kept separate from the legacy
+// New API policy map so existing control-plane clients retain their three-item
+// response contract; github and linuxdo are read/written through the legacy
+// map by the store compatibility layer.
+func Sub2APIOAuthProviders() []string {
+	return []string{"linuxdo", "github", "google", "wechat", "oidc", "dingtalk"}
+}
+
+func DefaultSub2APIOAuthChannelPolicies() map[string]OAuthChannelPolicy {
+	return map[string]OAuthChannelPolicy{
+		"linuxdo":  {Provider: "linuxdo", Mode: "local_only", CrossSite: "pending_approval"},
+		"github":   {Provider: "github", Mode: "local_only", CrossSite: "disabled_by_default"},
+		"google":   {Provider: "google", Mode: "local_only", CrossSite: "disabled_by_default"},
+		"wechat":   {Provider: "wechat", Mode: "local_only", CrossSite: "blocked"},
+		"oidc":     {Provider: "oidc", Mode: "local_only", CrossSite: "blocked"},
+		"dingtalk": {Provider: "dingtalk", Mode: "local_only", CrossSite: "disabled_by_default"},
+	}
+}
+
 type VirtualEffect struct {
 	ID         string            `json:"id"`
 	OwnerScope string            `json:"owner_scope"`
@@ -236,6 +264,7 @@ type State struct {
 	IndicatorDecisions         map[string]IndicatorDecision         `json:"indicator_decisions,omitempty"`
 	IdentityIndicatorDecisions map[string]IdentityIndicatorDecision `json:"identity_indicator_decisions,omitempty"`
 	OAuthChannelPolicies       map[string]OAuthChannelPolicy        `json:"oauth_channel_policies,omitempty"`
+	Sub2APIOAuthPolicies       map[string]OAuthChannelPolicy        `json:"sub2api_oauth_policies,omitempty"`
 }
 
 // InteractionChainConfig controls how the local admin view groups the

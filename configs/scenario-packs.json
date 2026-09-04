@@ -6,6 +6,7 @@
     {"id": "vllm-legacy-gap-v1", "product": "vllm", "auth_posture": "legacy-gap", "openai_routes": "require_key", "invocations_route": "simulate_bypass", "effect_ttl_seconds": 60},
     {"id": "ollama-no-key-v1", "product": "ollama", "auth_posture": "none", "openai_routes": "no_key", "effect_ttl_seconds": 90},
     {"id": "sglang-http-safe-v1", "product": "sglang", "auth_posture": "no_key", "server_info": "honey_key", "dangerous_effects": "virtual_only", "effect_ttl_seconds": 900},
-    {"id": "localai-legacy-safe-v1", "product": "localai", "auth_posture": "legacy-unauth", "model_install": "synthetic_task", "effect_ttl_seconds": 90}
+    {"id": "localai-legacy-safe-v1", "product": "localai", "auth_posture": "legacy-unauth", "model_install": "synthetic_task", "effect_ttl_seconds": 90},
+    {"id": "sub2api-fresh-v1", "product": "sub2api", "auth_posture": "api_key", "openai_routes": "require_key", "server_info": "local_synthetic_oauth", "dangerous_effects": "virtual_only", "effect_ttl_seconds": 90}
   ]
 }

@@ -43,8 +43,8 @@ func TestBuiltinDetectorRulesDefaultToLatestCoveragePack(t *testing.T) {
 	if err := json.Unmarshal(pack.Definition, &document); err != nil {
 		t.Fatal(err)
 	}
-	if len(document.Rules) != 48 {
-		t.Fatalf("active detector rule count = %d, want 48", len(document.Rules))
+	if len(document.Rules) != 54 {
+		t.Fatalf("active detector rule count = %d, want 54", len(document.Rules))
 	}
 }
 
@@ -71,6 +71,12 @@ func TestDefaultDetectorRulePackCoversReferenceBehaviors(t *testing.T) {
 		"NEWAPI_QUOTA_CONCURRENCY_V1":             newAPIQuotaConcurrencyFixture(),
 		"NEWAPI_PAYMENT_WEBHOOK_BODY_DOS_V1":      {{Product: model.ProductNewAPI, RouteTemplate: "newapi.payment.webhook", RequestBytes: 300 * 1024}},
 		"NEWAPI_BINDING_CSRF_V1":                  {{Product: model.ProductNewAPI, RouteTemplate: "newapi.user.oauth-bindings", Method: "GET", OriginClass: "cross_site"}},
+		"SUB2API_AUTH_SSRF_V1":                    {ruleEvent(model.ProductSub2API, "sub2api.gateway.chat", `{"image_url":"http://127.0.0.1"}`)},
+		"SUB2API_OAUTH_ENUMERATION_V1":            {{Product: model.ProductSub2API, RouteTemplate: "sub2api.auth.oauth", AuthOutcome: "invalid"}},
+		"SUB2API_GATEWAY_UNAUTHORIZED_ENUM_V1":    {{Product: model.ProductSub2API, RouteTemplate: "sub2api.gateway.chat", AuthOutcome: "missing"}},
+		"SUB2API_GATEWAY_KEY_REUSE_V1":            {{Product: model.ProductSub2API, RouteTemplate: "sub2api.gateway.chat", AuthOutcome: "leaked_key_reused"}},
+		"SUB2API_QUOTA_PROBE_V1":                  {ruleEvent(model.ProductSub2API, "sub2api.gateway.chat", `{"max_tokens":1000001}`)},
+		"SUB2API_ACCOUNT_TO_GATEWAY_V1":           sub2APIAccountToGatewayFixture(),
 		"VLLM_MEDIACONNECTOR_SSRF_V1":             {ruleEvent(model.ProductVLLM, "openai.chat.completions", `{"url":"http://169.254.169.254/latest"}`)},
 		"VLLM_EMBEDDING_DESERIALIZATION_V1":       {ruleEvent(model.ProductVLLM, "openai.chat.completions", `{"embedding":"serialized tensor payload"}`)},
 		"VLLM_VIDEO_FRAME_DOS_V1":                 {ruleEvent(model.ProductVLLM, "openai.chat.completions", `{"video":"jpeg frame 1000"}`)},
@@ -167,4 +173,14 @@ func newAPIQuotaConcurrencyFixture() []model.Event {
 		{Product: model.ProductNewAPI, RouteTemplate: "newapi.user.setting", EventType: "http.request.classified", ObservedAt: base.Add(time.Second)},
 		{Product: model.ProductNewAPI, EventType: "llm.invoke.accepted", ObservedAt: base.Add(2 * time.Second)},
 	}
+}
+
+func sub2APIAccountToGatewayFixture() []model.Event {
+	base := time.Now().UTC()
+	steps := []string{"sub2api.user.register.success", "sub2api.user.login.success", "sub2api.key.created", "sub2api.models.listed", "sub2api.gateway.chat.accepted"}
+	events := make([]model.Event, 0, len(steps))
+	for index, step := range steps {
+		events = append(events, model.Event{Product: model.ProductSub2API, EventType: step, ObservedAt: base.Add(time.Duration(index) * time.Second)})
+	}
+	return events
 }

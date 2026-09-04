@@ -1077,7 +1077,7 @@ func portsApplyCommand(args []string) {
 			*projectDir = filepath.Dir(*configPath)
 		}
 	}
-	key := map[string]string{"new-api": "NEW_API", "vllm": "VLLM", "ollama": "OLLAMA", "sglang": "SGLANG", "localai": "LOCALAI"}[plan.Profile]
+	key := map[string]string{"new-api": "NEW_API", "vllm": "VLLM", "ollama": "OLLAMA", "sglang": "SGLANG", "localai": "LOCALAI", "sub2api": "SUB2API"}[plan.Profile]
 	envPath := filepath.Join(*projectDir, ".env")
 	previousEnv, envExisted, err := readOptionalFile(envPath)
 	if err != nil {
@@ -1156,6 +1156,8 @@ func composePortPoolBase(key string) (int, bool) {
 		return 30000, true
 	case "LOCALAI":
 		return 8080, true
+	case "SUB2API":
+		return 8081, true
 	default:
 		return 0, false
 	}
@@ -1208,7 +1210,7 @@ func signPortPlan(cfg *config.Config, plan portChangePlan) string {
 
 func knownProfile(name string) bool {
 	switch name {
-	case "new-api", "vllm", "ollama", "sglang", "localai":
+	case "new-api", "vllm", "ollama", "sglang", "localai", "sub2api":
 		return true
 	default:
 		return false

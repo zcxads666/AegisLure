@@ -67,10 +67,10 @@ export HP_POSTGRES_PASSWORD_FILE="$TEST_ROOT/runtime/secrets/postgres_password"
 export HP_PUBLIC_PORT_BIND_IP=0.0.0.0
 export HP_ADMIN_PORT_BIND_IP=0.0.0.0
 export HP_ADMIN_PORT=$((20000 + $(od -An -N2 -tu2 /dev/urandom) % 40999))
-export HP_PROFILES=new-api,vllm,ollama,sglang,localai
+export HP_PROFILES=new-api,vllm,ollama,sglang,localai,sub2api
 export HP_CONTAINER_UID=10001
 export HP_CONTAINER_GID=10001
-export NEW_API_PORT=3000 OLLAMA_PORT=11434 VLLM_PORT=8000 SGLANG_PORT=30000 LOCALAI_PORT=8080
+export NEW_API_PORT=3000 OLLAMA_PORT=11434 VLLM_PORT=8000 SGLANG_PORT=30000 LOCALAI_PORT=8080 SUB2API_PORT=8081
 export HP_DATABASE_URL=
 export HP_DATABASE_URL_FILE=
 export HP_DB_HOST=
@@ -170,7 +170,7 @@ run_mode() {
   grep -Eq '"database_connected"[[:space:]]*:[[:space:]]*true' <<<"$health_output"
   local app_id
   app_id="$("${mode_compose[@]}" ps -q aegislure | head -n 1)"
-  for public_port in 3000 8000 8080 11434 30000; do
+  for public_port in 3000 8000 8080 8081 11434 30000; do
     assert_public_port "$app_id" "$public_port"
   done
   if [[ "$mode" == postgres ]]; then
@@ -237,7 +237,7 @@ test_installer_failure_semantics() {
   export HP_POSTGRES_PASSWORD_FILE="$failure_root/runtime/secrets/postgres_password"
   export HP_CONTAINER_UID=10001 HP_CONTAINER_GID=10001
   export HP_PUBLIC_PORT_BIND_IP=0.0.0.0 HP_ADMIN_PORT_BIND_IP=0.0.0.0 HP_ADMIN_PORT=40565
-  export HP_PROFILES=new-api,vllm,ollama,sglang,localai
+  export HP_PROFILES=new-api,vllm,ollama,sglang,localai,sub2api
   export HP_DATABASE_URL= HP_DATABASE_URL_FILE= HP_DB_DRIVER=postgres HP_DB_PASSWORD_FILE=
   log="$failure_root/install.log"
   set +e

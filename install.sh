@@ -137,7 +137,7 @@ if [[ -z "${HP_ADMIN_PORT:-}" ]]; then
 else
   set_env_value HP_ADMIN_PORT "$HP_ADMIN_PORT"
 fi
-if [[ -n "${HP_PROFILES:-}" ]]; then set_env_value HP_PROFILES "$HP_PROFILES"; elif ! grep -q '^HP_PROFILES=' .env; then set_env_value HP_PROFILES 'new-api,vllm,ollama,sglang,localai'; fi
+if [[ -n "${HP_PROFILES:-}" ]]; then set_env_value HP_PROFILES "$HP_PROFILES"; elif ! grep -q '^HP_PROFILES=' .env; then set_env_value HP_PROFILES 'new-api,vllm,ollama,sglang,localai,sub2api'; fi
 if ! grep -q '^HP_CONTAINER_UID=' .env; then set_env_value HP_CONTAINER_UID "$CONTAINER_UID_DEFAULT"; fi
 if ! grep -q '^HP_CONTAINER_GID=' .env; then set_env_value HP_CONTAINER_GID "$CONTAINER_GID_DEFAULT"; fi
 if ! grep -q '^HP_PUBLIC_PORT_BIND_IP=' .env; then set_env_value HP_PUBLIC_PORT_BIND_IP "${HP_PUBLIC_PORT_BIND_IP:-0.0.0.0}"; fi

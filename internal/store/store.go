@@ -452,6 +452,7 @@ func OpenWithOptions(dir, key string, options Options) (*Store, error) {
 		IndicatorDecisions:         make(map[string]model.IndicatorDecision),
 		IdentityIndicatorDecisions: make(map[string]model.IdentityIndicatorDecision),
 		OAuthChannelPolicies:       model.DefaultOAuthChannelPolicies(),
+		Sub2APIOAuthPolicies:       model.DefaultSub2APIOAuthChannelPolicies(),
 	}
 	stateLoaded, err := s.loadStateFromDatabase()
 	if err != nil {
@@ -933,6 +934,25 @@ func ensureStateMaps(state *model.State) {
 		}
 		state.OAuthChannelPolicies[provider] = policy
 	}
+	if state.Sub2APIOAuthPolicies == nil {
+		state.Sub2APIOAuthPolicies = make(map[string]model.OAuthChannelPolicy)
+	}
+	sub2apiDefaults := model.DefaultSub2APIOAuthChannelPolicies()
+	for _, provider := range model.Sub2APIOAuthProviders() {
+		policy, ok := state.Sub2APIOAuthPolicies[provider]
+		if !ok {
+			state.Sub2APIOAuthPolicies[provider] = sub2apiDefaults[provider]
+			continue
+		}
+		policy.Provider = provider
+		if policy.Mode == "" {
+			policy.Mode = sub2apiDefaults[provider].Mode
+		}
+		if policy.CrossSite == "" {
+			policy.CrossSite = sub2apiDefaults[provider].CrossSite
+		}
+		state.Sub2APIOAuthPolicies[provider] = policy
+	}
 }
 
 func (s *Store) ListImportSources() []model.ImportSource {
@@ -1140,6 +1160,105 @@ func (s *Store) SetOAuthChannelPolicy(policy model.OAuthChannelPolicy) error {
 	policy.UpdatedAt = time.Now().UTC()
 	return s.Update(func(state *model.State) error {
 		state.OAuthChannelPolicies[provider] = policy
+		return nil
+	})
+}
+
+func sub2APIUsesLegacyOAuthPolicy(provider string) bool {
+	return provider == "github" || provider == "linuxdo"
+}
+
+// ListSub2APIOAuthChannelPolicies returns the provider policy set exposed by
+// the Sub2API-compatible public settings surface. The two providers shared
+// with the legacy New API surface intentionally read the legacy map so an
+// administrator changing either compatible entry cannot create contradictory
+// local policy state.
+func (s *Store) ListSub2APIOAuthChannelPolicies() []model.OAuthChannelPolicy {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	defaults := model.DefaultSub2APIOAuthChannelPolicies()
+	legacyDefaults := model.DefaultOAuthChannelPolicies()
+	result := make([]model.OAuthChannelPolicy, 0, len(model.Sub2APIOAuthProviders()))
+	for _, provider := range model.Sub2APIOAuthProviders() {
+		policy, ok := s.state.Sub2APIOAuthPolicies[provider]
+		if sub2APIUsesLegacyOAuthPolicy(provider) {
+			policy, ok = s.state.OAuthChannelPolicies[provider]
+			if !ok {
+				policy = legacyDefaults[provider]
+			}
+		} else if !ok {
+			policy = defaults[provider]
+		}
+		policy.Provider = provider
+		if policy.Mode == "" {
+			policy.Mode = defaults[provider].Mode
+		}
+		if policy.CrossSite == "" {
+			policy.CrossSite = defaults[provider].CrossSite
+		}
+		result = append(result, policy)
+	}
+	return result
+}
+
+func (s *Store) GetSub2APIOAuthChannelPolicy(provider string) (model.OAuthChannelPolicy, bool) {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	defaults := model.DefaultSub2APIOAuthChannelPolicies()
+	defaultPolicy, supported := defaults[provider]
+	if !supported {
+		return model.OAuthChannelPolicy{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if sub2APIUsesLegacyOAuthPolicy(provider) {
+		policy, ok := s.state.OAuthChannelPolicies[provider]
+		if !ok {
+			policy = defaultPolicy
+		}
+		policy.Provider = provider
+		if policy.Mode == "" {
+			policy.Mode = defaultPolicy.Mode
+		}
+		if policy.CrossSite == "" {
+			policy.CrossSite = defaultPolicy.CrossSite
+		}
+		return policy, true
+	}
+	policy, ok := s.state.Sub2APIOAuthPolicies[provider]
+	if !ok {
+		return defaultPolicy, true
+	}
+	policy.Provider = provider
+	if policy.Mode == "" {
+		policy.Mode = defaultPolicy.Mode
+	}
+	if policy.CrossSite == "" {
+		policy.CrossSite = defaultPolicy.CrossSite
+	}
+	return policy, true
+}
+
+func (s *Store) SetSub2APIOAuthChannelPolicy(policy model.OAuthChannelPolicy) error {
+	provider := strings.ToLower(strings.TrimSpace(policy.Provider))
+	defaults := model.DefaultSub2APIOAuthChannelPolicies()
+	defaultPolicy, supported := defaults[provider]
+	if !supported {
+		return errors.New("unsupported Sub2API OAuth channel")
+	}
+	policy.Provider = provider
+	if policy.Mode == "" {
+		policy.Mode = defaultPolicy.Mode
+	}
+	if policy.CrossSite == "" {
+		policy.CrossSite = defaultPolicy.CrossSite
+	}
+	policy.UpdatedAt = time.Now().UTC()
+	return s.Update(func(state *model.State) error {
+		if sub2APIUsesLegacyOAuthPolicy(provider) {
+			state.OAuthChannelPolicies[provider] = policy
+			return nil
+		}
+		state.Sub2APIOAuthPolicies[provider] = policy
 		return nil
 	})
 }

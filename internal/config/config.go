@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/zcxads666/AegisLure/internal/model"
 )
 
 type Config struct {
@@ -40,6 +42,7 @@ type Config struct {
 	PortPools            map[string][]int  `json:"port_pools,omitempty"`
 	OllamaVersion        string            `json:"ollama_version,omitempty"`
 	VLLMVersion          string            `json:"vllm_version,omitempty"`
+	Sub2APIVersion       string            `json:"sub2api_version,omitempty"`
 	OllamaKeepAlive      string            `json:"ollama_keep_alive,omitempty"`
 	VLLMDocsEnabled      bool              `json:"vllm_docs_enabled,omitempty"`
 	VLLMServedNames      []string          `json:"vllm_served_model_names,omitempty"`
@@ -75,11 +78,15 @@ func Load(path string) (*Config, error) {
 	if err := json.Unmarshal(b, &c); err != nil {
 		return nil, fmt.Errorf("decode config: %w", err)
 	}
+	ensureSub2APIConfig(&c)
 	if c.OllamaVersion == "" {
 		c.OllamaVersion = "0.9.6"
 	}
 	if c.VLLMVersion == "" {
 		c.VLLMVersion = "0.17.0"
+	}
+	if c.Sub2APIVersion == "" {
+		c.Sub2APIVersion = "0.2.0"
 	}
 	if c.OllamaKeepAlive == "" {
 		c.OllamaKeepAlive = "5m"
@@ -116,6 +123,53 @@ func Load(path string) (*Config, error) {
 	return &c, nil
 }
 
+// ensureSub2APIConfig migrates configs created before the Sub2API persona was
+// added. It only fills missing/invalid Sub2API fields and leaves operator
+// choices for every existing persona intact.
+func ensureSub2APIConfig(c *Config) {
+	if c == nil {
+		return
+	}
+	if c.ProfilePorts == nil {
+		c.ProfilePorts = make(map[string]int)
+	}
+	if c.ProfilePorts[model.ProductSub2API] <= 0 {
+		c.ProfilePorts[model.ProductSub2API] = availableSub2APIPort(c)
+	}
+	if c.Scenario == nil {
+		c.Scenario = make(map[string]string)
+	}
+	if strings.TrimSpace(c.Scenario[model.ProductSub2API]) == "" {
+		c.Scenario[model.ProductSub2API] = "fresh"
+	}
+}
+
+func availableSub2APIPort(c *Config) int {
+	used := make(map[int]bool)
+	if c != nil {
+		used[c.AdminPort] = true
+		for product, port := range c.ProfilePorts {
+			if product != model.ProductSub2API {
+				used[port] = true
+			}
+		}
+		for product, ports := range c.PortPools {
+			if product == model.ProductSub2API {
+				continue
+			}
+			for _, port := range ports {
+				used[port] = true
+			}
+		}
+	}
+	for port := 8081; port <= 65535; port++ {
+		if !used[port] {
+			return port
+		}
+	}
+	return 8081
+}
+
 func Save(path string, c *Config) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
@@ -147,7 +201,7 @@ func Init(path, dataDir string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	profilePorts := map[string]int{"new-api": 3000, "vllm": 8000, "ollama": 11434, "sglang": 30000, "localai": 8080}
+	profilePorts := map[string]int{model.ProductNewAPI: 3000, model.ProductVLLM: 8000, model.ProductOllama: 11434, model.ProductSGLang: 30000, model.ProductLocalAI: 8080, model.ProductSub2API: 8081}
 	reserved := make(map[int]bool)
 	for _, candidates := range DefaultPortPools(profilePorts) {
 		for _, candidate := range candidates {
@@ -185,18 +239,20 @@ func Init(path, dataDir string) (*Config, error) {
 		AdminPath:          "/" + adminPathToken + "/",
 		OllamaVersion:      "0.9.6",
 		VLLMVersion:        "0.17.0",
+		Sub2APIVersion:     "0.2.0",
 		OllamaKeepAlive:    "5m",
 		EventRetentionDays: 30,
 		EventMaxEntries:    100000,
 		PortPools:          DefaultPortPools(profilePorts),
 		ProfilePorts:       profilePorts,
-		EnabledProfiles:    []string{"ollama", "vllm"},
+		EnabledProfiles:    []string{"ollama", "vllm", model.ProductSub2API},
 		Scenario: map[string]string{
-			"vllm":    "legacy-gap",
-			"ollama":  "no-key",
-			"sglang":  "no-key",
-			"localai": "legacy-unauth",
-			"new-api": "honey-tenant",
+			"vllm":               "legacy-gap",
+			"ollama":             "no-key",
+			"sglang":             "no-key",
+			"localai":            "legacy-unauth",
+			"new-api":            "honey-tenant",
+			model.ProductSub2API: "fresh",
 		},
 	}
 	if value := os.Getenv("HP_PROFILES"); value != "" {
@@ -241,7 +297,7 @@ func Init(path, dataDir string) (*Config, error) {
 // these candidates in-process.
 func DefaultPortPools(profilePorts map[string]int) map[string][]int {
 	result := make(map[string][]int)
-	for _, name := range []string{"new-api", "vllm", "ollama", "sglang", "localai"} {
+	for _, name := range model.Products() {
 		base := profilePorts[name]
 		if base < 1 || base > 65535 {
 			continue
@@ -260,7 +316,7 @@ func NormalizePortPools(c *Config) {
 		c.PortPools = DefaultPortPools(c.ProfilePorts)
 		return
 	}
-	for _, name := range []string{"new-api", "vllm", "ollama", "sglang", "localai"} {
+	for _, name := range model.Products() {
 		base := c.ProfilePorts[name]
 		seen := make(map[int]bool)
 		ports := make([]int, 0, len(c.PortPools[name])+1)
@@ -367,6 +423,9 @@ func applyEnv(c *Config) {
 	}
 	if v := os.Getenv("HP_VLLM_VERSION"); v != "" {
 		c.VLLMVersion = v
+	}
+	if v := os.Getenv("HP_SUB2API_VERSION"); v != "" {
+		c.Sub2APIVersion = v
 	}
 	if v := os.Getenv("HP_OLLAMA_KEEP_ALIVE"); v != "" {
 		c.OllamaKeepAlive = v

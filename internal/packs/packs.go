@@ -33,7 +33,7 @@ var forbiddenKeys = map[string]bool{
 }
 
 var allowedProducts = map[string]bool{
-	"new-api": true, "vllm": true, "ollama": true, "sglang": true, "localai": true,
+	"new-api": true, "vllm": true, "ollama": true, "sglang": true, "localai": true, "sub2api": true,
 }
 
 var allowedRuleFields = map[string]bool{

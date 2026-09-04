@@ -104,7 +104,7 @@ func Analyze(product, route, body string) Result {
 		r.Reasons = append(r.Reasons, "product_discovery")
 		r.IntentClass = "product_discovery"
 	}
-	if strings.Contains(route, "/v1/") || strings.HasPrefix(route, "openai.") || strings.Contains(route, "/api/chat") || strings.Contains(route, "/api/generate") || route == "/generate" {
+	if strings.Contains(route, "/v1/") || strings.HasPrefix(route, "openai.") || strings.HasPrefix(route, "sub2api.gateway.") || strings.Contains(route, "/api/chat") || strings.Contains(route, "/api/generate") || route == "/generate" {
 		r.Score += 20
 		r.IntentClass = "intentional_use"
 		r.Reasons = append(r.Reasons, "llm_invoke_attempt")
@@ -119,7 +119,7 @@ func Analyze(product, route, body string) Result {
 		r.Reasons = append(r.Reasons, "dangerous_serialization_or_execution_probe")
 		r.IntentClass = "exploit_probe"
 	}
-	if serialization.MatchString(lower) && (product == "vllm" || product == "ollama" || product == "sglang" || product == "localai") {
+	if serialization.MatchString(lower) && (product == "vllm" || product == "ollama" || product == "sglang" || product == "localai" || product == "sub2api") {
 		r.Score += 35
 		r.Reasons = append(r.Reasons, "model_or_serialization_probe")
 		if r.IntentClass == "background_noise" {

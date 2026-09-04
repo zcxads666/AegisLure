@@ -26,8 +26,22 @@ type Profile struct {
 // listener. The catalog remains shared internally, but each protocol renders
 // only the fields and models that its own server would expose.
 type PersonaConfig struct {
-	Ollama OllamaPersonaConfig
-	VLLM   VLLMPersonaProfile
+	Ollama  OllamaPersonaConfig
+	VLLM    VLLMPersonaProfile
+	Sub2API Sub2APIPersonaProfile
+}
+
+// Sub2APIPersonaProfile contains the public branding and protocol settings
+// observed in the local Sub2API 0.2.0 source contract. It is metadata only:
+// this persona never starts the upstream application or performs provider
+// OAuth/network calls.
+type Sub2APIPersonaProfile struct {
+	Version            string
+	SiteName           string
+	SiteSubtitle       string
+	APIBehaviorProfile string
+	OAuthProviders     []string
+	StartedAt          time.Time
 }
 
 // VLLMPersonaProfile describes one vLLM server process. Model is the loaded
@@ -76,6 +90,10 @@ func Build(c *config.Config) map[string]Profile {
 	if !versionAtLeast(vllmVersion, "0.17.0") {
 		vllmVersion = "0.17.0"
 	}
+	sub2apiVersion := c.Sub2APIVersion
+	if sub2apiVersion == "" {
+		sub2apiVersion = "0.2.0"
+	}
 	ollamaKeepAlive := parseKeepAlive(c.OllamaKeepAlive)
 	vllmModel := Catalog(model.ProductVLLM)[0].ID
 	persona := PersonaConfig{
@@ -95,6 +113,14 @@ func Build(c *config.Config) map[string]Profile {
 			DocsEnabled:        c.VLLMDocsEnabled,
 			StartedAt:          time.Now().UTC(),
 		},
+		Sub2API: Sub2APIPersonaProfile{
+			Version:            sub2apiVersion,
+			SiteName:           "Sub2API",
+			SiteSubtitle:       "Subscription to API Conversion Platform",
+			APIBehaviorProfile: "gin-v1-response-envelope",
+			OAuthProviders:     model.Sub2APIOAuthProviders(),
+			StartedAt:          time.Now().UTC(),
+		},
 	}
 	return map[string]Profile{
 		model.ProductNewAPI:  {ID: "newapi-web-v1", Product: model.ProductNewAPI, DisplayVersion: "1.0.0-rc.18-lure", Scenario: c.Scenario[model.ProductNewAPI], EffectScope: "session", EffectTTL: 90 * time.Second, DefaultPort: c.ProfilePorts[model.ProductNewAPI]},
@@ -102,6 +128,7 @@ func Build(c *config.Config) map[string]Profile {
 		model.ProductOllama:  {ID: "ollama-native-0.9", Product: model.ProductOllama, DisplayVersion: ollamaVersion, Scenario: c.Scenario[model.ProductOllama], EffectScope: "session", EffectTTL: 90 * time.Second, DefaultPort: c.ProfilePorts[model.ProductOllama], Persona: persona},
 		model.ProductSGLang:  {ID: "sglang-http-legacy-lure", Product: model.ProductSGLang, DisplayVersion: "0.5.10", Scenario: c.Scenario[model.ProductSGLang], EffectScope: "session", EffectTTL: 15 * time.Minute, DefaultPort: c.ProfilePorts[model.ProductSGLang]},
 		model.ProductLocalAI: {ID: "localai-2x-legacy-lure", Product: model.ProductLocalAI, DisplayVersion: "2.19.4", Scenario: c.Scenario[model.ProductLocalAI], EffectScope: "session", EffectTTL: 90 * time.Second, DefaultPort: c.ProfilePorts[model.ProductLocalAI]},
+		model.ProductSub2API: {ID: "sub2api-web-v1", Product: model.ProductSub2API, DisplayVersion: sub2apiVersion, Scenario: c.Scenario[model.ProductSub2API], EffectScope: "session", EffectTTL: 90 * time.Second, DefaultPort: c.ProfilePorts[model.ProductSub2API], Persona: persona},
 	}
 }
 
@@ -193,6 +220,9 @@ func Route(product, method, path string) string {
 	}
 	if product == model.ProductSGLang {
 		return sglangRoute(method, path)
+	}
+	if product == model.ProductSub2API {
+		return sub2APIRoute(method, path)
 	}
 	return localAIRoute(method, path)
 }
@@ -357,6 +387,115 @@ func newAPIRoute(method, path string) string {
 		return "openai.embeddings"
 	}
 	return "newapi.unknown"
+}
+
+func sub2APIRoute(method, path string) string {
+	switch {
+	case path == "/" || path == "/login" || path == "/register" || path == "/sign-in" || path == "/sign-up" || path == "/forgot-password" || path == "/reset-password" || path == "/dashboard" || path == "/dashboard/" || strings.HasPrefix(path, "/dashboard/") || path == "/keys" || path == "/keys/" || path == "/usage" || path == "/usage/" || path == "/redeem" || path == "/redeem/" || path == "/profile" || path == "/profile/" || path == "/model-plaza" || path == "/subscriptions" || path == "/settings":
+		return "sub2api.spa"
+	case strings.HasPrefix(path, "/assets/") || strings.HasPrefix(path, "/static/"):
+		return "sub2api.asset"
+	case path == "/favicon.ico" || path == "/logo.png":
+		return "sub2api.logo"
+	case path == "/health":
+		return "sub2api.health"
+	case path == "/setup/status":
+		return "sub2api.setup.status"
+	case path == "/api/event_logging/batch":
+		return "sub2api.event.logging"
+	case path == "/api/v1/settings/public":
+		return "sub2api.settings.public"
+	case path == "/api/v1/auth/register":
+		return "sub2api.auth.register"
+	case path == "/api/v1/auth/login":
+		return "sub2api.auth.login"
+	case path == "/api/v1/auth/login/2fa":
+		return "sub2api.auth.login.2fa"
+	case path == "/api/v1/auth/refresh":
+		return "sub2api.auth.refresh"
+	case path == "/api/v1/auth/logout":
+		return "sub2api.auth.logout"
+	case path == "/api/v1/auth/me":
+		return "sub2api.auth.me"
+	case path == "/api/v1/auth/revoke-sessions" || path == "/api/v1/auth/revoke-all-sessions":
+		return "sub2api.auth.revoke_sessions"
+	case path == "/api/v1/auth/bind-token" || path == "/api/v1/auth/oauth/bind-token":
+		return "sub2api.auth.bind_token"
+	case path == "/api/v1/auth/send-verify-code" || path == "/api/v1/auth/forgot-password" || path == "/api/v1/auth/reset-password" || path == "/api/v1/auth/validate-promo-code" || path == "/api/v1/auth/validate-invitation-code":
+		return "sub2api.auth.auxiliary"
+	case strings.HasPrefix(path, "/api/v1/auth/oauth/"):
+		return "sub2api.auth.oauth"
+	case path == "/api/v1/user/profile":
+		return "sub2api.user.profile"
+	case path == "/api/v1/user/password":
+		return "sub2api.user.password"
+	case path == "/api/v1/user/update":
+		return "sub2api.user.update"
+	case path == "/api/v1/user":
+		return "sub2api.user.update"
+	case path == "/api/v1/keys":
+		if method == "GET" {
+			return "sub2api.key.list"
+		}
+		return "sub2api.key.create"
+	case strings.HasPrefix(path, "/api/v1/keys/"):
+		if method == "GET" {
+			return "sub2api.key.get"
+		}
+		if method == "DELETE" {
+			return "sub2api.key.delete"
+		}
+		return "sub2api.key.update"
+	case path == "/api/v1/groups/available":
+		return "sub2api.groups.available"
+	case path == "/api/v1/channels/available":
+		return "sub2api.channels.available"
+	case path == "/api/v1/usage":
+		return "sub2api.usage.list"
+	case path == "/api/v1/usage/stats":
+		return "sub2api.usage.stats"
+	case path == "/api/v1/usage/dashboard/stats":
+		return "sub2api.usage.dashboard.stats"
+	case path == "/api/v1/usage/dashboard/trend":
+		return "sub2api.usage.dashboard.trend"
+	case path == "/api/v1/usage/dashboard/models":
+		return "sub2api.usage.dashboard.models"
+	case strings.HasPrefix(path, "/api/v1/usage/"):
+		return "sub2api.usage.detail"
+	case path == "/api/v1/redeem":
+		return "sub2api.redeem"
+	case path == "/api/v1/redeem/history":
+		return "sub2api.redeem.history"
+	case strings.HasPrefix(path, "/api/v1/subscriptions"):
+		return "sub2api.subscriptions"
+	case strings.HasPrefix(path, "/api/v1/models"):
+		return "sub2api.models"
+	case path == "/v1/models" || path == "/models":
+		return "sub2api.gateway.models"
+	case strings.HasPrefix(path, "/v1/models/"):
+		return "sub2api.gateway.model"
+	case path == "/v1/messages/count_tokens" || path == "/messages/count_tokens":
+		return "sub2api.gateway.count_tokens"
+	case path == "/v1/messages" || strings.HasPrefix(path, "/v1/messages/"):
+		return "sub2api.gateway.messages"
+	case strings.HasPrefix(path, "/v1/chat/completions") || strings.HasPrefix(path, "/chat/completions"):
+		return "sub2api.gateway.chat"
+	case strings.HasPrefix(path, "/v1/responses") || strings.HasPrefix(path, "/responses"):
+		return "sub2api.gateway.responses"
+	case strings.HasPrefix(path, "/v1/embeddings") || strings.HasPrefix(path, "/embeddings"):
+		return "sub2api.gateway.embeddings"
+	case strings.HasPrefix(path, "/v1/completions") || strings.HasPrefix(path, "/completions"):
+		return "sub2api.gateway.completions"
+	case path == "/v1/sub2api/billing":
+		return "sub2api.gateway.billing"
+	case path == "/v1/alpha/search" || path == "/alpha/search" || strings.HasPrefix(path, "/backend-api/codex/alpha/search"):
+		return "sub2api.gateway.alpha_search"
+	case path == "/v1/usage":
+		return "sub2api.gateway.usage"
+	case strings.HasPrefix(path, "/v1/live"):
+		return "sub2api.gateway.live"
+	}
+	return "sub2api.unknown"
 }
 
 func vLLMRoute(method, path string) string {
@@ -547,6 +686,13 @@ func Catalog(product string) []CatalogEntry {
 			{ID: "gpt-5.6-sol", Object: "model", DisplayName: "GPT-5.6 Sol", Provider: "openai", Origin: "closed", Capabilities: []string{"chat", "tools"}},
 			{ID: "claude-sonnet-5", Object: "model", DisplayName: "Claude Sonnet 5", Provider: "anthropic", Origin: "closed", Capabilities: []string{"chat", "vision"}},
 			{ID: "gemini-3.7-flash", Object: "model", DisplayName: "Gemini 3.7 Flash", Provider: "google", Origin: "closed", Capabilities: []string{"chat", "vision"}},
+		}
+	}
+	if product == model.ProductSub2API {
+		return []CatalogEntry{
+			{ID: "gpt-4o-mini", Object: "model", DisplayName: "GPT-4o mini", Provider: "openai", Origin: "closed", Capabilities: []string{"chat", "vision"}, APIFamilies: []string{"openai", "responses"}, AuthRequirement: "api_key", VirtualContextTokens: 128000, VirtualPriceProfile: "sub2api-standard", ResponseTemplateSet: "openai"},
+			{ID: "claude-3-5-sonnet", Object: "model", DisplayName: "Claude 3.5 Sonnet", Provider: "anthropic", Origin: "closed", Capabilities: []string{"chat", "vision", "tools"}, APIFamilies: []string{"anthropic"}, AuthRequirement: "api_key", VirtualContextTokens: 200000, VirtualPriceProfile: "sub2api-standard", ResponseTemplateSet: "anthropic"},
+			{ID: "gemini-1.5-pro", Object: "model", DisplayName: "Gemini 1.5 Pro", Provider: "google", Origin: "closed", Capabilities: []string{"chat", "vision", "tools"}, APIFamilies: []string{"openai", "gemini"}, AuthRequirement: "api_key", VirtualContextTokens: 200000, VirtualPriceProfile: "sub2api-standard", ResponseTemplateSet: "openai"},
 		}
 	}
 	return []CatalogEntry{
