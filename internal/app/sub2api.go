@@ -65,7 +65,7 @@ func (a *App) handleSub2API(w *captureWriter, r *http.Request, profile profiles.
 		a.handleSub2APIOAuth(w, r, profile, session, obs)
 	case "sub2api.user.profile", "sub2api.user.update", "sub2api.user.password", "sub2api.key.list", "sub2api.key.get", "sub2api.key.create", "sub2api.key.update", "sub2api.key.delete", "sub2api.groups.available", "sub2api.channels.available", "sub2api.usage.list", "sub2api.usage.stats", "sub2api.usage.dashboard.stats", "sub2api.usage.dashboard.trend", "sub2api.usage.dashboard.models", "sub2api.usage.dashboard.snapshot", "sub2api.usage.detail", "sub2api.redeem", "sub2api.redeem.history", "sub2api.subscriptions", "sub2api.models":
 		a.handleSub2APIPanel(w, r, profile, session, body, obs)
-	case "sub2api.gateway.models", "sub2api.gateway.model", "sub2api.gateway.billing", "sub2api.gateway.messages", "sub2api.gateway.count_tokens", "sub2api.gateway.chat", "sub2api.gateway.responses", "sub2api.gateway.embeddings", "sub2api.gateway.completions", "sub2api.gateway.alpha_search", "sub2api.gateway.usage", "sub2api.gateway.live":
+	case "sub2api.gateway.models", "sub2api.gateway.codex.models", "sub2api.gateway.model", "sub2api.gateway.billing", "sub2api.gateway.messages", "sub2api.gateway.count_tokens", "sub2api.gateway.chat", "sub2api.gateway.responses", "sub2api.gateway.embeddings", "sub2api.gateway.completions", "sub2api.gateway.alpha_search", "sub2api.gateway.usage", "sub2api.gateway.live":
 		a.handleSub2APIGateway(w, r, profile, session, body, obs)
 	default:
 		sub2APIError(w, http.StatusNotFound, "Not Found")
@@ -460,7 +460,8 @@ func (a *App) handleSub2APIPanel(w *captureWriter, r *http.Request, profile prof
 		sub2APISuccess(a, w, http.StatusOK, []any{map[string]any{"id": 1, "name": "default", "description": "Default API group", "platform": "openai", "rate_multiplier": 1, "status": "active", "subscription_type": "none", "rpm_limit": 0}})
 	case "sub2api.channels.available":
 		obs.EventType = "sub2api.channels.listed"
-		sub2APISuccess(a, w, http.StatusOK, []any{})
+		catalog := a.catalogForSession(model.ProductSub2API, "user", session)
+		sub2APISuccess(a, w, http.StatusOK, sub2APIAvailableChannels(catalog))
 	case "sub2api.usage.list", "sub2api.usage.stats", "sub2api.usage.dashboard.stats", "sub2api.usage.dashboard.trend", "sub2api.usage.dashboard.models", "sub2api.usage.dashboard.snapshot", "sub2api.usage.detail":
 		a.handleSub2APIUsage(w, r, session, session.UserID, obs)
 	case "sub2api.redeem":
@@ -477,6 +478,265 @@ func (a *App) handleSub2APIPanel(w *captureWriter, r *http.Request, profile prof
 	default:
 		sub2APIError(w, http.StatusNotFound, "Not Found")
 	}
+}
+
+// sub2APIAvailableChannels exposes the same user-facing DTO shape as the
+// official /api/v1/channels/available endpoint. These rows are deliberately
+// static and local-only: they make the synthetic account useful for frontend,
+// Codex, quota, and risk-chain tests without representing a real upstream.
+func sub2APIAvailableChannels(catalog []profiles.CatalogEntry) []map[string]any {
+	return []map[string]any{
+		sub2APIAvailableChannel(
+			"OpenAI GPT 合成渠道",
+			"本地合成渠道，仅用于兼容性与风险链测试，不连接真实上游。",
+			[]string{"gpt-6-astra", "gpt-4o-mini"},
+			catalog,
+		),
+		sub2APIAvailableChannel(
+			"OpenAI Codex 合成渠道",
+			"本地合成 Codex 渠道，兼容 Responses / Chat Completions；不连接真实上游。",
+			[]string{"gpt-5.3-codex"},
+			catalog,
+		),
+	}
+}
+
+func sub2APIAvailableChannel(name, description string, modelIDs []string, catalog []profiles.CatalogEntry) map[string]any {
+	models := make([]any, 0, len(modelIDs))
+	for _, modelID := range modelIDs {
+		entry, ok := sub2APICatalogEntry(catalog, modelID)
+		if !ok {
+			continue
+		}
+		models = append(models, map[string]any{
+			"name":     entry.ID,
+			"platform": "openai",
+			"pricing":  sub2APISyntheticModelPricing(),
+		})
+	}
+	return map[string]any{
+		"name":        name,
+		"description": description,
+		"platforms": []any{map[string]any{
+			"platform":         "openai",
+			"groups":           []any{sub2APISyntheticGroup()},
+			"supported_models": models,
+		}},
+	}
+}
+
+func sub2APISyntheticGroup() map[string]any {
+	return map[string]any{
+		"id":                   1,
+		"name":                 "default",
+		"platform":             "openai",
+		"subscription_type":    "standard",
+		"rate_multiplier":      1.0,
+		"peak_rate_enabled":    false,
+		"peak_start":           "",
+		"peak_end":             "",
+		"peak_rate_multiplier": 1.0,
+		"is_exclusive":         false,
+	}
+}
+
+func sub2APISyntheticModelPricing() map[string]any {
+	return map[string]any{
+		"billing_mode":         "token",
+		"input_price":          0.0,
+		"output_price":         0.0,
+		"cache_write_price":    0.0,
+		"cache_write_1h_price": nil,
+		"cache_read_price":     0.0,
+		"image_input_price":    0.0,
+		"image_output_price":   0.0,
+		"per_request_price":    nil,
+		"intervals":            []any{},
+	}
+}
+
+func sub2APICatalogEntry(catalog []profiles.CatalogEntry, requested string) (profiles.CatalogEntry, bool) {
+	requested = strings.TrimSpace(requested)
+	for _, entry := range catalog {
+		if entry.ID == requested {
+			return entry, true
+		}
+		for _, alias := range entry.Aliases {
+			if alias == requested {
+				return entry, true
+			}
+		}
+	}
+	return profiles.CatalogEntry{}, false
+}
+
+// sub2APICodexModelsManifest is the local equivalent of the official Codex
+// model picker response. Codex clients require a models array and a complete
+// descriptor for each model; every descriptor below is synthetic metadata and
+// never points at an account, endpoint, executable, or provider credential.
+func sub2APICodexModelsManifest(catalog []profiles.CatalogEntry) map[string]any {
+	models := make([]any, 0, len(catalog))
+	for _, entry := range catalog {
+		if entry.ID == "" || (entry.Provider != "openai" && entry.Provider != "openai-codex") {
+			continue
+		}
+		models = append(models, sub2APICodexModelDescriptor(entry))
+	}
+	return map[string]any{"models": models}
+}
+
+func sub2APICodexModelDescriptor(entry profiles.CatalogEntry) map[string]any {
+	defaultReasoning, reasoningLevels := sub2APICodexReasoning(entry)
+	contextWindow := entry.VirtualContextTokens
+	if contextWindow <= 0 {
+		contextWindow = 272000
+	}
+	inputModalities := []string{"text"}
+	if containsString(entry.Capabilities, "vision") {
+		inputModalities = []string{"text", "image"}
+	}
+	return map[string]any{
+		"slug":                       entry.ID,
+		"display_name":               entry.DisplayName,
+		"description":                "Local synthetic OpenAI/Codex model for compatibility testing.",
+		"default_reasoning_level":    defaultReasoning,
+		"supported_reasoning_levels": reasoningLevels,
+		"shell_type":                 "unified_exec",
+		"visibility":                 "list",
+		"supported_in_api":           true,
+		"priority":                   50,
+		"additional_speed_tiers":     []string{},
+		"service_tiers":              []any{},
+		"default_service_tier":       nil,
+		"availability_nux":           nil,
+		"upgrade":                    nil,
+		"model_messages": map[string]any{
+			"instructions_template":  "You are a local synthetic coding assistant. Do not access networks or perform external side effects.",
+			"instructions_variables": []any{},
+			"approvals":              nil,
+			"collaboration_modes":    nil,
+			"auto_review":            nil,
+			"permissions":            nil,
+			"multi_agent":            nil,
+			"token_budget":           nil,
+			"guardian_v2":            nil,
+		},
+		"include_skills_usage_instructions":    false,
+		"include_plugin_usage_instructions":    false,
+		"include_apps_usage_instructions":      false,
+		"supports_reasoning_summary_parameter": true,
+		"default_reasoning_summary":            "auto",
+		"support_verbosity":                    false,
+		"default_verbosity":                    nil,
+		"apply_patch_tool_type":                nil,
+		"web_search_tool_type":                 "text",
+		"truncation_policy":                    map[string]any{"mode": "tokens", "limit": 10000},
+		"supports_image_detail_original":       containsString(entry.Capabilities, "vision"),
+		"supports_parallel_tool_calls":         containsString(entry.Capabilities, "tools"),
+		"context_window":                       contextWindow,
+		"max_context_window":                   contextWindow,
+		"auto_compact_token_limit":             nil,
+		"comp_hash":                            nil,
+		"effective_context_window_percent":     95,
+		"experimental_supported_tools":         []string{},
+		"input_modalities":                     inputModalities,
+		"supports_search_tool":                 false,
+		"use_responses_lite":                   false,
+		"node_repl_auto_review_required":       false,
+		"node_repl_disabled":                   false,
+		"auto_review_model_override":           nil,
+		"model_specialty":                      nil,
+		"tool_mode":                            nil,
+		"multi_agent_version":                  nil,
+	}
+}
+
+func sub2APICodexReasoning(entry profiles.CatalogEntry) (string, []map[string]any) {
+	if !containsString(entry.Capabilities, "reasoning") && !containsString(entry.Capabilities, "code") {
+		return "none", []map[string]any{{"effort": "none", "description": "No extended reasoning; local synthetic response."}}
+	}
+	levels := []map[string]any{
+		{"effort": "low", "description": "Fast responses with lighter reasoning."},
+		{"effort": "medium", "description": "Balanced reasoning for most coding tasks."},
+		{"effort": "high", "description": "Greater reasoning depth for coding and agent tasks."},
+		{"effort": "xhigh", "description": "Extra-high reasoning depth for difficult tasks."},
+	}
+	return "medium", levels
+}
+
+func sub2APIAnnotateClientSurface(r *http.Request, obs *Observation) {
+	if r == nil || obs == nil || obs.Metadata == nil {
+		return
+	}
+	path := r.URL.Path
+	codex := strings.HasPrefix(path, "/backend-api/codex/") ||
+		(obs.RouteTemplate == "sub2api.gateway.models" && strings.TrimSpace(r.URL.Query().Get("client_version")) != "")
+	if !codex {
+		return
+	}
+	obs.Metadata["client_surface"] = "codex"
+	transport := "responses"
+	switch {
+	case strings.HasSuffix(path, "/models"):
+		transport = "models"
+	case strings.Contains(path, "/alpha/search"):
+		transport = "alpha_search"
+	case strings.Contains(path, "/realtime/"):
+		transport = "realtime"
+	}
+	obs.Metadata["codex_transport"] = transport
+	if version := strings.TrimSpace(r.URL.Query().Get("client_version")); version != "" {
+		obs.Metadata["codex_client_version"] = security.RedactPreview(version, 64)
+	}
+}
+
+func annotateSub2APIRequestMetadata(obs *Observation, value map[string]any, requestedModel string) {
+	if obs == nil {
+		return
+	}
+	if obs.Metadata == nil {
+		obs.Metadata = make(map[string]string)
+	}
+	if requestedModel = strings.TrimSpace(requestedModel); requestedModel != "" {
+		obs.Metadata["model_requested"] = requestedModel
+	}
+	kind, content := sub2APIRequestContent(value)
+	if kind == "" {
+		return
+	}
+	obs.Metadata["request_content_kind"] = kind
+	obs.Metadata["request_content_length"] = strconv.Itoa(len([]rune(content)))
+	digest, _ := security.BodyDigest([]byte(content), 0)
+	obs.Metadata["request_content_sha256"] = digest
+	obs.Metadata["request_content_preview"] = security.RedactPreview(content, 2048)
+}
+
+func annotateSub2APIResolvedModel(obs *Observation, requestedModel string, entry profiles.CatalogEntry) {
+	if obs == nil {
+		return
+	}
+	if obs.Metadata == nil {
+		obs.Metadata = make(map[string]string)
+	}
+	obs.Metadata["model_requested"] = strings.TrimSpace(requestedModel)
+	obs.Metadata["model_resolved"] = entry.ID
+	obs.Metadata["model_display_name"] = entry.DisplayName
+	obs.Metadata["model_provider"] = entry.Provider
+	if len(entry.Capabilities) > 0 {
+		obs.Metadata["model_capabilities"] = strings.Join(entry.Capabilities, ",")
+	}
+}
+
+func sub2APIRouteFamilyForRequest(r *http.Request, obs *Observation) string {
+	if r != nil && obs != nil && obs.Metadata["client_surface"] == "codex" {
+		switch obs.RouteTemplate {
+		case "sub2api.gateway.responses":
+			return "codex.responses"
+		case "sub2api.gateway.alpha_search":
+			return "codex.alpha_search"
+		}
+	}
+	return sub2APIRouteFamily(obs.RouteTemplate)
 }
 
 func (a *App) sub2APIChangePassword(w *captureWriter, body []byte, session Session, obs *Observation) {
@@ -1329,6 +1589,7 @@ func (a *App) handleSub2APIRedeemHistory(w *captureWriter, session Session, obs 
 }
 
 func (a *App) handleSub2APIGateway(w *captureWriter, r *http.Request, _ profiles.Profile, session Session, body []byte, obs *Observation) {
+	sub2APIAnnotateClientSurface(r, obs)
 	token, auth, source, fingerprint := a.sub2APIAuthenticate(r)
 	obs.AuthOutcome = auth
 	obs.CredentialFingerprint = fingerprint
@@ -1351,8 +1612,20 @@ func (a *App) handleSub2APIGateway(w *captureWriter, r *http.Request, _ profiles
 	switch obs.RouteTemplate {
 	case "sub2api.gateway.models":
 		obs.EventType = "sub2api.models.listed"
-		cards := profiles.OpenAIModelCardsForCatalog(a.cfg.InstanceKey, a.catalogForSession(model.ProductSub2API, "user", session), "sub2api")
+		catalog := a.catalogForSession(model.ProductSub2API, "user", session)
+		if obs.Metadata["client_surface"] == "codex" {
+			obs.Metadata["api_family"] = "codex.models"
+			a.writeJSON(w, http.StatusOK, sub2APICodexModelsManifest(catalog))
+			return
+		}
+		cards := profiles.OpenAIModelCardsForCatalog(a.cfg.InstanceKey, catalog, "sub2api")
 		a.writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": cards})
+		return
+	case "sub2api.gateway.codex.models":
+		obs.EventType = "sub2api.models.listed"
+		obs.Metadata["client_surface"] = "codex"
+		obs.Metadata["api_family"] = "codex.models"
+		a.writeJSON(w, http.StatusOK, sub2APICodexModelsManifest(a.catalogForSession(model.ProductSub2API, "user", session)))
 		return
 	case "sub2api.gateway.model":
 		requested := strings.TrimPrefix(r.URL.Path, "/v1/models/")
@@ -1397,6 +1670,8 @@ func (a *App) handleSub2APIGateway(w *captureWriter, r *http.Request, _ profiles
 		return
 	}
 	value, requestedModel, stream, validation := sub2APIInvocationRequest(r, body, obs.RouteTemplate)
+	obs.Metadata["stream"] = strconv.FormatBool(stream)
+	annotateSub2APIRequestMetadata(obs, value, requestedModel)
 	if validation != "" {
 		a.startInvocation(obs, auth, false, validation)
 		obs.EventType = sub2APIGatewayEvent(obs.RouteTemplate, false)
@@ -1406,7 +1681,6 @@ func (a *App) handleSub2APIGateway(w *captureWriter, r *http.Request, _ profiles
 		sub2APIGatewayError(a, w, obs.RouteTemplate, http.StatusBadRequest, "invalid request")
 		return
 	}
-	obs.Metadata["stream"] = strconv.FormatBool(stream)
 	entry, resolved := a.resolveCatalogModelForSession(model.ProductSub2API, requestedModel, "user", session)
 	if !resolved {
 		a.startInvocation(obs, auth, false, "model_not_found")
@@ -1422,8 +1696,8 @@ func (a *App) handleSub2APIGateway(w *captureWriter, r *http.Request, _ profiles
 		return
 	}
 	obs.ModelID, obs.ModelResolved = entry.ID, true
-	obs.Metadata["model_provider"] = entry.Provider
-	obs.Metadata["api_family"] = sub2APIRouteFamily(obs.RouteTemplate)
+	annotateSub2APIResolvedModel(obs, requestedModel, entry)
+	obs.Metadata["api_family"] = sub2APIRouteFamilyForRequest(r, obs)
 	obs.ExtraReasons = append(obs.ExtraReasons, "sub2api_synthetic_compute_use")
 	a.startInvocation(obs, auth, true)
 	cost := int64(maxInt(1, len(body)/4))
@@ -1680,6 +1954,116 @@ func sub2APIInvocationRequest(r *http.Request, body []byte, route string) (map[s
 		}
 	}
 	return value, modelName, stream, ""
+}
+
+const sub2APIRequestContentLimit = 4096
+
+type sub2APIContentCollector struct {
+	value     strings.Builder
+	truncated bool
+}
+
+func sub2APIRequestContent(value map[string]any) (string, string) {
+	if value == nil {
+		return "", ""
+	}
+	fields := []struct {
+		name string
+		kind string
+	}{
+		{name: "messages", kind: "messages"},
+		{name: "input", kind: "input"},
+		{name: "instructions", kind: "instructions"},
+		{name: "prompt", kind: "prompt"},
+	}
+	kinds := make([]string, 0, len(fields))
+	parts := make([]string, 0, len(fields))
+	for _, field := range fields {
+		raw, exists := value[field.name]
+		if !exists {
+			continue
+		}
+		content := sub2APIContentText(raw)
+		if content == "" {
+			content = "[structured input]"
+		}
+		kinds = append(kinds, field.kind)
+		parts = append(parts, field.name+": "+content)
+	}
+	if len(parts) == 0 {
+		return "", ""
+	}
+	content := strings.Join(parts, "\n")
+	runes := []rune(content)
+	if len(runes) > sub2APIRequestContentLimit {
+		content = string(runes[:sub2APIRequestContentLimit]) + "…"
+	}
+	return strings.Join(kinds, "+"), content
+}
+
+func sub2APIContentText(value any) string {
+	collector := &sub2APIContentCollector{}
+	collector.walk(value, 0)
+	return strings.TrimSpace(collector.value.String())
+}
+
+func (c *sub2APIContentCollector) walk(value any, depth int) {
+	if c == nil || depth > 8 || c.truncated {
+		return
+	}
+	switch typed := value.(type) {
+	case string:
+		c.add(typed)
+	case []any:
+		for _, item := range typed {
+			c.walk(item, depth+1)
+			if c.truncated {
+				return
+			}
+		}
+	case map[string]any:
+		if role := strings.TrimSpace(stringValue(typed["role"])); role != "" {
+			c.add(role + ":")
+		}
+		// These are the text-bearing fields used by OpenAI Chat Completions,
+		// Responses, and Codex input items. Unknown fields (URLs, tool
+		// arguments, credentials, and metadata) are intentionally omitted.
+		for _, key := range []string{"content", "text", "input_text", "output_text", "instructions", "prompt"} {
+			if nested, exists := typed[key]; exists {
+				c.walk(nested, depth+1)
+				if c.truncated {
+					return
+				}
+			}
+		}
+	}
+}
+
+func (c *sub2APIContentCollector) add(value string) {
+	value = strings.TrimSpace(value)
+	if value == "" || c.truncated {
+		return
+	}
+	current := []rune(c.value.String())
+	separator := 0
+	if len(current) > 0 {
+		separator = 1
+	}
+	available := sub2APIRequestContentLimit - len(current) - separator
+	if available <= 0 {
+		c.truncated = true
+		return
+	}
+	if separator > 0 {
+		c.value.WriteByte('\n')
+	}
+	runes := []rune(value)
+	if len(runes) > available {
+		c.value.WriteString(string(runes[:available]))
+		c.truncated = true
+		return
+	}
+	c.value.WriteString(value)
 }
 
 func sub2APIRequestObject(r *http.Request, body []byte) map[string]any {

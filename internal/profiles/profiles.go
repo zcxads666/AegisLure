@@ -474,6 +474,8 @@ func sub2APIRoute(method, path string) string {
 		return "sub2api.models"
 	case path == "/v1/models" || path == "/models":
 		return "sub2api.gateway.models"
+	case path == "/backend-api/codex/models":
+		return "sub2api.gateway.codex.models"
 	case strings.HasPrefix(path, "/v1/models/"):
 		return "sub2api.gateway.model"
 	case path == "/v1/messages/count_tokens" || path == "/messages/count_tokens":
@@ -482,7 +484,7 @@ func sub2APIRoute(method, path string) string {
 		return "sub2api.gateway.messages"
 	case strings.HasPrefix(path, "/v1/chat/completions") || strings.HasPrefix(path, "/chat/completions"):
 		return "sub2api.gateway.chat"
-	case strings.HasPrefix(path, "/v1/responses") || strings.HasPrefix(path, "/responses"):
+	case strings.HasPrefix(path, "/v1/responses") || strings.HasPrefix(path, "/responses") || path == "/backend-api/codex/responses" || strings.HasPrefix(path, "/backend-api/codex/responses/"):
 		return "sub2api.gateway.responses"
 	case strings.HasPrefix(path, "/v1/embeddings") || strings.HasPrefix(path, "/embeddings"):
 		return "sub2api.gateway.embeddings"
@@ -705,6 +707,8 @@ func Catalog(product string) []CatalogEntry {
 	if product == model.ProductSub2API {
 		return []CatalogEntry{
 			{ID: "gpt-4o-mini", Object: "model", DisplayName: "GPT-4o mini", Provider: "openai", Origin: "closed", Capabilities: []string{"chat", "vision"}, APIFamilies: []string{"openai", "responses"}, AuthRequirement: "api_key", VirtualContextTokens: 128000, VirtualPriceProfile: "sub2api-standard", ResponseTemplateSet: "openai"},
+			{ID: "gpt-6-astra", Object: "model", DisplayName: "GPT-6 Astra", Provider: "openai", Origin: "closed", Capabilities: []string{"chat", "vision", "tools", "reasoning"}, APIFamilies: []string{"openai", "responses"}, AuthRequirement: "api_key", VirtualPriceProfile: "sub2api-synthetic", ResponseTemplateSet: "openai"},
+			{ID: "gpt-5.3-codex", Object: "model", DisplayName: "GPT-5.3 Codex", Provider: "openai-codex", Origin: "closed", Capabilities: []string{"chat", "tools", "reasoning", "code"}, APIFamilies: []string{"openai", "responses"}, AuthRequirement: "api_key", VirtualContextTokens: 400000, VirtualPriceProfile: "sub2api-synthetic", ResponseTemplateSet: "openai"},
 			{ID: "claude-3-5-sonnet", Object: "model", DisplayName: "Claude 3.5 Sonnet", Provider: "anthropic", Origin: "closed", Capabilities: []string{"chat", "vision", "tools"}, APIFamilies: []string{"anthropic"}, AuthRequirement: "api_key", VirtualContextTokens: 200000, VirtualPriceProfile: "sub2api-standard", ResponseTemplateSet: "anthropic"},
 			{ID: "gemini-1.5-pro", Object: "model", DisplayName: "Gemini 1.5 Pro", Provider: "google", Origin: "closed", Capabilities: []string{"chat", "vision", "tools"}, APIFamilies: []string{"openai", "gemini"}, AuthRequirement: "api_key", VirtualContextTokens: 200000, VirtualPriceProfile: "sub2api-standard", ResponseTemplateSet: "openai"},
 		}

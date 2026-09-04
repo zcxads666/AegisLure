@@ -245,6 +245,7 @@ func validateNewAPIGeminiInvocation(r *http.Request, body []byte) string {
 
 func prepareNewAPIResponse(body []byte, obs *Observation) string {
 	text := syntheticText(body, model.ProductNewAPI)
+	annotateSyntheticResponse(obs, text)
 	inputTokens := maxInt(8, len(body)/4)
 	outputTokens := maxInt(6, len(text)/4)
 	setInvocationMeasurements(obs, inputTokens, outputTokens, "synthetic_accepted")

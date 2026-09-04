@@ -85,7 +85,7 @@ func builtinPacks() []model.ConfigPack {
 	}, CompatibilityManifest: map[string]any{"fixture_source": "public-documentation-and-safe-local-contracts", "dangerous_parsers": false, "outbound_network": false, "max_body_bytes": 1048576, "liveness_operators": []string{"exact", "contains", "starts_with", "ends_with"}}}
 	modelCatalog := packs.ModelCatalogPack{SchemaVersion: 1, Revision: "seed-2026q3", Catalogs: []packs.ModelCatalog{
 		{ID: "newapi-popular-closed-2026q3", OriginPolicy: "closed", Products: []string{model.ProductNewAPI}, Models: []string{"gpt-5.6-sol", "claude-sonnet-5", "gemini-3.7-flash"}},
-		{ID: "sub2api-popular-closed-2026q3", OriginPolicy: "closed", Products: []string{model.ProductSub2API}, Models: []string{"gpt-4o-mini", "claude-3-5-sonnet", "gemini-1.5-pro"}},
+		{ID: "sub2api-popular-closed-2026q3", OriginPolicy: "closed", Products: []string{model.ProductSub2API}, Models: []string{"gpt-4o-mini", "gpt-6-astra", "gpt-5.3-codex", "claude-3-5-sonnet", "gemini-1.5-pro"}},
 		{ID: "selfhosted-popular-open-2026q3", OriginPolicy: "open", Products: []string{model.ProductVLLM, model.ProductOllama, model.ProductSGLang, model.ProductLocalAI}, Models: []string{"Qwen/Qwen3.6-35B-A3B", "openai/gpt-oss-20b", "meta-llama/Llama-4-Scout-17B-16E-Instruct"}},
 	}, SafetyContract: map[string]bool{"contains_endpoint": false, "contains_secret": false, "contains_download_url": false, "real_inference": false}}
 	scenarios := packs.ScenarioPackDocument{SchemaVersion: 1, Revision: "builtin-safe-v1", Packs: []packs.ScenarioPack{

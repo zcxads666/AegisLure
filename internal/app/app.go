@@ -649,10 +649,15 @@ func allowedMethods(route string) string {
 	if route == "ollama.blob" {
 		return http.MethodPost + ", " + http.MethodHead
 	}
+	if route == "sub2api.gateway.live" {
+		return http.MethodGet + ", " + http.MethodPost
+	}
 	if method := requiredMethod(route); method != "" {
 		return method
 	}
 	switch route {
+	case "sub2api.gateway.codex.models":
+		return http.MethodGet
 	case "newapi.spa", "newapi.asset", "newapi.logo", "newapi.status", "newapi.oauth.start", "newapi.oauth.callback", "newapi.token.list", "newapi.token.get", "newapi.token.auto-groups", "newapi.user.list", "newapi.user.status", "newapi.user.models", "newapi.user.groups", "newapi.usage.logs", "newapi.home-content", "newapi.about-content", "newapi.pricing-data", "newapi.perf-summary", "newapi.perf-metrics", "newapi.rankings-data", "newapi.setup", "newapi.notice", "newapi.dashboard-data", "newapi.verification", "ollama.home", "ollama.version", "ollama.tags", "ollama.ps", "openai.models", "openai.model", "gemini.models", "vllm.root", "vllm.health", "vllm.version", "vllm.metrics", "vllm.docs", "vllm.openapi", "sglang.health", "sglang.metrics", "sglang.docs", "sglang.openapi", "sglang.redoc", "sglang.server_info", "localai.home", "localai.health", "localai.metrics", "localai.models.available", "localai.models.installed", "localai.models.task", "sub2api.spa", "sub2api.asset", "sub2api.logo", "sub2api.health", "sub2api.setup.status", "sub2api.settings.public", "sub2api.auth.me", "sub2api.user.profile", "sub2api.groups.available", "sub2api.channels.available", "sub2api.usage.list", "sub2api.usage.stats", "sub2api.usage.dashboard.stats", "sub2api.usage.dashboard.trend", "sub2api.usage.dashboard.models", "sub2api.usage.dashboard.snapshot", "sub2api.usage.detail", "sub2api.redeem.history", "sub2api.subscriptions", "sub2api.models", "sub2api.gateway.models", "sub2api.gateway.model", "sub2api.gateway.billing", "sub2api.gateway.usage", "sub2api.gateway.live":
 		return http.MethodGet
 	case "newapi.user.forgot", "newapi.checkin":
@@ -1218,6 +1223,7 @@ func (a *App) writeOpenAIResponseForRoute(w http.ResponseWriter, body []byte, pr
 		obs.Metadata["matched_liveness_rule"] = ruleID
 	}
 	text := personaResponseText(body, product)
+	annotateSyntheticResponse(obs, text)
 	inputTokens := maxInt(8, len(body)/4)
 	outputTokens := maxInt(6, len(text)/4)
 	obs.SimulatedInputTokens = inputTokens
@@ -1267,6 +1273,19 @@ func (a *App) writeOpenAIResponseForRoute(w http.ResponseWriter, body []byte, pr
 		return
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"id": obs.InvocationID, "object": "chat.completion", "created": time.Now().Unix(), "model": modelName, "choices": []any{map[string]any{"index": 0, "message": map[string]string{"role": "assistant", "content": text}, "finish_reason": "stop"}}, "usage": map[string]int{"prompt_tokens": inputTokens, "completion_tokens": outputTokens, "total_tokens": inputTokens + outputTokens}})
+}
+
+func annotateSyntheticResponse(obs *Observation, text string) {
+	if obs == nil {
+		return
+	}
+	if obs.Metadata == nil {
+		obs.Metadata = make(map[string]string)
+	}
+	digest, _ := security.BodyDigest([]byte(text), 0)
+	obs.Metadata["response_content_kind"] = "text"
+	obs.Metadata["response_content_sha256"] = digest
+	obs.Metadata["response_content_preview"] = security.RedactPreview(text, 1024)
 }
 
 func (a *App) writeLegacyOllamaStream(w http.ResponseWriter, body []byte, modelName string, obs *Observation) {
