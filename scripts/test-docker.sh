@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+report_failure() {
+  local exit_code=$?
+  local line="${BASH_LINENO[0]:-0}"
+  local command="${BASH_COMMAND//$'\n'/ }"
+  trap - ERR
+  printf 'Docker smoke test failed at line %s (exit %s): %s\n' "$line" "$exit_code" "$command" >&2
+  printf '::error file=scripts/test-docker.sh,line=%s::exit %s: %s\n' "$line" "$exit_code" "$command"
+  exit "$exit_code"
+}
+trap report_failure ERR
+
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 command -v docker >/dev/null 2>&1 || { echo "Docker CLI is required" >&2; exit 1; }
