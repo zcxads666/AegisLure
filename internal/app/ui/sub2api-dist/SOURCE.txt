@@ -1,0 +1,5 @@
+Sub2API frontend source commit: b1748c4ea
+Source checkout: /Volumes/1/code/sub2api
+Build command: pnpm build
+Upstream copyright: (c) 2026 Wesley Liddick
+Upstream license: GNU Lesser General Public License v3.0 or later (see UPSTREAM-LICENSE.txt)

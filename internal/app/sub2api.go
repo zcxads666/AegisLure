@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -41,9 +42,11 @@ func (a *App) handleSub2API(w *captureWriter, r *http.Request, profile profiles.
 
 	switch obs.RouteTemplate {
 	case "sub2api.spa":
-		a.writeSub2APIIndex(w)
-	case "sub2api.asset", "sub2api.logo":
-		sub2APIError(w, http.StatusNotFound, "Not Found")
+		a.writeSub2APIIndex(w, r, profile)
+	case "sub2api.asset":
+		a.writeSub2APIAsset(w, r)
+	case "sub2api.logo":
+		a.writeSub2APILogo(w, r)
 	case "sub2api.health":
 		obs.EventType = "sub2api.health.checked"
 		a.writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -60,22 +63,13 @@ func (a *App) handleSub2API(w *captureWriter, r *http.Request, profile profiles.
 		a.handleSub2APIAuth(w, r, profile, session, body, obs)
 	case "sub2api.auth.oauth":
 		a.handleSub2APIOAuth(w, r, profile, session, obs)
-	case "sub2api.user.profile", "sub2api.user.update", "sub2api.user.password", "sub2api.key.list", "sub2api.key.get", "sub2api.key.create", "sub2api.key.update", "sub2api.key.delete", "sub2api.groups.available", "sub2api.channels.available", "sub2api.usage.list", "sub2api.usage.stats", "sub2api.usage.dashboard.stats", "sub2api.usage.dashboard.trend", "sub2api.usage.dashboard.models", "sub2api.usage.detail", "sub2api.redeem", "sub2api.redeem.history", "sub2api.subscriptions", "sub2api.models":
+	case "sub2api.user.profile", "sub2api.user.update", "sub2api.user.password", "sub2api.key.list", "sub2api.key.get", "sub2api.key.create", "sub2api.key.update", "sub2api.key.delete", "sub2api.groups.available", "sub2api.channels.available", "sub2api.usage.list", "sub2api.usage.stats", "sub2api.usage.dashboard.stats", "sub2api.usage.dashboard.trend", "sub2api.usage.dashboard.models", "sub2api.usage.dashboard.snapshot", "sub2api.usage.detail", "sub2api.redeem", "sub2api.redeem.history", "sub2api.subscriptions", "sub2api.models":
 		a.handleSub2APIPanel(w, r, profile, session, body, obs)
 	case "sub2api.gateway.models", "sub2api.gateway.model", "sub2api.gateway.billing", "sub2api.gateway.messages", "sub2api.gateway.count_tokens", "sub2api.gateway.chat", "sub2api.gateway.responses", "sub2api.gateway.embeddings", "sub2api.gateway.completions", "sub2api.gateway.alpha_search", "sub2api.gateway.usage", "sub2api.gateway.live":
 		a.handleSub2APIGateway(w, r, profile, session, body, obs)
 	default:
 		sub2APIError(w, http.StatusNotFound, "Not Found")
 	}
-}
-
-func (a *App) writeSub2APIIndex(w *captureWriter) {
-	setSecurityHeaders(w)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; base-uri 'none'; connect-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; frame-ancestors 'none'; object-src 'none'; form-action 'self'")
-	w.WriteHeader(http.StatusOK)
-	_, _ = fmt.Fprint(w, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Sub2API</title><style>body{font-family:system-ui,sans-serif;max-width:760px;margin:4rem auto;padding:0 1.2rem;color:#182230;background:#f5f7fa}main{background:#fff;border:1px solid #d9e0ea;border-radius:14px;padding:2rem;box-shadow:0 10px 30px #18223014}h1{margin-top:0}p{line-height:1.6;color:#526174}a{color:#2563eb}</style></head><body><main><h1>Sub2API</h1><p>Subscription to API Conversion Platform</p><p><a href="/login">Sign in</a> or <a href="/register">create an account</a>.</p></main></body></html>`)
 }
 
 func sub2APISuccess(a *App, w http.ResponseWriter, status int, data any) {
@@ -439,7 +433,7 @@ func sub2APIOAuthPath(path string) (provider, action string, ok bool) {
 
 func (a *App) handleSub2APIPanel(w *captureWriter, r *http.Request, profile profiles.Profile, session Session, body []byte, obs *Observation) {
 	switch obs.RouteTemplate {
-	case "sub2api.user.profile", "sub2api.user.update", "sub2api.user.password", "sub2api.key.list", "sub2api.key.get", "sub2api.key.create", "sub2api.key.update", "sub2api.key.delete", "sub2api.groups.available", "sub2api.channels.available", "sub2api.usage.list", "sub2api.usage.stats", "sub2api.usage.dashboard.stats", "sub2api.usage.dashboard.trend", "sub2api.usage.dashboard.models", "sub2api.usage.detail", "sub2api.redeem", "sub2api.redeem.history", "sub2api.subscriptions":
+	case "sub2api.user.profile", "sub2api.user.update", "sub2api.user.password", "sub2api.key.list", "sub2api.key.get", "sub2api.key.create", "sub2api.key.update", "sub2api.key.delete", "sub2api.groups.available", "sub2api.channels.available", "sub2api.usage.list", "sub2api.usage.stats", "sub2api.usage.dashboard.stats", "sub2api.usage.dashboard.trend", "sub2api.usage.dashboard.models", "sub2api.usage.dashboard.snapshot", "sub2api.usage.detail", "sub2api.redeem", "sub2api.redeem.history", "sub2api.subscriptions":
 		if _, ok := a.sub2APIRequireUser(w, session, obs); !ok {
 			return
 		}
@@ -465,8 +459,8 @@ func (a *App) handleSub2APIPanel(w *captureWriter, r *http.Request, profile prof
 	case "sub2api.channels.available":
 		obs.EventType = "sub2api.channels.listed"
 		sub2APISuccess(a, w, http.StatusOK, []any{})
-	case "sub2api.usage.list", "sub2api.usage.stats", "sub2api.usage.dashboard.stats", "sub2api.usage.dashboard.trend", "sub2api.usage.dashboard.models", "sub2api.usage.detail":
-		a.handleSub2APIUsage(w, session, session.UserID, obs)
+	case "sub2api.usage.list", "sub2api.usage.stats", "sub2api.usage.dashboard.stats", "sub2api.usage.dashboard.trend", "sub2api.usage.dashboard.models", "sub2api.usage.dashboard.snapshot", "sub2api.usage.detail":
+		a.handleSub2APIUsage(w, r, session, session.UserID, obs)
 	case "sub2api.redeem":
 		a.handleSub2APIRedeem(w, r, body, profile, session, obs)
 	case "sub2api.redeem.history":
@@ -791,26 +785,480 @@ func sub2APIMaskedKey(prefix string) string {
 	return prefix
 }
 
-func (a *App) handleSub2APIUsage(w *captureWriter, session Session, userID string, obs *Observation) {
+func (a *App) handleSub2APIUsage(w *captureWriter, r *http.Request, session Session, userID string, obs *Observation) {
 	events, err := a.store.Events(-1, model.ProductSub2API, "")
 	if err != nil {
 		sub2APIError(w, http.StatusInternalServerError, "usage query failed")
 		return
 	}
-	rows := publicUsageEvents(events, session.ID, userID)
+	usageEvents := sub2APIUsageEvents(events, session.ID, userID)
 	obs.EventType = "sub2api.usage.listed"
 	switch obs.RouteTemplate {
 	case "sub2api.usage.stats":
-		sub2APISuccess(a, w, http.StatusOK, map[string]any{"total": len(rows), "request_count": len(rows), "total_cost": sub2APITotalCost(rows), "items": rows})
+		filtered, _, _, _, _ := sub2APIUsageWindow(r, usageEvents)
+		filtered = sub2APIFilterUsageEvents(r, filtered)
+		rows := publicUsageEvents(filtered, "", "")
+		sub2APISuccess(a, w, http.StatusOK, sub2APIUsageStatsPayload(filtered, rows))
 	case "sub2api.usage.dashboard.stats":
-		sub2APISuccess(a, w, http.StatusOK, map[string]any{"total_requests": len(rows), "total_cost": sub2APITotalCost(rows), "total_tokens": sub2APITotalTokens(rows), "items": rows})
+		rows := publicUsageEvents(usageEvents, "", "")
+		sub2APISuccess(a, w, http.StatusOK, a.sub2APIDashboardStats(userID, usageEvents, rows))
 	case "sub2api.usage.dashboard.trend":
-		sub2APISuccess(a, w, http.StatusOK, []any{})
+		filtered, startDate, endDate, granularity, location := sub2APIUsageWindow(r, usageEvents)
+		filtered = sub2APIFilterUsageEvents(r, filtered)
+		sub2APISuccess(a, w, http.StatusOK, map[string]any{"trend": sub2APITrend(filtered, granularity, location), "start_date": startDate, "end_date": endDate, "granularity": granularity})
 	case "sub2api.usage.dashboard.models":
-		sub2APISuccess(a, w, http.StatusOK, []any{})
+		filtered, startDate, endDate, _, _ := sub2APIUsageWindow(r, usageEvents)
+		filtered = sub2APIFilterUsageEvents(r, filtered)
+		sub2APISuccess(a, w, http.StatusOK, map[string]any{"models": sub2APIModelStats(filtered), "start_date": startDate, "end_date": endDate})
+	case "sub2api.usage.dashboard.snapshot":
+		filtered, startDate, endDate, granularity, location := sub2APIUsageWindow(r, usageEvents)
+		filtered = sub2APIFilterUsageEvents(r, filtered)
+		payload := map[string]any{
+			"generated_at": time.Now().UTC(),
+			"start_date":   startDate,
+			"end_date":     endDate,
+			"granularity":  granularity,
+		}
+		if sub2APIQueryBool(r, "include_trend", true) {
+			payload["trend"] = sub2APITrend(filtered, granularity, location)
+		}
+		if sub2APIQueryBool(r, "include_model_stats", true) {
+			payload["models"] = sub2APIModelStats(filtered)
+		}
+		if sub2APIQueryBool(r, "include_group_stats", false) {
+			payload["groups"] = sub2APIGroupStats(filtered)
+		}
+		sub2APISuccess(a, w, http.StatusOK, payload)
 	default:
-		sub2APISuccess(a, w, http.StatusOK, map[string]any{"items": rows, "records": rows, "total": len(rows), "page": 1, "page_size": len(rows)})
+		filtered := usageEvents
+		if sub2APIUsageHasRangeQuery(r) {
+			filtered, _, _, _, _ = sub2APIUsageWindow(r, usageEvents)
+		}
+		filtered = sub2APIFilterUsageEvents(r, filtered)
+		rows := publicUsageEvents(filtered, "", "")
+		page, pageSize := sub2APIUsagePage(r, len(rows))
+		start := (page - 1) * pageSize
+		if start > len(rows) {
+			start = len(rows)
+		}
+		end := start + pageSize
+		if end > len(rows) {
+			end = len(rows)
+		}
+		pageRows := rows[start:end]
+		sub2APISuccess(a, w, http.StatusOK, map[string]any{"items": pageRows, "records": pageRows, "total": len(rows), "page": page, "page_size": pageSize})
 	}
+}
+
+type sub2APIUsageAggregate struct {
+	Requests            int64
+	InputTokens         int64
+	OutputTokens        int64
+	CacheCreationTokens int64
+	CacheReadTokens     int64
+	TotalTokens         int64
+	Cost                float64
+	ActualCost          float64
+	DurationMS          int64
+}
+
+func sub2APIUsageEvents(events []model.Event, sessionID, userID string) []model.Event {
+	result := make([]model.Event, 0, len(events))
+	for _, event := range events {
+		if event.InvocationID == "" || event.SimulatedCost <= 0 || !event.ResponseObserved {
+			continue
+		}
+		if userID != "" {
+			if event.Metadata["honey_user_id"] != userID {
+				continue
+			}
+		} else if sessionID != "" && event.SessionID != sessionID {
+			continue
+		}
+		result = append(result, event)
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].ObservedAt.Equal(result[j].ObservedAt) {
+			return result[i].Sequence > result[j].Sequence
+		}
+		return result[i].ObservedAt.After(result[j].ObservedAt)
+	})
+	return result
+}
+
+func sub2APIUsageHasRangeQuery(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	query := r.URL.Query()
+	return strings.TrimSpace(query.Get("period")) != "" || strings.TrimSpace(query.Get("start_date")) != "" || strings.TrimSpace(query.Get("end_date")) != ""
+}
+
+func sub2APIUsagePage(r *http.Request, _ int) (int, int) {
+	page, pageSize := 1, 20
+	if r == nil {
+		return page, pageSize
+	}
+	if parsed, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("page"))); err == nil && parsed > 0 {
+		page = parsed
+	}
+	if parsed, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("page_size"))); err == nil && parsed > 0 && parsed <= 100 {
+		pageSize = parsed
+	}
+	return page, pageSize
+}
+
+func sub2APIQueryBool(r *http.Request, key string, fallback bool) bool {
+	if r == nil {
+		return fallback
+	}
+	raw := strings.TrimSpace(r.URL.Query().Get(key))
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(raw)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func sub2APIFilterUsageEvents(r *http.Request, events []model.Event) []model.Event {
+	if r == nil {
+		return events
+	}
+	query := r.URL.Query()
+	modelName := strings.TrimSpace(query.Get("model"))
+	apiKeyID := strings.TrimSpace(query.Get("api_key_id"))
+	groupID := strings.TrimSpace(query.Get("group_id"))
+	streamRaw := strings.TrimSpace(query.Get("stream"))
+	requestType := strings.ToLower(strings.TrimSpace(query.Get("request_type")))
+	result := make([]model.Event, 0, len(events))
+	for _, event := range events {
+		if modelName != "" && event.ModelID != modelName {
+			continue
+		}
+		if apiKeyID != "" && event.Metadata["api_key_id"] != apiKeyID {
+			continue
+		}
+		if groupID != "" && groupID != event.Metadata["group_id"] {
+			continue
+		}
+		stream := event.Metadata["stream"] == "true"
+		if streamRaw != "" {
+			requested, err := strconv.ParseBool(streamRaw)
+			if err == nil && stream != requested {
+				continue
+			}
+		}
+		if requestType != "" && sub2APIUsageRequestType(event) != requestType {
+			continue
+		}
+		result = append(result, event)
+	}
+	return result
+}
+
+func sub2APIUsageRequestType(event model.Event) string {
+	if event.Metadata["stream"] == "true" {
+		return "stream"
+	}
+	if event.RouteTemplate == "sub2api.gateway.live" {
+		return "live"
+	}
+	return "sync"
+}
+
+func sub2APIUsageAPIKeyID(event model.Event) int64 {
+	value, err := strconv.ParseInt(strings.TrimSpace(event.Metadata["api_key_id"]), 10, 64)
+	if err != nil || value < 1 {
+		return 0
+	}
+	return value
+}
+
+func sub2APIUsageUpstreamEndpoint(event model.Event) string {
+	if value := strings.TrimSpace(event.Metadata["upstream_endpoint"]); value != "" {
+		return value
+	}
+	return "sub2api.synthetic.local"
+}
+
+func sub2APIEndpointStats(events []model.Event, source string) []map[string]any {
+	type endpointAggregate struct {
+		Requests    int64
+		TotalTokens int64
+		Cost        float64
+		ActualCost  float64
+	}
+	items := make(map[string]*endpointAggregate)
+	for _, event := range events {
+		name := strings.TrimSpace(event.RouteTemplate)
+		if source == "upstream" {
+			name = sub2APIUsageUpstreamEndpoint(event)
+		} else if source == "path" {
+			name += " -> " + sub2APIUsageUpstreamEndpoint(event)
+		}
+		if name == "" {
+			name = "unknown"
+		}
+		item := items[name]
+		if item == nil {
+			item = &endpointAggregate{}
+			items[name] = item
+		}
+		item.Requests++
+		item.TotalTokens += int64(event.SimulatedInputTokens + event.SimulatedOutputTokens)
+		item.Cost += float64(event.SimulatedCost)
+		item.ActualCost += float64(event.SimulatedCost)
+	}
+	names := make([]string, 0, len(items))
+	for name := range items {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	result := make([]map[string]any, 0, len(names))
+	for _, name := range names {
+		item := items[name]
+		result = append(result, map[string]any{"endpoint": name, "requests": item.Requests, "total_tokens": item.TotalTokens, "cost": item.Cost, "actual_cost": item.ActualCost})
+	}
+	return result
+}
+
+func sub2APIGroupStats(events []model.Event) []map[string]any {
+	aggregate := sub2APIAggregate(events)
+	if aggregate.Requests == 0 {
+		return []map[string]any{}
+	}
+	return []map[string]any{{"group_id": int64(1), "group_name": "default", "requests": aggregate.Requests, "total_tokens": aggregate.TotalTokens, "cost": aggregate.Cost, "actual_cost": aggregate.ActualCost}}
+}
+
+func sub2APIAggregate(events []model.Event) sub2APIUsageAggregate {
+	var result sub2APIUsageAggregate
+	for _, event := range events {
+		result.Requests++
+		result.InputTokens += int64(event.SimulatedInputTokens)
+		result.OutputTokens += int64(event.SimulatedOutputTokens)
+		result.TotalTokens += int64(event.SimulatedInputTokens + event.SimulatedOutputTokens)
+		result.Cost += float64(event.SimulatedCost)
+		result.ActualCost += float64(event.SimulatedCost)
+		result.DurationMS += event.DurationMS
+	}
+	return result
+}
+
+func sub2APIUsageStatsPayload(events []model.Event, rows []map[string]any) map[string]any {
+	aggregate := sub2APIAggregate(events)
+	return map[string]any{
+		// Keep the original compatibility aliases alongside the official fields.
+		"total": len(rows), "request_count": len(rows), "items": rows,
+		"total_requests": aggregate.Requests, "total_input_tokens": aggregate.InputTokens,
+		"total_output_tokens": aggregate.OutputTokens, "total_cache_tokens": aggregate.CacheCreationTokens + aggregate.CacheReadTokens,
+		"total_cache_creation_tokens": aggregate.CacheCreationTokens, "total_cache_read_tokens": aggregate.CacheReadTokens,
+		"total_tokens": aggregate.TotalTokens, "total_cost": aggregate.Cost, "total_actual_cost": aggregate.ActualCost,
+		"average_duration_ms": sub2APIAverageDuration(aggregate), "models": sub2APIModelCount(events),
+		"endpoints": sub2APIEndpointStats(events, "inbound"), "upstream_endpoints": sub2APIEndpointStats(events, "upstream"), "endpoint_paths": sub2APIEndpointStats(events, "path"),
+	}
+}
+
+func (a *App) sub2APIDashboardStats(userID string, events []model.Event, rows []map[string]any) map[string]any {
+	aggregate := sub2APIAggregate(events)
+	today := sub2APITodayEvents(events, time.Now().UTC())
+	todayAggregate := sub2APIAggregate(today)
+	keys := a.store.ListTokens(userID)
+	activeKeys := 0
+	now := time.Now().UTC()
+	for _, key := range keys {
+		if key.DisabledAt.IsZero() && (key.ExpiredAt.IsZero() || key.ExpiredAt.After(now)) && (key.UnlimitedQuota || key.RemainQuota > 0) {
+			activeKeys++
+		}
+	}
+	rpm, tpm := sub2APIRollingRate(events, now)
+	return map[string]any{
+		"total_api_keys": len(keys), "active_api_keys": activeKeys,
+		"total_requests": aggregate.Requests, "total_input_tokens": aggregate.InputTokens, "total_output_tokens": aggregate.OutputTokens,
+		"total_cache_creation_tokens": aggregate.CacheCreationTokens, "total_cache_read_tokens": aggregate.CacheReadTokens,
+		"total_tokens": aggregate.TotalTokens, "total_cost": aggregate.Cost, "total_actual_cost": aggregate.ActualCost,
+		"today_requests": todayAggregate.Requests, "today_input_tokens": todayAggregate.InputTokens, "today_output_tokens": todayAggregate.OutputTokens,
+		"today_cache_creation_tokens": todayAggregate.CacheCreationTokens, "today_cache_read_tokens": todayAggregate.CacheReadTokens,
+		"today_tokens": todayAggregate.TotalTokens, "today_cost": todayAggregate.Cost, "today_actual_cost": todayAggregate.ActualCost,
+		"average_duration_ms": sub2APIAverageDuration(aggregate), "rpm": rpm, "tpm": tpm,
+		"by_platform": []map[string]any{{"platform": "sub2api", "total_requests": aggregate.Requests, "total_tokens": aggregate.TotalTokens, "total_actual_cost": aggregate.ActualCost, "today_requests": todayAggregate.Requests, "today_tokens": todayAggregate.TotalTokens, "today_actual_cost": todayAggregate.ActualCost}},
+		"items":       rows,
+	}
+}
+
+func sub2APIAverageDuration(aggregate sub2APIUsageAggregate) float64 {
+	if aggregate.Requests == 0 {
+		return 0
+	}
+	return float64(aggregate.DurationMS) / float64(aggregate.Requests)
+}
+
+func sub2APITodayEvents(events []model.Event, now time.Time) []model.Event {
+	location := sub2APIUsageLocation("")
+	day := now.In(location)
+	start := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, location)
+	end := start.AddDate(0, 0, 1)
+	result := make([]model.Event, 0, len(events))
+	for _, event := range events {
+		if !event.ObservedAt.Before(start) && event.ObservedAt.Before(end) {
+			result = append(result, event)
+		}
+	}
+	return result
+}
+
+func sub2APIRollingRate(events []model.Event, now time.Time) (int64, int64) {
+	cutoff := now.Add(-5 * time.Minute)
+	var requests, tokens int64
+	for _, event := range events {
+		if event.ObservedAt.Before(cutoff) || event.ObservedAt.After(now.Add(time.Second)) {
+			continue
+		}
+		requests++
+		tokens += int64(event.SimulatedInputTokens + event.SimulatedOutputTokens)
+	}
+	return (requests + 4) / 5, (tokens + 4) / 5
+}
+
+func sub2APIUsageLocation(raw string) *time.Location {
+	if strings.TrimSpace(raw) != "" {
+		if location, err := time.LoadLocation(strings.TrimSpace(raw)); err == nil {
+			return location
+		}
+	}
+	if location, err := time.LoadLocation(model.InteractionChainTimezone); err == nil {
+		return location
+	}
+	return time.FixedZone("Asia/Shanghai", 8*60*60)
+}
+
+func sub2APIUsageWindow(r *http.Request, events []model.Event) ([]model.Event, string, string, string, *time.Location) {
+	query := r.URL.Query()
+	location := sub2APIUsageLocation(query.Get("timezone"))
+	now := time.Now().In(location)
+	startDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, location).AddDate(0, 0, -29)
+	endDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, location).AddDate(0, 0, 1)
+	period := strings.ToLower(strings.TrimSpace(query.Get("period")))
+	if period != "" {
+		switch period {
+		case "today":
+			startDay = endDay.AddDate(0, 0, -1)
+		case "week":
+			startDay = endDay.AddDate(0, 0, -7)
+		case "month":
+			startDay = endDay.AddDate(0, -1, 0)
+		case "year":
+			startDay = endDay.AddDate(-1, 0, 0)
+		}
+	}
+	if value := strings.TrimSpace(query.Get("start_date")); value != "" {
+		if parsed, err := time.ParseInLocation("2006-01-02", value, location); err == nil {
+			startDay = parsed
+		}
+	}
+	if value := strings.TrimSpace(query.Get("end_date")); value != "" {
+		if parsed, err := time.ParseInLocation("2006-01-02", value, location); err == nil {
+			endDay = parsed.AddDate(0, 0, 1)
+		}
+	}
+	if !endDay.After(startDay) {
+		endDay = startDay.AddDate(0, 0, 1)
+	}
+	granularity := strings.ToLower(strings.TrimSpace(query.Get("granularity")))
+	if granularity != "hour" {
+		granularity = "day"
+	}
+	filtered := make([]model.Event, 0, len(events))
+	for _, event := range events {
+		localTime := event.ObservedAt.In(location)
+		if !localTime.Before(startDay) && localTime.Before(endDay) {
+			filtered = append(filtered, event)
+		}
+	}
+	return filtered, startDay.Format("2006-01-02"), endDay.AddDate(0, 0, -1).Format("2006-01-02"), granularity, location
+}
+
+func sub2APITrend(events []model.Event, granularity string, location *time.Location) []map[string]any {
+	type bucket struct {
+		key string
+		sub2APIUsageAggregate
+	}
+	buckets := make(map[string]*bucket)
+	for _, event := range events {
+		localTime := event.ObservedAt.In(location)
+		key := localTime.Format("2006-01-02")
+		if granularity == "hour" {
+			key = localTime.Format("2006-01-02 15:00")
+		}
+		item := buckets[key]
+		if item == nil {
+			item = &bucket{key: key}
+			buckets[key] = item
+		}
+		item.Requests++
+		item.InputTokens += int64(event.SimulatedInputTokens)
+		item.OutputTokens += int64(event.SimulatedOutputTokens)
+		item.TotalTokens += int64(event.SimulatedInputTokens + event.SimulatedOutputTokens)
+		item.Cost += float64(event.SimulatedCost)
+		item.ActualCost += float64(event.SimulatedCost)
+	}
+	keys := make([]string, 0, len(buckets))
+	for key := range buckets {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	result := make([]map[string]any, 0, len(keys))
+	for _, key := range keys {
+		item := buckets[key]
+		result = append(result, map[string]any{"date": item.key, "requests": item.Requests, "input_tokens": item.InputTokens, "output_tokens": item.OutputTokens, "cache_creation_tokens": 0, "cache_read_tokens": 0, "total_tokens": item.TotalTokens, "cost": item.Cost, "actual_cost": item.ActualCost})
+	}
+	return result
+}
+
+func sub2APIModelStats(events []model.Event) []map[string]any {
+	items := make(map[string]*sub2APIUsageAggregate)
+	for _, event := range events {
+		name := event.ModelID
+		if name == "" {
+			name = "unknown"
+		}
+		item := items[name]
+		if item == nil {
+			item = &sub2APIUsageAggregate{}
+			items[name] = item
+		}
+		item.Requests++
+		item.InputTokens += int64(event.SimulatedInputTokens)
+		item.OutputTokens += int64(event.SimulatedOutputTokens)
+		item.TotalTokens += int64(event.SimulatedInputTokens + event.SimulatedOutputTokens)
+		item.Cost += float64(event.SimulatedCost)
+		item.ActualCost += float64(event.SimulatedCost)
+	}
+	names := make([]string, 0, len(items))
+	for name := range items {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	result := make([]map[string]any, 0, len(names))
+	for _, name := range names {
+		item := items[name]
+		result = append(result, map[string]any{"model": name, "requests": item.Requests, "input_tokens": item.InputTokens, "output_tokens": item.OutputTokens, "cache_creation_tokens": 0, "cache_read_tokens": 0, "total_tokens": item.TotalTokens, "cost": item.Cost, "actual_cost": item.ActualCost})
+	}
+	return result
+}
+
+func sub2APIModelCount(events []model.Event) map[string]int64 {
+	result := make(map[string]int64)
+	for _, event := range events {
+		name := event.ModelID
+		if name == "" {
+			name = "unknown"
+		}
+		result[name]++
+	}
+	return result
 }
 
 func sub2APITotalCost(rows []map[string]any) int64 {
@@ -892,6 +1340,10 @@ func (a *App) handleSub2APIGateway(w *captureWriter, r *http.Request, _ profiles
 		return
 	}
 	obs.Metadata["honey_user_id"] = token.HoneyUserID
+	obs.Metadata["api_key_id"] = strconv.FormatInt(newAPIPublicID(token.ID), 10)
+	obs.Metadata["group_id"] = "1"
+	obs.Metadata["group_name"] = "default"
+	obs.Metadata["upstream_endpoint"] = "sub2api.synthetic.local"
 	_ = a.store.TouchToken(token.ID, func(current *model.HoneyToken) { current.LastUsedAt = time.Now().UTC() })
 
 	switch obs.RouteTemplate {
@@ -935,7 +1387,7 @@ func (a *App) handleSub2APIGateway(w *captureWriter, r *http.Request, _ profiles
 		a.writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": []any{}, "has_more": false})
 		return
 	case "sub2api.gateway.usage":
-		a.handleSub2APIUsage(w, session, token.HoneyUserID, obs)
+		a.handleSub2APIUsage(w, r, session, token.HoneyUserID, obs)
 		return
 	case "sub2api.gateway.live":
 		obs.EventType = "sub2api.gateway.live.accepted"
@@ -952,6 +1404,7 @@ func (a *App) handleSub2APIGateway(w *captureWriter, r *http.Request, _ profiles
 		sub2APIGatewayError(a, w, obs.RouteTemplate, http.StatusBadRequest, "invalid request")
 		return
 	}
+	obs.Metadata["stream"] = strconv.FormatBool(stream)
 	entry, resolved := a.resolveCatalogModelForSession(model.ProductSub2API, requestedModel, "user", session)
 	if !resolved {
 		a.startInvocation(obs, auth, false, "model_not_found")

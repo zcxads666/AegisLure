@@ -391,11 +391,11 @@ func newAPIRoute(method, path string) string {
 
 func sub2APIRoute(method, path string) string {
 	switch {
-	case path == "/" || path == "/login" || path == "/register" || path == "/sign-in" || path == "/sign-up" || path == "/forgot-password" || path == "/reset-password" || path == "/dashboard" || path == "/dashboard/" || strings.HasPrefix(path, "/dashboard/") || path == "/keys" || path == "/keys/" || path == "/usage" || path == "/usage/" || path == "/redeem" || path == "/redeem/" || path == "/profile" || path == "/profile/" || path == "/model-plaza" || path == "/subscriptions" || path == "/settings":
+	case sub2APIWebPath(path):
 		return "sub2api.spa"
 	case strings.HasPrefix(path, "/assets/") || strings.HasPrefix(path, "/static/"):
 		return "sub2api.asset"
-	case path == "/favicon.ico" || path == "/logo.png":
+	case path == "/favicon.ico" || path == "/logo.svg" || path == "/logo.png":
 		return "sub2api.logo"
 	case path == "/health":
 		return "sub2api.health"
@@ -460,6 +460,8 @@ func sub2APIRoute(method, path string) string {
 		return "sub2api.usage.dashboard.trend"
 	case path == "/api/v1/usage/dashboard/models":
 		return "sub2api.usage.dashboard.models"
+	case path == "/api/v1/usage/dashboard/snapshot-v2":
+		return "sub2api.usage.dashboard.snapshot"
 	case strings.HasPrefix(path, "/api/v1/usage/"):
 		return "sub2api.usage.detail"
 	case path == "/api/v1/redeem":
@@ -496,6 +498,18 @@ func sub2APIRoute(method, path string) string {
 		return "sub2api.gateway.live"
 	}
 	return "sub2api.unknown"
+}
+
+// sub2APIWebPath mirrors the official frontend route surface. API and model
+// gateway paths are intentionally excluded so the SPA fallback cannot mask a
+// protocol request. Dynamic UI routes use the same prefixes as the upstream
+// Vue router.
+func sub2APIWebPath(path string) bool {
+	switch path {
+	case "/", "/setup", "/setup/", "/home", "/login", "/register", "/sign-in", "/sign-up", "/email-verify", "/auth/callback", "/auth/oauth/callback", "/auth/linuxdo/callback", "/auth/wechat/callback", "/auth/wechat/payment/callback", "/auth/dingtalk/callback", "/auth/dingtalk/email-completion", "/auth/oidc/callback", "/forgot-password", "/reset-password", "/key-usage", "/model-plaza", "/dashboard", "/keys", "/keys/", "/batch-image", "/usage", "/usage/", "/redeem", "/redeem/", "/affiliate", "/available-channels", "/profile", "/profile/", "/subscriptions", "/purchase", "/orders", "/monitor", "/settings", "/docs/batch-image", "/admin":
+		return true
+	}
+	return strings.HasPrefix(path, "/dashboard/") || strings.HasPrefix(path, "/legal/") || strings.HasPrefix(path, "/custom/") || strings.HasPrefix(path, "/payment/") || strings.HasPrefix(path, "/admin/")
 }
 
 func vLLMRoute(method, path string) string {

@@ -45,6 +45,14 @@ func TestSub2APICompatibilitySharesStateAndRecordsSafeTelemetry(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != `{"status":"ok"}` {
 		t.Fatalf("health contract = %d %s", resp.StatusCode, body)
 	}
+	resp, body = doRawJSON(t, client, http.MethodGet, "/", nil, nil)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `<div id="app"></div>`) || !strings.Contains(string(body), `src="/assets/`) || !strings.Contains(string(body), `href="/logo.svg"`) {
+		t.Fatalf("official home shell contract = %d %s", resp.StatusCode, body)
+	}
+	resp, body = doRawJSON(t, client, http.MethodGet, "/login", nil, nil)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `<div id="app"></div>`) || !strings.Contains(string(body), `src="/assets/`) || !strings.Contains(string(body), `Sub2API - AI API Gateway`) {
+		t.Fatalf("official login shell contract = %d %s", resp.StatusCode, body)
+	}
 	resp, body = doRawJSON(t, client, http.MethodGet, "/api/v1/settings/public", nil, nil)
 	settingsEnvelope := decodeSub2APIJSON(t, body)
 	settings, ok := settingsEnvelope["data"].(map[string]any)
@@ -127,9 +135,69 @@ func TestSub2APICompatibilitySharesStateAndRecordsSafeTelemetry(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || !ok || !totalOK || total < 1 {
 		t.Fatalf("account-scoped usage = %d %#v", resp.StatusCode, usageEnvelope)
 	}
+	resp, body = doRawJSON(t, client, http.MethodGet, "/api/v1/usage/dashboard/stats", nil, nil)
+	dashboardEnvelope := decodeSub2APIJSON(t, body)
+	dashboard, ok := dashboardEnvelope["data"].(map[string]any)
+	if resp.StatusCode != http.StatusOK || !ok {
+		t.Fatalf("dashboard stats = %d %#v", resp.StatusCode, dashboardEnvelope)
+	}
+	for _, field := range []string{"total_api_keys", "active_api_keys", "total_input_tokens", "total_output_tokens", "total_actual_cost", "today_requests", "today_tokens", "average_duration_ms", "rpm", "tpm", "by_platform"} {
+		if _, exists := dashboard[field]; !exists {
+			t.Fatalf("dashboard stats missing official field %q: %#v", field, dashboard)
+		}
+	}
+	resp, body = doRawJSON(t, client, http.MethodGet, "/api/v1/usage/stats?start_date=2020-01-01&end_date=2099-01-01", nil, nil)
+	statsEnvelope := decodeSub2APIJSON(t, body)
+	stats, ok := statsEnvelope["data"].(map[string]any)
+	if resp.StatusCode != http.StatusOK || !ok {
+		t.Fatalf("usage stats = %d %#v", resp.StatusCode, statsEnvelope)
+	}
+	if endpoints, ok := stats["endpoints"].([]any); !ok || len(endpoints) == 0 {
+		t.Fatalf("usage endpoint aggregation = %#v", stats)
+	}
+	resp, body = doRawJSON(t, client, http.MethodGet, "/api/v1/usage/dashboard/trend?granularity=day", nil, nil)
+	trendEnvelope := decodeSub2APIJSON(t, body)
+	trend, ok := trendEnvelope["data"].(map[string]any)
+	if resp.StatusCode != http.StatusOK || !ok {
+		t.Fatalf("dashboard trend = %d %#v", resp.StatusCode, trendEnvelope)
+	}
+	if _, ok := trend["trend"].([]any); !ok {
+		t.Fatalf("dashboard trend shape = %#v", trend)
+	}
+	resp, body = doRawJSON(t, client, http.MethodGet, "/api/v1/usage/dashboard/models", nil, nil)
+	modelsEnvelope := decodeSub2APIJSON(t, body)
+	models, ok := modelsEnvelope["data"].(map[string]any)
+	if resp.StatusCode != http.StatusOK || !ok {
+		t.Fatalf("dashboard models = %d %#v", resp.StatusCode, modelsEnvelope)
+	}
+	if _, ok := models["models"].([]any); !ok {
+		t.Fatalf("dashboard models shape = %#v", models)
+	}
+	resp, body = doRawJSON(t, client, http.MethodGet, "/api/v1/usage/dashboard/snapshot-v2?start_date=2020-01-01&end_date=2099-01-01&granularity=day&include_trend=true&include_group_stats=true", nil, nil)
+	snapshotEnvelope := decodeSub2APIJSON(t, body)
+	snapshot, ok := snapshotEnvelope["data"].(map[string]any)
+	if resp.StatusCode != http.StatusOK || !ok {
+		t.Fatalf("dashboard snapshot = %d %#v", resp.StatusCode, snapshotEnvelope)
+	}
+	if trend, ok := snapshot["trend"].([]any); !ok || len(trend) == 0 {
+		t.Fatalf("dashboard snapshot trend = %#v", snapshot)
+	}
+	if groups, ok := snapshot["groups"].([]any); !ok || len(groups) == 0 {
+		t.Fatalf("dashboard snapshot groups = %#v", snapshot)
+	}
 	ssrfRequest := map[string]any{"model": "gpt-4o-mini", "messages": []any{map[string]any{"role": "user", "content": "inspect"}}, "image_url": "http://127.0.0.1:9/internal"}
 	if resp, _ := doRawJSON(t, client, http.MethodPost, "/v1/chat/completions", ssrfRequest, map[string]string{"Authorization": "Bearer " + rawKey}); resp.StatusCode != http.StatusOK {
 		t.Fatalf("SSRF-shaped synthetic request = %d", resp.StatusCode)
+	}
+	resp, body = doRawJSON(t, client, http.MethodPost, "/api/v1/auth/register", map[string]any{"email": "isolation@example.com", "password": password}, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("second account registration = %d", resp.StatusCode)
+	}
+	resp, body = doRawJSON(t, client, http.MethodGet, "/api/v1/usage/stats?start_date=2020-01-01&end_date=2099-01-01", nil, nil)
+	isolationUsage := decodeSub2APIJSON(t, body)
+	isolationData, _ := isolationUsage["data"].(map[string]any)
+	if total, _ := isolationData["total"].(float64); resp.StatusCode != http.StatusOK || total != 0 {
+		t.Fatalf("usage crossed account boundary = %d %#v", resp.StatusCode, isolationUsage)
 	}
 
 	events, err := st.Events(-1, model.ProductSub2API, "")

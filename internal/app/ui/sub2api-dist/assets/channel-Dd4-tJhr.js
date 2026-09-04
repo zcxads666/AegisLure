@@ -1,0 +1,1 @@
+function c(n,r,t=0){if(n==null)return"-";let e=(n*r).toPrecision(10).replace(/\.?0+$/,"");if(t>0&&!e.includes("e")){const s=e.indexOf("."),o=s===-1?0:e.length-s-1;o<t&&(e=(s===-1?`${e}.`:e)+"0".repeat(t-o))}return`$${e}`}const E="token",_="per_request",a="image";export{a as B,_ as a,E as b,c as f};

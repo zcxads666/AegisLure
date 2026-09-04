@@ -26,6 +26,15 @@ func TestVulnerabilitySurfaceRoutes(t *testing.T) {
 		{model.ProductSub2API, "POST", "/v1/messages/count_tokens", "sub2api.gateway.count_tokens"},
 		{model.ProductSub2API, "GET", "/v1/sub2api/billing", "sub2api.gateway.billing"},
 		{model.ProductSub2API, "POST", "/v1/alpha/search", "sub2api.gateway.alpha_search"},
+		{model.ProductSub2API, "GET", "/api/v1/usage/dashboard/snapshot-v2", "sub2api.usage.dashboard.snapshot"},
+		{model.ProductSub2API, "GET", "/home", "sub2api.spa"},
+		{model.ProductSub2API, "GET", "/email-verify", "sub2api.spa"},
+		{model.ProductSub2API, "GET", "/auth/oauth/callback", "sub2api.spa"},
+		{model.ProductSub2API, "GET", "/available-channels", "sub2api.spa"},
+		{model.ProductSub2API, "GET", "/admin/risk-control", "sub2api.spa"},
+		{model.ProductSub2API, "GET", "/legal/privacy-policy", "sub2api.spa"},
+		{model.ProductSub2API, "GET", "/custom/landing", "sub2api.spa"},
+		{model.ProductSub2API, "GET", "/logo.svg", "sub2api.logo"},
 	}
 	for _, test := range cases {
 		if got := Route(test.product, test.method, test.path); got != test.want {

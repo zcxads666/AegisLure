@@ -2493,26 +2493,36 @@ func emailDomain(email string) string {
 }
 
 func publicUsageEvents(events []model.Event, sessionID, userID string) []map[string]any {
-	result := make([]map[string]any, 0, len(events))
-	for _, event := range events {
-		if sessionID != "" && event.SessionID != sessionID && (userID == "" || event.Metadata["honey_user_id"] != userID) {
-			continue
-		}
-		// Account/page requests are observations, not usage rows. Keep the
-		// public New API usage surface aligned with real invocation history.
-		if event.InvocationID == "" {
-			continue
-		}
+	usageEvents := sub2APIUsageEvents(events, sessionID, userID)
+	result := make([]map[string]any, 0, len(usageEvents))
+	for _, event := range usageEvents {
+		upstreamEndpoint := sub2APIUsageUpstreamEndpoint(event)
 		result = append(result, map[string]any{
-			"id":                event.EventID,
-			"created_at":        event.ObservedAt,
-			"request_id":        event.InvocationID,
-			"model":             event.ModelID,
-			"status":            event.Status,
-			"prompt_tokens":     event.SimulatedInputTokens,
-			"completion_tokens": event.SimulatedOutputTokens,
-			"total_tokens":      event.SimulatedInputTokens + event.SimulatedOutputTokens,
-			"cost":              event.SimulatedCost,
+			"id":                    event.EventID,
+			"api_key_id":            sub2APIUsageAPIKeyID(event),
+			"user_id":               newAPIPublicID(event.Metadata["honey_user_id"]),
+			"created_at":            event.ObservedAt,
+			"request_id":            event.InvocationID,
+			"model":                 event.ModelID,
+			"status":                event.Status,
+			"prompt_tokens":         event.SimulatedInputTokens,
+			"completion_tokens":     event.SimulatedOutputTokens,
+			"input_tokens":          event.SimulatedInputTokens,
+			"output_tokens":         event.SimulatedOutputTokens,
+			"cache_creation_tokens": 0,
+			"cache_read_tokens":     0,
+			"total_tokens":          event.SimulatedInputTokens + event.SimulatedOutputTokens,
+			"cost":                  float64(event.SimulatedCost),
+			"total_cost":            float64(event.SimulatedCost),
+			"actual_cost":           float64(event.SimulatedCost),
+			"duration_ms":           event.DurationMS,
+			"stream":                event.Metadata["stream"] == "true",
+			"request_type":          sub2APIUsageRequestType(event),
+			"user_agent":            event.UserAgent,
+			"inbound_endpoint":      event.RouteTemplate,
+			"upstream_endpoint":     upstreamEndpoint,
+			"group_id":              int64(1),
+			"group_name":            "default",
 		})
 	}
 	return result
