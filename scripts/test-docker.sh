@@ -5,6 +5,7 @@ report_failure() {
   local exit_code=$?
   local line="${BASH_LINENO[0]:-0}"
   local command="${BASH_COMMAND//$'\n'/ }"
+  [[ "$-" == *e* ]] || return "$exit_code"
   trap - ERR
   printf 'Docker smoke test failed at line %s (exit %s): %s\n' "$line" "$exit_code" "$command" >&2
   printf '::error file=scripts/test-docker.sh,line=%s::exit %s: %s\n' "$line" "$exit_code" "$command"
@@ -151,10 +152,11 @@ run_mode() {
     return 1
   }
   assert_edge_network_egress
-  local admin_path
-  admin_path="$(awk -F'"' '/"admin_path"/ { print $4; exit }' "$TEST_ROOT/runtime/config.json")"
-  [[ -n "$admin_path" ]] || { echo "admin path was not initialized" >&2; return 1; }
-  local health_url="https://127.0.0.1:${HP_ADMIN_PORT}${admin_path}admin/api/v1/health"
+  status_output="$("$ROOT_DIR/hpctl" status --config /var/lib/aegislure/config.json)"
+  local admin_url
+  admin_url="$(sed -n 's/^[[:space:]]*"admin_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' <<<"$status_output" | head -n 1)"
+  [[ -n "$admin_url" ]] || { echo "admin URL was not initialized" >&2; return 1; }
+  local health_url="${admin_url}admin/api/v1/health"
   for _ in $(seq 1 60); do
     if curl -ksf -H 'Host: 127.0.0.1' "$health_url" >/dev/null 2>&1; then
       break
@@ -162,7 +164,6 @@ run_mode() {
     sleep 1
   done
   curl -ksf -H 'Host: 127.0.0.1' "$health_url" >/dev/null
-  status_output="$("$ROOT_DIR/hpctl" status --config /var/lib/aegislure/config.json)"
   grep -q "\"database_driver\": \"${mode}\"" <<<"$status_output"
   health_output="$("$ROOT_DIR/hpctl" health --config /var/lib/aegislure/config.json)"
   grep -Eq '"healthy"[[:space:]]*:[[:space:]]*true' <<<"$health_output"
