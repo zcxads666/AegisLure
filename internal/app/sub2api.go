@@ -59,6 +59,8 @@ func (a *App) handleSub2API(w *captureWriter, r *http.Request, profile profiles.
 	case "sub2api.settings.public":
 		obs.EventType = "sub2api.settings.public"
 		a.sub2APIPublicSettings(w, profile)
+	case "sub2api.model.plaza":
+		a.handleSub2APIModelPlaza(w, session, obs)
 	case "sub2api.auth.register", "sub2api.auth.login", "sub2api.auth.login.2fa", "sub2api.auth.refresh", "sub2api.auth.logout", "sub2api.auth.me", "sub2api.auth.revoke_sessions", "sub2api.auth.bind_token", "sub2api.auth.auxiliary":
 		a.handleSub2APIAuth(w, r, profile, session, body, obs)
 	case "sub2api.auth.oauth":
@@ -70,6 +72,16 @@ func (a *App) handleSub2API(w *captureWriter, r *http.Request, profile profiles.
 	default:
 		sub2APIError(w, http.StatusNotFound, "Not Found")
 	}
+}
+
+func (a *App) handleSub2APIModelPlaza(w *captureWriter, session Session, obs *Observation) {
+	obs.EventType = "sub2api.model.plaza.viewed"
+	audience := "guest"
+	if session.UserID != "" {
+		audience = "user"
+	}
+	catalog := a.catalogForSession(model.ProductSub2API, audience, session)
+	sub2APISuccess(a, w, http.StatusOK, sub2APIModelPlaza(catalog))
 }
 
 func sub2APISuccess(a *App, w http.ResponseWriter, status int, data any) {
@@ -481,27 +493,23 @@ func (a *App) handleSub2APIPanel(w *captureWriter, r *http.Request, profile prof
 }
 
 // sub2APIAvailableChannels exposes the same user-facing DTO shape as the
-// official /api/v1/channels/available endpoint. These rows are deliberately
-// static and local-only: they make the synthetic account useful for frontend,
-// Codex, quota, and risk-chain tests without representing a real upstream.
+// official /api/v1/channels/available endpoint.
 func sub2APIAvailableChannels(catalog []profiles.CatalogEntry) []map[string]any {
 	return []map[string]any{
 		sub2APIAvailableChannel(
-			"OpenAI GPT 合成渠道",
-			"本地合成渠道，仅用于兼容性与风险链测试，不连接真实上游。",
+			"OpenAI",
 			[]string{"gpt-6-astra", "gpt-4o-mini"},
 			catalog,
 		),
 		sub2APIAvailableChannel(
-			"OpenAI Codex 合成渠道",
-			"本地合成 Codex 渠道，兼容 Responses / Chat Completions；不连接真实上游。",
+			"OpenAI Codex",
 			[]string{"gpt-5.3-codex"},
 			catalog,
 		),
 	}
 }
 
-func sub2APIAvailableChannel(name, description string, modelIDs []string, catalog []profiles.CatalogEntry) map[string]any {
+func sub2APIAvailableChannel(name string, modelIDs []string, catalog []profiles.CatalogEntry) map[string]any {
 	models := make([]any, 0, len(modelIDs))
 	for _, modelID := range modelIDs {
 		entry, ok := sub2APICatalogEntry(catalog, modelID)
@@ -511,21 +519,21 @@ func sub2APIAvailableChannel(name, description string, modelIDs []string, catalo
 		models = append(models, map[string]any{
 			"name":     entry.ID,
 			"platform": "openai",
-			"pricing":  sub2APISyntheticModelPricing(),
+			"pricing":  sub2APIModelPricing(entry.ID),
 		})
 	}
 	return map[string]any{
 		"name":        name,
-		"description": description,
+		"description": "",
 		"platforms": []any{map[string]any{
 			"platform":         "openai",
-			"groups":           []any{sub2APISyntheticGroup()},
+			"groups":           []any{sub2APIDefaultGroup()},
 			"supported_models": models,
 		}},
 	}
 }
 
-func sub2APISyntheticGroup() map[string]any {
+func sub2APIDefaultGroup() map[string]any {
 	return map[string]any{
 		"id":                   1,
 		"name":                 "default",
@@ -540,19 +548,82 @@ func sub2APISyntheticGroup() map[string]any {
 	}
 }
 
-func sub2APISyntheticModelPricing() map[string]any {
+func sub2APIModelPricing(modelID string) map[string]any {
+	var inputPrice, outputPrice, cacheReadPrice float64
+	switch modelID {
+	case "gpt-4o-mini":
+		inputPrice, outputPrice, cacheReadPrice = 1.5e-7, 6e-7, 7.5e-8
+	case "gpt-5.3-codex":
+		inputPrice, outputPrice, cacheReadPrice = 1.75e-6, 1.4e-5, 1.75e-7
+	default:
+		return nil
+	}
 	return map[string]any{
 		"billing_mode":         "token",
-		"input_price":          0.0,
-		"output_price":         0.0,
-		"cache_write_price":    0.0,
+		"input_price":          inputPrice,
+		"output_price":         outputPrice,
+		"cache_write_price":    nil,
 		"cache_write_1h_price": nil,
-		"cache_read_price":     0.0,
-		"image_input_price":    0.0,
-		"image_output_price":   0.0,
+		"cache_read_price":     cacheReadPrice,
+		"image_input_price":    nil,
+		"image_output_price":   nil,
 		"per_request_price":    nil,
 		"intervals":            []any{},
 	}
+}
+
+func sub2APIOfficialModelPricing(modelID string) map[string]any {
+	pricing := sub2APIModelPricing(modelID)
+	if pricing == nil {
+		return nil
+	}
+	result := map[string]any{
+		"input_price":       pricing["input_price"],
+		"output_price":      pricing["output_price"],
+		"cache_write_price": pricing["cache_write_price"],
+		"cache_read_price":  pricing["cache_read_price"],
+	}
+	if price := pricing["cache_write_1h_price"]; price != nil {
+		result["cache_write_1h_price"] = price
+	}
+	return result
+}
+
+func sub2APIModelPlaza(catalog []profiles.CatalogEntry) map[string]any {
+	models := make([]any, 0, 3)
+	for _, modelID := range []string{"gpt-6-astra", "gpt-4o-mini", "gpt-5.3-codex"} {
+		entry, ok := sub2APICatalogEntry(catalog, modelID)
+		if !ok {
+			continue
+		}
+		models = append(models, map[string]any{
+			"name":             entry.ID,
+			"platform":         "openai",
+			"pricing":          sub2APIModelPricing(entry.ID),
+			"official_pricing": sub2APIOfficialModelPricing(entry.ID),
+		})
+	}
+	groups := make([]any, 0, 1)
+	if len(models) > 0 {
+		groups = append(groups, map[string]any{
+			"id":                           1,
+			"name":                         "default",
+			"description":                  "",
+			"platform":                     "openai",
+			"subscription_type":            "standard",
+			"rate_multiplier":              1.0,
+			"peak_rate_enabled":            false,
+			"peak_start":                   "",
+			"peak_end":                     "",
+			"peak_rate_multiplier":         1.0,
+			"is_exclusive":                 false,
+			"image_rate_independent":       false,
+			"image_rate_multiplier":        1.0,
+			"long_context_pricing_enabled": true,
+			"models":                       models,
+		})
+	}
+	return map[string]any{"description": "", "groups": groups}
 }
 
 func sub2APICatalogEntry(catalog []profiles.CatalogEntry, requested string) (profiles.CatalogEntry, bool) {
@@ -570,10 +641,7 @@ func sub2APICatalogEntry(catalog []profiles.CatalogEntry, requested string) (pro
 	return profiles.CatalogEntry{}, false
 }
 
-// sub2APICodexModelsManifest is the local equivalent of the official Codex
-// model picker response. Codex clients require a models array and a complete
-// descriptor for each model; every descriptor below is synthetic metadata and
-// never points at an account, endpoint, executable, or provider credential.
+// sub2APICodexModelsManifest returns the official Codex model-picker shape.
 func sub2APICodexModelsManifest(catalog []profiles.CatalogEntry) map[string]any {
 	models := make([]any, 0, len(catalog))
 	for _, entry := range catalog {
@@ -598,7 +666,7 @@ func sub2APICodexModelDescriptor(entry profiles.CatalogEntry) map[string]any {
 	return map[string]any{
 		"slug":                       entry.ID,
 		"display_name":               entry.DisplayName,
-		"description":                "Local synthetic OpenAI/Codex model for compatibility testing.",
+		"description":                "",
 		"default_reasoning_level":    defaultReasoning,
 		"supported_reasoning_levels": reasoningLevels,
 		"shell_type":                 "unified_exec",
@@ -611,7 +679,7 @@ func sub2APICodexModelDescriptor(entry profiles.CatalogEntry) map[string]any {
 		"availability_nux":           nil,
 		"upgrade":                    nil,
 		"model_messages": map[string]any{
-			"instructions_template":  "You are a local synthetic coding assistant. Do not access networks or perform external side effects.",
+			"instructions_template":  sub2APICodexInstructionsTemplate(entry.ID),
 			"instructions_variables": []any{},
 			"approvals":              nil,
 			"collaboration_modes":    nil,
@@ -653,15 +721,22 @@ func sub2APICodexModelDescriptor(entry profiles.CatalogEntry) map[string]any {
 
 func sub2APICodexReasoning(entry profiles.CatalogEntry) (string, []map[string]any) {
 	if !containsString(entry.Capabilities, "reasoning") && !containsString(entry.Capabilities, "code") {
-		return "none", []map[string]any{{"effort": "none", "description": "No extended reasoning; local synthetic response."}}
+		return "none", []map[string]any{{"effort": "none", "description": "Use the model's default behavior without configurable reasoning"}}
 	}
 	levels := []map[string]any{
-		{"effort": "low", "description": "Fast responses with lighter reasoning."},
-		{"effort": "medium", "description": "Balanced reasoning for most coding tasks."},
-		{"effort": "high", "description": "Greater reasoning depth for coding and agent tasks."},
-		{"effort": "xhigh", "description": "Extra-high reasoning depth for difficult tasks."},
+		{"effort": "low", "description": "Fast responses with lighter reasoning"},
+		{"effort": "medium", "description": "Balanced reasoning for most coding tasks"},
+		{"effort": "high", "description": "Greater reasoning depth for coding and agent tasks"},
+		{"effort": "xhigh", "description": "Extra-high reasoning depth for difficult tasks"},
 	}
 	return "medium", levels
+}
+
+func sub2APICodexInstructionsTemplate(modelID string) string {
+	if strings.Contains(strings.ToLower(strings.TrimSpace(modelID)), "codex") {
+		return "You are Codex, based on GPT-5."
+	}
+	return "You are Codex, a coding agent based on GPT-5."
 }
 
 func sub2APIAnnotateClientSurface(r *http.Request, obs *Observation) {

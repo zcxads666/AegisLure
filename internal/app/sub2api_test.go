@@ -82,6 +82,20 @@ func TestSub2APICompatibilitySharesStateAndRecordsSafeTelemetry(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || !ok || settings["site_name"] != "Sub2API" || settings["version"] != "0.2.0" || settings["google_oauth_enabled"] != false {
 		t.Fatalf("public settings contract = %d %#v", resp.StatusCode, settingsEnvelope)
 	}
+	resp, body = doRawJSON(t, client, http.MethodGet, "/api/v1/model-plaza", nil, nil)
+	plazaEnvelope := decodeSub2APIJSON(t, body)
+	plaza, plazaOK := plazaEnvelope["data"].(map[string]any)
+	groups, groupsOK := plaza["groups"].([]any)
+	if resp.StatusCode != http.StatusOK || !plazaOK || !groupsOK || len(groups) != 1 || plaza["description"] != "" {
+		t.Fatalf("model plaza contract = %d %#v", resp.StatusCode, plazaEnvelope)
+	}
+	group, groupOK := groups[0].(map[string]any)
+	plazaModels, modelsOK := group["models"].([]any)
+	modelJSON, _ := json.Marshal(plazaModels)
+	if !groupOK || !modelsOK || group["name"] != "default" || group["platform"] != "openai" || len(plazaModels) != 3 ||
+		!strings.Contains(string(modelJSON), "gpt-6-astra") || !strings.Contains(string(modelJSON), "gpt-5.3-codex") {
+		t.Fatalf("model plaza models = %d %#v", resp.StatusCode, plazaEnvelope)
+	}
 
 	password := "CorrectHorse123!"
 	resp, body = doRawJSON(t, client, http.MethodPost, "/api/v1/auth/register", map[string]any{"email": "analyst@example.com", "password": password}, nil)
@@ -124,10 +138,10 @@ func TestSub2APICompatibilitySharesStateAndRecordsSafeTelemetry(t *testing.T) {
 	channelsEnvelope := decodeSub2APIJSON(t, body)
 	channels, channelsOK := channelsEnvelope["data"].([]any)
 	if resp.StatusCode != http.StatusOK || !channelsOK || len(channels) < 2 {
-		t.Fatalf("available synthetic channels = %d %#v", resp.StatusCode, channelsEnvelope)
+		t.Fatalf("available channels = %d %#v", resp.StatusCode, channelsEnvelope)
 	}
 	channelJSON, _ := json.Marshal(channels)
-	if !strings.Contains(string(channelJSON), "gpt-6-astra") || !strings.Contains(string(channelJSON), "gpt-5.3-codex") || !strings.Contains(string(channelJSON), "supported_models") {
+	if !strings.Contains(string(channelJSON), "\"name\":\"OpenAI\"") || !strings.Contains(string(channelJSON), "\"name\":\"OpenAI Codex\"") || !strings.Contains(string(channelJSON), "gpt-6-astra") || !strings.Contains(string(channelJSON), "gpt-5.3-codex") || !strings.Contains(string(channelJSON), "supported_models") {
 		t.Fatalf("available channels missed latest GPT/Codex models: %s", channelJSON)
 	}
 	resp, body = doRawJSON(t, client, http.MethodPost, "/v1/messages/count_tokens", map[string]any{"model": "claude-3-5-sonnet", "messages": []any{map[string]any{"role": "user", "content": "hello"}}}, map[string]string{"x-api-key": rawKey})

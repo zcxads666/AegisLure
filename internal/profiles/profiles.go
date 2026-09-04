@@ -450,6 +450,8 @@ func sub2APIRoute(method, path string) string {
 		return "sub2api.groups.available"
 	case path == "/api/v1/channels/available":
 		return "sub2api.channels.available"
+	case path == "/api/v1/model-plaza":
+		return "sub2api.model.plaza"
 	case path == "/api/v1/usage":
 		return "sub2api.usage.list"
 	case path == "/api/v1/usage/stats":
@@ -708,7 +710,7 @@ func Catalog(product string) []CatalogEntry {
 		return []CatalogEntry{
 			{ID: "gpt-4o-mini", Object: "model", DisplayName: "GPT-4o mini", Provider: "openai", Origin: "closed", Capabilities: []string{"chat", "vision"}, APIFamilies: []string{"openai", "responses"}, AuthRequirement: "api_key", VirtualContextTokens: 128000, VirtualPriceProfile: "sub2api-standard", ResponseTemplateSet: "openai"},
 			{ID: "gpt-6-astra", Object: "model", DisplayName: "GPT-6 Astra", Provider: "openai", Origin: "closed", Capabilities: []string{"chat", "vision", "tools", "reasoning"}, APIFamilies: []string{"openai", "responses"}, AuthRequirement: "api_key", VirtualPriceProfile: "sub2api-synthetic", ResponseTemplateSet: "openai"},
-			{ID: "gpt-5.3-codex", Object: "model", DisplayName: "GPT-5.3 Codex", Provider: "openai-codex", Origin: "closed", Capabilities: []string{"chat", "tools", "reasoning", "code"}, APIFamilies: []string{"openai", "responses"}, AuthRequirement: "api_key", VirtualContextTokens: 400000, VirtualPriceProfile: "sub2api-synthetic", ResponseTemplateSet: "openai"},
+			{ID: "gpt-5.3-codex", Object: "model", DisplayName: "GPT-5.3 Codex", Provider: "openai-codex", Origin: "closed", Capabilities: []string{"chat", "tools", "reasoning", "code"}, APIFamilies: []string{"openai", "responses"}, AuthRequirement: "api_key", VirtualContextTokens: 272000, VirtualPriceProfile: "sub2api-synthetic", ResponseTemplateSet: "openai"},
 			{ID: "claude-3-5-sonnet", Object: "model", DisplayName: "Claude 3.5 Sonnet", Provider: "anthropic", Origin: "closed", Capabilities: []string{"chat", "vision", "tools"}, APIFamilies: []string{"anthropic"}, AuthRequirement: "api_key", VirtualContextTokens: 200000, VirtualPriceProfile: "sub2api-standard", ResponseTemplateSet: "anthropic"},
 			{ID: "gemini-1.5-pro", Object: "model", DisplayName: "Gemini 1.5 Pro", Provider: "google", Origin: "closed", Capabilities: []string{"chat", "vision", "tools"}, APIFamilies: []string{"openai", "gemini"}, AuthRequirement: "api_key", VirtualContextTokens: 200000, VirtualPriceProfile: "sub2api-standard", ResponseTemplateSet: "openai"},
 		}
