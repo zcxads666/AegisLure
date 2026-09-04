@@ -92,6 +92,7 @@ type App struct {
 	ruleEngine          *detect.RuleEngine
 	oauthBroker         *oauth.Broker
 	serverMu            sync.RWMutex
+	profileLifecycleMu  sync.Mutex
 	profileServers      map[string]*http.Server
 	profilePorts        map[string]net.Listener
 	adminServer         *http.Server
@@ -108,6 +109,9 @@ type rateBucket struct {
 }
 
 func New(cfg *config.Config, st *store.Store) *App {
+	if cfg != nil {
+		cfg.EnabledProfiles = config.NormalizeEnabledProfiles(cfg.EnabledProfiles)
+	}
 	a := &App{
 		cfg: cfg, store: st, profiles: profiles.Build(cfg), log: log.New(os.Stdout, "aegislure ", log.LstdFlags|log.LUTC), sessions: make(map[string]Session), anonymous: make(map[string]string), newAPIRawKeys: make(map[string]string), sub2APIAccessTokens: make(map[string]sub2APIAccessToken), adminSessions: make(map[string]AdminSession), rateBuckets: make(map[string]rateBucket), publicSem: make(chan struct{}, 64), personaRuntime: make(map[string]*personaRuntimeState), profileServers: make(map[string]*http.Server), profilePorts: make(map[string]net.Listener), exports: make(map[string]localExportJob), ipInfo: newGeoIPClient(cfg),
 	}
@@ -242,10 +246,17 @@ func (a *App) validateConfiguredPortsLocked() error {
 		return fmt.Errorf("admin port %d is invalid", a.cfg.AdminPort)
 	}
 	seen := map[int]string{a.cfg.AdminPort: "admin"}
+	enabled := make(map[string]bool, len(a.cfg.EnabledProfiles))
+	for _, name := range a.cfg.EnabledProfiles {
+		enabled[name] = true
+	}
 	for _, name := range a.cfg.EnabledProfiles {
 		profile, ok := a.profiles[name]
 		if !ok {
 			return fmt.Errorf("unknown profile %q", name)
+		}
+		if exclusive := config.ExclusiveProfile(name); exclusive != "" && enabled[exclusive] {
+			return fmt.Errorf("profiles %q and %q are mutually exclusive", name, exclusive)
 		}
 		port := profile.DefaultPort
 		if configuredPort := a.cfg.ProfilePorts[name]; configuredPort > 0 {
@@ -283,6 +294,12 @@ func (a *App) validateProfilePortLocked(name string, port int) error {
 }
 
 func (a *App) stopProfile(name string) error {
+	a.profileLifecycleMu.Lock()
+	defer a.profileLifecycleMu.Unlock()
+	return a.stopProfileUnlocked(name)
+}
+
+func (a *App) stopProfileUnlocked(name string) error {
 	a.serverMu.Lock()
 	server, running := a.profileServers[name]
 	if running {
@@ -299,10 +316,34 @@ func (a *App) stopProfile(name string) error {
 }
 
 func (a *App) startProfile(name string) error {
-	a.serverMu.Lock()
-	err := a.startProfileLocked(name)
-	a.serverMu.Unlock()
+	a.profileLifecycleMu.Lock()
+	defer a.profileLifecycleMu.Unlock()
+
+	exclusive := config.ExclusiveProfile(name)
+	wasRunning := false
+	if exclusive != "" {
+		a.serverMu.RLock()
+		wasRunning = a.profileServers[exclusive] != nil
+		a.serverMu.RUnlock()
+		if wasRunning {
+			if err := a.stopProfileUnlocked(exclusive); err != nil {
+				return fmt.Errorf("stop mutually exclusive profile %q: %w", exclusive, err)
+			}
+		}
+	}
+	err := a.startProfileUnlocked(name)
+	if err != nil && wasRunning {
+		if restoreErr := a.startProfileUnlocked(exclusive); restoreErr != nil {
+			return fmt.Errorf("%w; restore mutually exclusive profile %q failed: %v", err, exclusive, restoreErr)
+		}
+	}
 	return err
+}
+
+func (a *App) startProfileUnlocked(name string) error {
+	a.serverMu.Lock()
+	defer a.serverMu.Unlock()
+	return a.startProfileLocked(name)
 }
 
 func (a *App) serve(server *http.Server, listener net.Listener, admin bool) {

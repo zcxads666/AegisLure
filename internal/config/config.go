@@ -118,6 +118,7 @@ func Load(path string) (*Config, error) {
 		c.DataDir = filepath.Dir(path)
 	}
 	applyEnv(&c)
+	c.EnabledProfiles = NormalizeEnabledProfiles(c.EnabledProfiles)
 	if err := NormalizeGeoIP(&c); err != nil {
 		return nil, err
 	}
@@ -297,8 +298,9 @@ func Init(path, dataDir string) (*Config, error) {
 		},
 	}
 	if value := os.Getenv("HP_PROFILES"); value != "" {
-		c.EnabledProfiles = splitComma(value)
+		c.EnabledProfiles = NormalizeEnabledProfiles(splitComma(value))
 	}
+	c.EnabledProfiles = NormalizeEnabledProfiles(c.EnabledProfiles)
 	if value := os.Getenv("HP_DB_DRIVER"); value != "" {
 		c.DatabaseDriver = strings.ToLower(strings.TrimSpace(value))
 	}
@@ -330,6 +332,48 @@ func Init(path, dataDir string) (*Config, error) {
 		return nil, err
 	}
 	return c, nil
+}
+
+// ExclusiveProfile returns the built-in profile that cannot run alongside
+// name. LocalAI and Sub2API share the legacy 8080 slot, so Sub2API is the
+// preferred profile whenever an old or manually supplied selection contains
+// both names.
+func ExclusiveProfile(name string) string {
+	switch strings.TrimSpace(name) {
+	case model.ProductLocalAI:
+		return model.ProductSub2API
+	case model.ProductSub2API:
+		return model.ProductLocalAI
+	default:
+		return ""
+	}
+}
+
+// NormalizeEnabledProfiles removes empty/duplicate selections and enforces
+// the built-in mutually exclusive pair. The order of all retained profiles
+// is preserved; Sub2API wins when LocalAI and Sub2API are both selected.
+func NormalizeEnabledProfiles(selected []string) []string {
+	normalized := make([]string, 0, len(selected))
+	seen := make(map[string]bool, len(selected))
+	for _, name := range selected {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		normalized = append(normalized, name)
+	}
+	if !seen[model.ProductLocalAI] || !seen[model.ProductSub2API] {
+		return normalized
+	}
+	filtered := make([]string, 0, len(normalized)-1)
+	for _, name := range normalized {
+		if name == model.ProductLocalAI {
+			continue
+		}
+		filtered = append(filtered, name)
+	}
+	return filtered
 }
 
 // DefaultPortPools keeps the default listener and seven nearby operator-

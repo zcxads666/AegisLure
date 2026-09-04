@@ -12,6 +12,25 @@ import (
 	"github.com/zcxads666/AegisLure/internal/profiles"
 )
 
+func TestPersistProfileSelectionMakesLocalAIAndSub2APIMutuallyExclusive(t *testing.T) {
+	a, cfg, st := newTestApp(t, true)
+	defer st.Close()
+	cfg.EnabledProfiles = []string{model.ProductLocalAI, model.ProductSub2API}
+
+	if err := a.persistProfileSelection(model.ProductSub2API, true); err != nil {
+		t.Fatalf("persist Sub2API selection: %v", err)
+	}
+	if len(cfg.EnabledProfiles) != 1 || cfg.EnabledProfiles[0] != model.ProductSub2API {
+		t.Fatalf("Sub2API selection did not disable LocalAI: %#v", cfg.EnabledProfiles)
+	}
+	if err := a.persistProfileSelection(model.ProductLocalAI, true); err != nil {
+		t.Fatalf("persist LocalAI selection: %v", err)
+	}
+	if len(cfg.EnabledProfiles) != 1 || cfg.EnabledProfiles[0] != model.ProductLocalAI {
+		t.Fatalf("LocalAI selection did not disable Sub2API: %#v", cfg.EnabledProfiles)
+	}
+}
+
 func TestLocalAdminDetailRoutesAndInstancePatch(t *testing.T) {
 	a, cfg, st := newTestApp(t, true)
 	defer st.Close()

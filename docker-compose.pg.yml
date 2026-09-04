@@ -13,7 +13,7 @@ services:
       # their own in-container secret path (the installer does this).
       HP_DB_PASSWORD_FILE: ${HP_DB_PASSWORD_FILE:-/run/aegislure-db-secrets/application_password}
       HP_DB_SSLMODE: ${HP_DB_SSLMODE:-disable}
-      HP_PROFILES: ${HP_PROFILES:-new-api,vllm,ollama,sglang,localai,sub2api}
+      HP_PROFILES: ${HP_PROFILES:-new-api,vllm,ollama,sglang,sub2api}
     secrets:
       - aegislure_db_password
     networks:

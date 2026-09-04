@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -62,6 +63,45 @@ func newTestApp(t *testing.T, initialized bool) (*App, *config.Config, *store.St
 		t.Fatal(err)
 	}
 	return New(cfg, st), cfg, st
+}
+
+func testFreePort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return port
+}
+
+func TestStartProfileStopsMutuallyExclusiveProfile(t *testing.T) {
+	a, cfg, st := newTestApp(t, true)
+	defer st.Close()
+	defer a.Shutdown(context.Background())
+	cfg.ProfilePorts[model.ProductLocalAI] = testFreePort(t)
+	cfg.ProfilePorts[model.ProductSub2API] = testFreePort(t)
+	a.profiles = profiles.Build(cfg)
+
+	cfg.EnabledProfiles = []string{model.ProductSub2API}
+	if err := a.startProfile(model.ProductSub2API); err != nil {
+		t.Fatalf("start Sub2API: %v", err)
+	}
+	cfg.EnabledProfiles = []string{model.ProductLocalAI}
+	if err := a.startProfile(model.ProductLocalAI); err != nil {
+		t.Fatalf("switch to LocalAI: %v", err)
+	}
+
+	a.serverMu.RLock()
+	_, localAIRunning := a.profileServers[model.ProductLocalAI]
+	_, sub2APIRunning := a.profileServers[model.ProductSub2API]
+	a.serverMu.RUnlock()
+	if !localAIRunning || sub2APIRunning {
+		t.Fatalf("mutually exclusive listeners = localai:%v sub2api:%v", localAIRunning, sub2APIRunning)
+	}
 }
 
 type inProcessClient struct {

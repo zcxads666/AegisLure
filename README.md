@@ -49,7 +49,7 @@ curl -fsSL https://raw.githubusercontent.com/zcxads666/AegisLure/main/install-re
 
 ## 网络入口
 
-Docker 默认启用全部六类公开 profile，并使用正常项目端口：
+Docker 默认启用五类公开 profile，并使用正常项目端口；LocalAI 与 Sub2API 互斥，默认启用 Sub2API：
 
 | 服务 | 端口 |
 | --- | ---: |
@@ -57,16 +57,18 @@ Docker 默认启用全部六类公开 profile，并使用正常项目端口：
 | vLLM | 8000 |
 | Ollama | 11434 |
 | SGLang | 30000 |
-| LocalAI | 8081 |
+| LocalAI（可选） | 8081 |
 | Sub2API | 8080 |
 
 管理入口使用 `HP_ADMIN_PORT` 指定的高位端口，默认绑定到 `0.0.0.0`，以便从公网访问。公开蜜罐端口同样默认绑定到 `0.0.0.0`。可在 `.env` 中设置：
 
 ```env
-HP_PROFILES=new-api,vllm,ollama,sglang,localai,sub2api
+HP_PROFILES=new-api,vllm,ollama,sglang,sub2api
 HP_PUBLIC_PORT_BIND_IP=0.0.0.0
 HP_ADMIN_PORT_BIND_IP=0.0.0.0
 ```
+
+需要运行 LocalAI 时，将 `HP_PROFILES` 中的 `sub2api` 替换为 `localai`；同时选择两者时服务保留 Sub2API。
 
 管理入口路径由服务生成，可通过 `./hpctl status` 查看。首次访问管理入口时创建 owner，密码至少 8 个字符；请离线保存服务生成的恢复码，并通过防火墙、VPN 或可信反向代理限制管理端口来源。若只需要本机访问，可将 `HP_ADMIN_PORT_BIND_IP` 设置为 `127.0.0.1`。
 

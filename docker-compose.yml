@@ -42,9 +42,10 @@ services:
       HP_IPINFO_ASN_DB: ${HP_IPINFO_ASN_DB:-/var/lib/aegislure/data/geoip/ipinfo_asn.mmdb}
       HP_IPINFO_LITE_TOKEN: ${HP_IPINFO_LITE_TOKEN:-}
       HP_IPINFO_LITE_TOKEN_FILE: ${HP_IPINFO_LITE_TOKEN_FILE:-}
-      # Docker deployments expose all honeypot protocols by default. Set
-      # HP_PROFILES explicitly to run only a selected subset.
-      HP_PROFILES: ${HP_PROFILES:-new-api,vllm,ollama,sglang,localai,sub2api}
+      # Docker deployments expose the default public profiles. LocalAI and
+      # Sub2API are mutually exclusive; Sub2API is selected by default.
+      # Set HP_PROFILES explicitly to run another selected subset.
+      HP_PROFILES: ${HP_PROFILES:-new-api,vllm,ollama,sglang,sub2api}
       HP_ADMIN_PORT: ${HP_ADMIN_PORT:-28443}
       HP_COOKIE_SECURE: "1"
       HP_REQUIRE_TLS: "1"

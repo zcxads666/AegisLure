@@ -665,6 +665,10 @@ func (a *App) adminMovePort(w http.ResponseWriter, r *http.Request, profile stri
 }
 
 func (a *App) persistProfileSelection(name string, enabled bool) error {
+	exclusive := ""
+	if enabled {
+		exclusive = config.ExclusiveProfile(name)
+	}
 	seen := make(map[string]bool, len(a.cfg.EnabledProfiles))
 	profiles := make([]string, 0, len(a.cfg.EnabledProfiles)+1)
 	for _, current := range a.cfg.EnabledProfiles {
@@ -675,6 +679,9 @@ func (a *App) persistProfileSelection(name string, enabled bool) error {
 			}
 			continue
 		}
+		if exclusive != "" && current == exclusive {
+			continue
+		}
 		if !seen[current] {
 			profiles = append(profiles, current)
 			seen[current] = true
@@ -683,7 +690,7 @@ func (a *App) persistProfileSelection(name string, enabled bool) error {
 	if enabled && !seen[name] {
 		profiles = append(profiles, name)
 	}
-	a.cfg.EnabledProfiles = profiles
+	a.cfg.EnabledProfiles = config.NormalizeEnabledProfiles(profiles)
 	return config.Save(configPathForApp(), a.cfg)
 }
 

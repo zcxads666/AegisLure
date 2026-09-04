@@ -68,6 +68,30 @@ func TestLoadMigratesLegacyLocalAIAndSub2APIDefaultPair(t *testing.T) {
 	}
 }
 
+func TestLoadMakesLocalAIAndSub2APIMutuallyExclusive(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"instance_id":"instance","instance_key":"key","admin_port":28443,"enabled_profiles":["new-api","localai","sub2api","localai"]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HP_PROFILES", "new-api, localai, sub2api, localai")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"new-api", "sub2api"}
+	if len(cfg.EnabledProfiles) != len(want) || cfg.EnabledProfiles[0] != want[0] || cfg.EnabledProfiles[1] != want[1] {
+		t.Fatalf("mutually exclusive profile selection = %#v, want %#v", cfg.EnabledProfiles, want)
+	}
+}
+
+func TestNormalizeEnabledProfilesKeepsExplicitLocalAIWhenSub2APIIsAbsent(t *testing.T) {
+	got := NormalizeEnabledProfiles([]string{" localai ", "localai", "ollama"})
+	want := []string{"localai", "ollama"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("normalized LocalAI-only selection = %#v, want %#v", got, want)
+	}
+}
+
 func TestLoadNormalizesGeoIPProviderAndRuntimeDatabasePaths(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(`{"instance_id":"instance","instance_key":"key"}`), 0600); err != nil {
