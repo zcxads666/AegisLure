@@ -67,6 +67,10 @@ const (
 	DefaultMaxMindASNDB     = "GeoLite2-ASN.mmdb"
 	DefaultIPInfoLocationDB = "ipinfo_location.mmdb"
 	DefaultIPInfoASNDB      = "ipinfo_asn.mmdb"
+	defaultSub2APIPort      = 8080
+	defaultLocalAIPort      = 8081
+	legacySub2APIPort       = 8081
+	legacyLocalAIPort       = 8080
 )
 
 func Load(path string) (*Config, error) {
@@ -124,8 +128,8 @@ func Load(path string) (*Config, error) {
 }
 
 // ensureSub2APIConfig migrates configs created before the Sub2API persona was
-// added. It only fills missing/invalid Sub2API fields and leaves operator
-// choices for every existing persona intact.
+// added and swaps the old LocalAI/Sub2API defaults so both built-in listeners
+// remain usable after Sub2API moves to port 8080.
 func ensureSub2APIConfig(c *Config) {
 	if c == nil {
 		return
@@ -133,7 +137,17 @@ func ensureSub2APIConfig(c *Config) {
 	if c.ProfilePorts == nil {
 		c.ProfilePorts = make(map[string]int)
 	}
-	if c.ProfilePorts[model.ProductSub2API] <= 0 {
+	localAIPort := c.ProfilePorts[model.ProductLocalAI]
+	sub2APIPort := c.ProfilePorts[model.ProductSub2API]
+	if sub2APIPort == legacySub2APIPort && localAIPort == legacyLocalAIPort && legacyDefaultPairAvailable(c) {
+		c.ProfilePorts[model.ProductLocalAI] = defaultLocalAIPort
+		c.ProfilePorts[model.ProductSub2API] = defaultSub2APIPort
+	} else if sub2APIPort == legacySub2APIPort && profilePortAvailable(c, model.ProductSub2API, defaultSub2APIPort) {
+		c.ProfilePorts[model.ProductSub2API] = defaultSub2APIPort
+	} else if sub2APIPort <= 0 {
+		if localAIPort == legacyLocalAIPort && profilePortAvailable(c, model.ProductLocalAI, defaultLocalAIPort) {
+			c.ProfilePorts[model.ProductLocalAI] = defaultLocalAIPort
+		}
 		c.ProfilePorts[model.ProductSub2API] = availableSub2APIPort(c)
 	}
 	if c.Scenario == nil {
@@ -142,6 +156,33 @@ func ensureSub2APIConfig(c *Config) {
 	if strings.TrimSpace(c.Scenario[model.ProductSub2API]) == "" {
 		c.Scenario[model.ProductSub2API] = "fresh"
 	}
+}
+
+func legacyDefaultPairAvailable(c *Config) bool {
+	if c == nil || c.AdminPort == legacyLocalAIPort || c.AdminPort == legacySub2APIPort {
+		return false
+	}
+	for product, port := range c.ProfilePorts {
+		if product == model.ProductLocalAI || product == model.ProductSub2API {
+			continue
+		}
+		if port == legacyLocalAIPort || port == legacySub2APIPort {
+			return false
+		}
+	}
+	return true
+}
+
+func profilePortAvailable(c *Config, product string, candidate int) bool {
+	if c == nil || candidate < 1 || candidate > 65535 || c.AdminPort == candidate {
+		return false
+	}
+	for configuredProduct, port := range c.ProfilePorts {
+		if configuredProduct != product && port == candidate {
+			return false
+		}
+	}
+	return true
 }
 
 func availableSub2APIPort(c *Config) int {
@@ -162,12 +203,12 @@ func availableSub2APIPort(c *Config) int {
 			}
 		}
 	}
-	for port := 8081; port <= 65535; port++ {
+	for port := defaultSub2APIPort; port <= 65535; port++ {
 		if !used[port] {
 			return port
 		}
 	}
-	return 8081
+	return defaultSub2APIPort
 }
 
 func Save(path string, c *Config) error {
@@ -201,7 +242,7 @@ func Init(path, dataDir string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	profilePorts := map[string]int{model.ProductNewAPI: 3000, model.ProductVLLM: 8000, model.ProductOllama: 11434, model.ProductSGLang: 30000, model.ProductLocalAI: 8080, model.ProductSub2API: 8081}
+	profilePorts := map[string]int{model.ProductNewAPI: 3000, model.ProductVLLM: 8000, model.ProductOllama: 11434, model.ProductSGLang: 30000, model.ProductLocalAI: defaultLocalAIPort, model.ProductSub2API: defaultSub2APIPort}
 	reserved := make(map[int]bool)
 	for _, candidates := range DefaultPortPools(profilePorts) {
 		for _, candidate := range candidates {

@@ -694,6 +694,7 @@ func (a *App) adminDashboard(w http.ResponseWriter) {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "dashboard query failed"})
 		return
 	}
+	events = adminDisplayEvents(events)
 	counts := map[string]int{"events": len(events), "unique_ips": len(indicators), "high_risk": 0, "invocations": 0, "accepted": 0, "rejected": 0, "sessions": 0, "risk_events": 0, "risk_rate": 0}
 	products := map[string]int{}
 	levels := map[string]int{}
@@ -793,14 +794,30 @@ func (a *App) adminEvents(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "min_score must be between 0 and 100"})
 		return
 	}
-	result, err := a.store.EventPage(store.EventQuery{Page: page, PageSize: adminPageSize, Query: query, Product: r.URL.Query().Get("product"), SourceIP: r.URL.Query().Get("ip"), MinScore: minScore})
+	events, err := a.store.Events(-1, r.URL.Query().Get("product"), r.URL.Query().Get("ip"))
 	if err != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "event query failed"})
 		return
 	}
-	response := adminPagePayload(result.Pagination)
-	response["events"] = result.Events
-	response["count"] = len(result.Events)
+	events = adminDisplayEvents(events)
+	needle := strings.ToLower(strings.TrimSpace(query))
+	filtered := make([]model.Event, 0, len(events))
+	for _, event := range events {
+		if minScore > 0 && event.Score < minScore {
+			continue
+		}
+		if needle != "" {
+			encoded, _ := json.Marshal(event)
+			if !strings.Contains(strings.ToLower(string(encoded)), needle) {
+				continue
+			}
+		}
+		filtered = append(filtered, event)
+	}
+	pageEvents, pagination := paginateAdminValues(filtered, page)
+	response := adminPagePayload(pagination)
+	response["events"] = pageEvents
+	response["count"] = len(pageEvents)
 	response["synthetic_only"] = true
 	a.writeJSON(w, http.StatusOK, response)
 }
@@ -866,6 +883,7 @@ func (a *App) adminInteractionChains(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "chain query failed"})
 		return
 	}
+	events = adminDisplayEvents(events)
 	config := a.store.InteractionChainConfig()
 	result := a.buildInteractionChainViews(events, config)
 	if query != "" {

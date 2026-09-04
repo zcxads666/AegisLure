@@ -16,7 +16,7 @@ func sub2APIProfileForTest(a *App, cfg *config.Config) profiles.Profile {
 	if cfg.ProfilePorts == nil {
 		cfg.ProfilePorts = make(map[string]int)
 	}
-	cfg.ProfilePorts[model.ProductSub2API] = 8081
+	cfg.ProfilePorts[model.ProductSub2API] = 8080
 	if cfg.Scenario == nil {
 		cfg.Scenario = make(map[string]string)
 	}

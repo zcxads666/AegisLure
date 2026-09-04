@@ -38,7 +38,19 @@ func (a *App) adminDeleteEvent(w http.ResponseWriter, r *http.Request, rawID str
 	if !a.allowAdminDelete(w, r, "event") {
 		return
 	}
-	deleted, err := a.store.SoftDeleteEventIDs([]string{eventID})
+	ids := []string{eventID}
+	events, err := a.store.Events(-1, "", "")
+	if err != nil {
+		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "event delete failed"})
+		return
+	}
+	for _, event := range adminDisplayEvents(events) {
+		if event.EventID == eventID {
+			ids = adminDisplayEventIDs(event)
+			break
+		}
+	}
+	deleted, err := a.store.SoftDeleteEventIDs(ids)
 	if err != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "event delete failed"})
 		return
@@ -47,7 +59,7 @@ func (a *App) adminDeleteEvent(w http.ResponseWriter, r *http.Request, rawID str
 		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "event not found"})
 		return
 	}
-	a.recordAudit(r, "event.delete", eventID, "success", map[string]string{"deleted_events": "1", "logical": "true"})
+	a.recordAudit(r, "event.delete", eventID, "success", map[string]string{"deleted_events": strconv.Itoa(deleted), "logical": "true"})
 	a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "deleted": true, "deleted_events": deleted, "id": eventID, "logical": true})
 }
 
@@ -92,6 +104,7 @@ func (a *App) adminDeleteInteractionChain(w http.ResponseWriter, r *http.Request
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "chain delete failed"})
 		return
 	}
+	events = adminDisplayEvents(events)
 	var ids []string
 	for _, view := range a.buildInteractionChainViews(events, a.store.InteractionChainConfig()) {
 		if view.ID != chainID {
@@ -99,8 +112,9 @@ func (a *App) adminDeleteInteractionChain(w http.ResponseWriter, r *http.Request
 		}
 		ids = make([]string, 0, len(view.Events))
 		for _, event := range view.Events {
-			ids = append(ids, event.EventID)
+			ids = append(ids, adminDisplayEventIDs(event)...)
 		}
+		ids = uniqueStrings(ids)
 		break
 	}
 	if len(ids) == 0 {

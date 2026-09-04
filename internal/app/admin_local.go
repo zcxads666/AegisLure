@@ -915,6 +915,23 @@ func (a *App) adminEventDetail(w http.ResponseWriter, _ *http.Request, eventID s
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "event query failed"})
 		return
 	}
+	displayEvents := adminDisplayEvents(events)
+	for _, event := range displayEvents {
+		if event.EventID != eventID {
+			continue
+		}
+		available := event.RawRequest != nil
+		response := map[string]any{"event": event, "raw_payload_available": available}
+		if available {
+			response["payload_view"] = "full_raw_request"
+			response["raw_request"] = event.RawRequest
+		} else {
+			response["payload_view"] = "legacy_missing_raw_request"
+			response["raw_request_note"] = "历史事件未记录原始请求"
+		}
+		a.writeJSON(w, http.StatusOK, response)
+		return
+	}
 	for _, event := range events {
 		if event.EventID == eventID {
 			available := event.RawRequest != nil
@@ -991,6 +1008,7 @@ func (a *App) adminSessionsList(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "session query failed"})
 		return
 	}
+	events = adminDisplayEvents(events)
 	items := a.sessionViews(events)
 	limit := queryInt(r, "limit", 100)
 	if limit < 1 || limit > 1000 {
@@ -1014,6 +1032,7 @@ func (a *App) adminSessionDetail(w http.ResponseWriter, r *http.Request, session
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "session query failed"})
 		return
 	}
+	events = adminDisplayEvents(events)
 	filtered := make([]model.Event, 0)
 	for _, event := range events {
 		if event.SessionID == sessionID {
@@ -1098,6 +1117,7 @@ func (a *App) adminInteractionChainDetail(w http.ResponseWriter, _ *http.Request
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "chain query failed"})
 		return
 	}
+	events = adminDisplayEvents(events)
 	views := a.buildInteractionChainViews(events, a.store.InteractionChainConfig())
 	for _, view := range views {
 		if view.ID == chainID {
@@ -1178,6 +1198,7 @@ func (a *App) adminActorDetail(w http.ResponseWriter, _ *http.Request, rawIP str
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "actor query failed"})
 		return
 	}
+	events = adminDisplayEvents(events)
 	indicators, err := a.store.Indicators()
 	if err != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "actor query failed"})

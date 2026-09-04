@@ -79,11 +79,11 @@ services:
       - target: ${SGLANG_TARGET_PORT:-30000}
         published: "${SGLANG_PORT:-30000}"
         host_ip: "${HP_PUBLIC_PORT_BIND_IP:-0.0.0.0}"
-      - target: ${LOCALAI_TARGET_PORT:-8080}
-        published: "${LOCALAI_PORT:-8080}"
+      - target: ${LOCALAI_TARGET_PORT:-8081}
+        published: "${LOCALAI_PORT:-8081}"
         host_ip: "${HP_PUBLIC_PORT_BIND_IP:-0.0.0.0}"
-      - target: ${SUB2API_TARGET_PORT:-8081}
-        published: "${SUB2API_PORT:-8081}"
+      - target: ${SUB2API_TARGET_PORT:-8080}
+        published: "${SUB2API_PORT:-8080}"
         host_ip: "${HP_PUBLIC_PORT_BIND_IP:-0.0.0.0}"
       - target: ${HP_ADMIN_PORT:-28443}
         published: "${HP_ADMIN_PORT:-28443}"

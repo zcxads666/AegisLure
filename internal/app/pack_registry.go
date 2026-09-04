@@ -80,8 +80,8 @@ func builtinPacks() []model.ConfigPack {
 		{SchemaVersion: 1, ID: "vllm-openai-0.17-lure", Product: model.ProductVLLM, DisplayVersion: "0.17.0", DefaultPort: 8000, Routeset: "vllm-openai-invocations"},
 		{SchemaVersion: 1, ID: "ollama-native-0.1-lure", Product: model.ProductOllama, DisplayVersion: "0.1.33", DefaultPort: 11434, Routeset: "ollama-native-openai"},
 		{SchemaVersion: 1, ID: "sglang-http-legacy-lure", Product: model.ProductSGLang, DisplayVersion: "0.5.10", DefaultPort: 30000, Routeset: "sglang-http-openapi"},
-		{SchemaVersion: 1, ID: "localai-2x-legacy-lure", Product: model.ProductLocalAI, DisplayVersion: "2.19.4", DefaultPort: 8080, Routeset: "localai-web-gallery"},
-		{SchemaVersion: 1, ID: "sub2api-web-v1", Product: model.ProductSub2API, DisplayVersion: "0.2.0", DefaultPort: 8081, Routeset: "sub2api-web-gateway"},
+		{SchemaVersion: 1, ID: "localai-2x-legacy-lure", Product: model.ProductLocalAI, DisplayVersion: "2.19.4", DefaultPort: 8081, Routeset: "localai-web-gallery"},
+		{SchemaVersion: 1, ID: "sub2api-web-v1", Product: model.ProductSub2API, DisplayVersion: "0.2.0", DefaultPort: 8080, Routeset: "sub2api-web-gateway"},
 	}, CompatibilityManifest: map[string]any{"fixture_source": "public-documentation-and-safe-local-contracts", "dangerous_parsers": false, "outbound_network": false, "max_body_bytes": 1048576, "liveness_operators": []string{"exact", "contains", "starts_with", "ends_with"}}}
 	modelCatalog := packs.ModelCatalogPack{SchemaVersion: 1, Revision: "seed-2026q3", Catalogs: []packs.ModelCatalog{
 		{ID: "newapi-popular-closed-2026q3", OriginPolicy: "closed", Products: []string{model.ProductNewAPI}, Models: []string{"gpt-5.6-sol", "claude-sonnet-5", "gemini-3.7-flash"}},

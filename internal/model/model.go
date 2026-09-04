@@ -95,6 +95,12 @@ type Event struct {
 	ReasonCodes           []string          `json:"reason_codes,omitempty"`
 	MatchedRuleIDs        []string          `json:"matched_rule_ids,omitempty"`
 	Metadata              map[string]string `json:"metadata,omitempty"`
+	// The following fields are populated only by admin-facing display
+	// projections. Persisted events remain lossless raw observations.
+	DisplayRoute      string   `json:"display_route,omitempty"`
+	AggregateCount    int      `json:"aggregate_count,omitempty"`
+	AggregateRoutes   []string `json:"aggregate_routes,omitempty"`
+	AggregateEventIDs []string `json:"aggregate_event_ids,omitempty"`
 }
 
 type HoneyUser struct {

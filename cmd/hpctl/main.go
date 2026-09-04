@@ -1155,9 +1155,9 @@ func composePortPoolBase(key string) (int, bool) {
 	case "SGLANG":
 		return 30000, true
 	case "LOCALAI":
-		return 8080, true
-	case "SUB2API":
 		return 8081, true
+	case "SUB2API":
+		return 8080, true
 	default:
 		return 0, false
 	}
