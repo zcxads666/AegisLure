@@ -103,6 +103,119 @@ func TestPublicEventRawRequestAndLegacyDetailMarker(t *testing.T) {
 	}
 }
 
+func TestAdminSessionAndLightweightProjectionCompatibility(t *testing.T) {
+	a, cfg, st := newTestApp(t, true)
+	defer st.Close()
+	admin := &inProcessClient{handler: a.adminHandler(), cookies: map[string]string{}}
+	if resp, _ := doJSON(t, admin, http.MethodGet, cfg.AdminPath+"admin/api/v1/auth/session", nil); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated session status = %d", resp.StatusCode)
+	}
+	if resp, _ := doJSON(t, admin, http.MethodPost, cfg.AdminPath+"admin/api/v1/auth/login", map[string]string{"username": "owner", "password": "correct horse battery staple"}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin login status = %d", resp.StatusCode)
+	}
+	if resp, session := doJSON(t, admin, http.MethodGet, cfg.AdminPath+"admin/api/v1/auth/session", nil); resp.StatusCode != http.StatusOK || session["authenticated"] != true || session["username"] != "owner" {
+		t.Fatalf("authenticated session = %d %#v", resp.StatusCode, session)
+	}
+
+	event := model.Event{
+		EventID:       "projection-compat-event",
+		Product:       model.ProductOllama,
+		ProfileID:     "ollama",
+		RouteTemplate: "ollama.generate",
+		Method:        "POST",
+		SourceIP:      "198.51.100.200",
+		ObservedAt:    time.Now().UTC(),
+		RawRequest:    &model.RawRequest{URL: "/api/generate", Route: "/api/generate", Host: "ollama.example.test", Headers: map[string][]string{"X-Projection": {"kept"}}, BodyBase64: "full-body"},
+	}
+	if err := st.AppendEvent(event); err != nil {
+		t.Fatal(err)
+	}
+	findEvent := func(items []any) map[string]any {
+		for _, raw := range items {
+			item, ok := raw.(map[string]any)
+			if ok && item["event_id"] == event.EventID {
+				return item
+			}
+		}
+		return nil
+	}
+	resp, full := doJSON(t, admin, http.MethodGet, cfg.AdminPath+"admin/api/v1/events", nil)
+	fullEvent := findEvent(full["events"].([]any))
+	if resp.StatusCode != http.StatusOK || fullEvent == nil || fullEvent["raw_request"].(map[string]any)["body_base64"] != event.RawRequest.BodyBase64 {
+		t.Fatalf("default event response lost raw payload = %d %#v", resp.StatusCode, full)
+	}
+	resp, summary := doJSON(t, admin, http.MethodGet, cfg.AdminPath+"admin/api/v1/events?projection=summary", nil)
+	summaryEvent := findEvent(summary["events"].([]any))
+	if resp.StatusCode != http.StatusOK || summaryEvent == nil {
+		t.Fatalf("summary event response = %d %#v", resp.StatusCode, summary)
+	}
+	rawSummary := summaryEvent["raw_request"].(map[string]any)
+	if rawSummary["body_base64"] != "" || rawSummary["headers"] != nil || rawSummary["route"] != event.RawRequest.Route {
+		t.Fatalf("summary event response retained wrong raw payload = %#v", rawSummary)
+	}
+
+	resp, defaultDashboard := doJSON(t, admin, http.MethodGet, cfg.AdminPath+"admin/api/v1/dashboard", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("default dashboard status = %d %#v", resp.StatusCode, defaultDashboard)
+	}
+	resp, summaryDashboard := doJSON(t, admin, http.MethodGet, cfg.AdminPath+"admin/api/v1/dashboard?projection=summary", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("summary dashboard status = %d %#v", resp.StatusCode, summaryDashboard)
+	}
+	defaultRecent := findEvent(defaultDashboard["recent_events"].([]any))
+	summaryRecent := findEvent(summaryDashboard["recent_events"].([]any))
+	if defaultRecent == nil || defaultRecent["raw_request"].(map[string]any)["body_base64"] != event.RawRequest.BodyBase64 || summaryRecent == nil || summaryRecent["raw_request"].(map[string]any)["body_base64"] != "" {
+		t.Fatalf("dashboard projection compatibility default=%#v summary=%#v", defaultRecent, summaryRecent)
+	}
+}
+
+func TestAdminAggregationBoundaryKeeps9991000And1001Behavior(t *testing.T) {
+	a, cfg, st := newTestApp(t, true)
+	defer st.Close()
+	admin := &inProcessClient{handler: a.adminHandler(), cookies: map[string]string{}}
+	if resp, _ := doJSON(t, admin, http.MethodPost, cfg.AdminPath+"admin/api/v1/auth/login", map[string]string{"username": "owner", "password": "correct horse battery staple"}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin login status = %d", resp.StatusCode)
+	}
+	base := time.Date(2026, 9, 5, 8, 0, 0, 0, time.UTC)
+	for index := 0; index < 1001; index++ {
+		if err := st.AppendEvent(model.Event{
+			EventID:       fmt.Sprintf("boundary-event-%04d", index),
+			Product:       model.ProductSub2API,
+			ProfileID:     "sub2api",
+			RouteTemplate: "sub2api.spa",
+			Method:        "GET",
+			SourceIP:      "198.51.100.240",
+			SessionID:     "boundary-session",
+			ObservedAt:    base,
+			RawRequest:    &model.RawRequest{Route: "/", URL: "/"},
+		}); err != nil {
+			t.Fatalf("append boundary event %d: %v", index, err)
+		}
+	}
+	path := cfg.AdminPath + "admin/api/v1/events?page=1"
+	resp, overLimit := doJSON(t, admin, http.MethodGet, path, nil)
+	items := overLimit["events"].([]any)
+	if resp.StatusCode != http.StatusOK || overLimit["total"].(float64) != 1001 || len(items) != 1 || items[0].(map[string]any)["aggregate_count"].(float64) != 10 {
+		t.Fatalf("1001-event boundary = %d %#v", resp.StatusCode, overLimit)
+	}
+	if deleted, err := st.SoftDeleteEventIDs([]string{"boundary-event-1000"}); err != nil || deleted != 1 {
+		t.Fatalf("delete to 1000 events = %d, %v", deleted, err)
+	}
+	resp, exactLimit := doJSON(t, admin, http.MethodGet, path, nil)
+	items = exactLimit["events"].([]any)
+	if resp.StatusCode != http.StatusOK || exactLimit["total"].(float64) != 1 || len(items) != 1 || items[0].(map[string]any)["aggregate_count"].(float64) != 1000 {
+		t.Fatalf("1000-event boundary = %d %#v", resp.StatusCode, exactLimit)
+	}
+	if deleted, err := st.SoftDeleteEventIDs([]string{"boundary-event-0999"}); err != nil || deleted != 1 {
+		t.Fatalf("delete to 999 events = %d, %v", deleted, err)
+	}
+	resp, underLimit := doJSON(t, admin, http.MethodGet, path, nil)
+	items = underLimit["events"].([]any)
+	if resp.StatusCode != http.StatusOK || underLimit["total"].(float64) != 1 || len(items) != 1 || items[0].(map[string]any)["aggregate_count"].(float64) != 999 {
+		t.Fatalf("999-event boundary = %d %#v", resp.StatusCode, underLimit)
+	}
+}
+
 func TestAdminPaginationSearchBoundaryAndLogicalDelete(t *testing.T) {
 	a, cfg, st := newTestApp(t, true)
 	defer st.Close()

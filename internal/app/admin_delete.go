@@ -1,6 +1,8 @@
 package app
 
 import (
+	"database/sql"
+	"errors"
 	"net"
 	"net/http"
 	"net/url"
@@ -39,16 +41,18 @@ func (a *App) adminDeleteEvent(w http.ResponseWriter, r *http.Request, rawID str
 		return
 	}
 	ids := []string{eventID}
-	events, err := a.store.Events(-1, "", "")
-	if err != nil {
+	event, err := a.store.EventByIDContext(r.Context(), eventID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "event delete failed"})
 		return
 	}
-	for _, event := range adminDisplayEvents(events) {
-		if event.EventID == eventID {
-			ids = adminDisplayEventIDs(event)
-			break
+	if err == nil {
+		display, displayErr := a.displayEventDetail(r.Context(), event)
+		if displayErr != nil {
+			a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "event delete failed"})
+			return
 		}
+		ids = adminDisplayEventIDs(display)
 	}
 	deleted, err := a.store.SoftDeleteEventIDs(ids)
 	if err != nil {
@@ -72,7 +76,7 @@ func (a *App) adminDeleteInvocation(w http.ResponseWriter, r *http.Request, rawI
 	if !a.allowAdminDelete(w, r, "invocation") {
 		return
 	}
-	ids, err := a.store.EventIDsForInvocation(invocationID)
+	ids, err := a.store.EventIDsForInvocationContext(r.Context(), invocationID)
 	if err != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "invocation delete failed"})
 		return
@@ -99,7 +103,7 @@ func (a *App) adminDeleteInteractionChain(w http.ResponseWriter, r *http.Request
 	if !a.allowAdminDelete(w, r, "interaction-chain") {
 		return
 	}
-	events, err := a.store.Events(-1, "", "")
+	events, err := a.store.EventSummariesContext(r.Context(), -1, "", "")
 	if err != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "chain delete failed"})
 		return
@@ -139,7 +143,7 @@ func (a *App) adminDeleteIndicator(w http.ResponseWriter, r *http.Request, rawID
 	if !a.allowAdminDelete(w, r, "indicator") {
 		return
 	}
-	items, err := a.store.Indicators()
+	items, err := a.store.IndicatorsContext(r.Context(), true)
 	if err != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "indicator delete failed"})
 		return
@@ -159,7 +163,7 @@ func (a *App) adminDeleteIndicator(w http.ResponseWriter, r *http.Request, rawID
 		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "indicator not found"})
 		return
 	}
-	ids, err := a.store.EventIDsForSourceIP(ip)
+	ids, err := a.store.EventIDsForSourceIPContext(r.Context(), ip)
 	if err != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "indicator delete failed"})
 		return

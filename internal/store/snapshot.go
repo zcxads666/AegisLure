@@ -232,7 +232,11 @@ func (s *Store) RestoreSnapshot(snapshot Snapshot) error {
 		if err != nil {
 			return fmt.Errorf("encode snapshot event: %w", err)
 		}
-		if _, err := tx.Exec(s.bind(`INSERT INTO events(sequence,event_id,observed_at,product,source_ip,route_template,event_json,score,invocation_id,invocation_level,auth_outcome,execution_outcome) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`), event.Sequence, event.EventID, event.ObservedAt.Format(time.RFC3339Nano), event.Product, event.SourceIP, event.RouteTemplate, string(encoded), event.Score, event.InvocationID, string(event.InvocationLevel), event.AuthOutcome, event.ExecutionOutcome); err != nil {
+		listEncoded, err := marshalEventListProjection(event)
+		if err != nil {
+			return fmt.Errorf("encode snapshot event list projection: %w", err)
+		}
+		if _, err := tx.Exec(s.bind(`INSERT INTO events(sequence,event_id,observed_at,product,source_ip,route_template,event_json,event_list_json,score,invocation_id,session_id,invocation_level,auth_outcome,execution_outcome) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`), event.Sequence, event.EventID, event.ObservedAt.Format(time.RFC3339Nano), event.Product, event.SourceIP, event.RouteTemplate, string(encoded), string(listEncoded), event.Score, event.InvocationID, event.SessionID, string(event.InvocationLevel), event.AuthOutcome, event.ExecutionOutcome); err != nil {
 			return fmt.Errorf("restore %s event: %w", s.driver, err)
 		}
 	}

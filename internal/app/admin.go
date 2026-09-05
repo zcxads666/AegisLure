@@ -356,6 +356,15 @@ func (a *App) handleAdminAPI(w http.ResponseWriter, r *http.Request, path string
 		a.adminHealth(w)
 		return
 	}
+	if path == "auth/session" && r.Method == http.MethodGet {
+		session, ok := a.adminSession(r)
+		if !ok {
+			a.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "admin authentication required"})
+			return
+		}
+		a.writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "username": session.Username})
+		return
+	}
 	if _, ok := a.adminSession(r); !ok {
 		a.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "admin authentication required"})
 		return
@@ -365,7 +374,7 @@ func (a *App) handleAdminAPI(w http.ResponseWriter, r *http.Request, path string
 	}
 	switch {
 	case path == "dashboard":
-		a.adminDashboard(w)
+		a.adminDashboard(w, r)
 	case (path == "ipinfo-lite" || path == "geoip") && (r.Method == http.MethodGet || r.Method == http.MethodPut):
 		a.adminIPInfoSettings(w, r)
 	case path == "import-sources" || strings.HasPrefix(path, "import-sources/"):
@@ -694,13 +703,23 @@ func (a *App) persistProfileSelection(name string, enabled bool) error {
 	return config.Save(configPathForApp(), a.cfg)
 }
 
-func (a *App) adminDashboard(w http.ResponseWriter) {
-	events, eventErr := a.store.Events(-1, "", "")
-	indicators, indicatorErr := a.store.Indicators()
-	if eventErr != nil || indicatorErr != nil {
+func (a *App) adminDashboard(w http.ResponseWriter, r *http.Request) {
+	// Dashboard analytics and indicators are both derived from the same
+	// lightweight event read. The old path decoded every event twice and also
+	// carried raw request bodies through the first-load response. Keep the
+	// historical full response unless the additive projection is requested.
+	var events []model.Event
+	var eventErr error
+	if adminSummaryRequested(r) {
+		events, eventErr = a.store.EventSummariesContext(r.Context(), -1, "", "")
+	} else {
+		events, eventErr = a.store.EventsContext(r.Context(), -1, "", "", false)
+	}
+	if eventErr != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "dashboard query failed"})
 		return
 	}
+	indicators := store.IndicatorsFromEvents(events)
 	events = adminDisplayEvents(events)
 	counts := map[string]int{"events": len(events), "unique_ips": len(indicators), "high_risk": 0, "invocations": 0, "accepted": 0, "rejected": 0, "sessions": 0, "risk_events": 0, "risk_rate": 0}
 	products := map[string]int{}
@@ -801,13 +820,14 @@ func (a *App) adminEvents(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "min_score must be between 0 and 100"})
 		return
 	}
-	result, err := a.store.EventPage(store.EventQuery{
+	result, err := a.store.EventPageContext(r.Context(), store.EventQuery{
 		Page:     page,
 		PageSize: adminPageSize,
 		Query:    query,
 		Product:  r.URL.Query().Get("product"),
 		SourceIP: r.URL.Query().Get("ip"),
 		MinScore: minScore,
+		Summary:  adminSummaryRequested(r),
 	})
 	if err != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "event query failed"})
@@ -825,13 +845,14 @@ func (a *App) adminEvents(w http.ResponseWriter, r *http.Request) {
 			Product:  r.URL.Query().Get("product"),
 			SourceIP: r.URL.Query().Get("ip"),
 			MinScore: minScore,
+			Summary:  adminSummaryRequested(r),
 		}
-		allResult, allErr := a.store.EventPage(allQuery)
+		allEvents, allErr := a.store.EventsByQueryContext(r.Context(), allQuery)
 		if allErr != nil {
 			a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "event query failed"})
 			return
 		}
-		events = allResult.Events
+		events = allEvents
 		events = adminDisplayEvents(events)
 		pageEvents, pagination := paginateAdminValues(events, page)
 		response := adminPagePayload(pagination)
@@ -860,7 +881,7 @@ func (a *App) adminInvocations(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	result, err := a.store.EventPage(store.EventQuery{Page: page, PageSize: adminPageSize, Query: query, Product: r.URL.Query().Get("product"), SourceIP: r.URL.Query().Get("ip"), InvocationOnly: true, InvocationLevel: r.URL.Query().Get("level"), AuthOutcome: r.URL.Query().Get("auth"), ExecutionOutcome: r.URL.Query().Get("execution")})
+	result, err := a.store.EventPageContext(r.Context(), store.EventQuery{Page: page, PageSize: adminPageSize, Query: query, Product: r.URL.Query().Get("product"), SourceIP: r.URL.Query().Get("ip"), InvocationOnly: true, InvocationLevel: r.URL.Query().Get("level"), AuthOutcome: r.URL.Query().Get("auth"), ExecutionOutcome: r.URL.Query().Get("execution"), Summary: adminSummaryRequested(r)})
 	if err != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "invocation query failed"})
 		return
@@ -906,7 +927,11 @@ func (a *App) adminInteractionChains(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	events, err := a.store.Events(-1, r.URL.Query().Get("product"), r.URL.Query().Get("ip"))
+	// Chain search is performed after aggregation. Keep the full source JSON
+	// for a searched request so raw-body/header matches remain equivalent to the
+	// historical response; an unsearched list can use the lightweight rows.
+	useSummary := adminSummaryRequested(r) && query == ""
+	events, err := a.store.EventsContext(r.Context(), -1, r.URL.Query().Get("product"), r.URL.Query().Get("ip"), useSummary)
 	if err != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "chain query failed"})
 		return
@@ -1344,6 +1369,11 @@ func adminPageParams(r *http.Request) (int, string, error) {
 		return 0, "", errors.New("q is too long")
 	}
 	return page, query, nil
+}
+
+func adminSummaryRequested(r *http.Request) bool {
+	value := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("projection")))
+	return value == "summary" || value == "compact" || value == "1"
 }
 
 func adminPagination(total, page int) store.PageInfo {

@@ -2,6 +2,8 @@ package app
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
@@ -19,6 +21,7 @@ import (
 	"github.com/zcxads666/AegisLure/internal/oauth"
 	"github.com/zcxads666/AegisLure/internal/packs"
 	"github.com/zcxads666/AegisLure/internal/security"
+	"github.com/zcxads666/AegisLure/internal/store"
 )
 
 func adminProfileName(value string) string {
@@ -217,7 +220,7 @@ func indicatorQueryInt(r *http.Request, name string, fallback int) (int, error) 
 }
 
 func (a *App) filteredIndicators(r *http.Request) ([]model.Indicator, map[string]model.IndicatorDecision, error) {
-	items, err := a.store.Indicators()
+	items, err := a.store.IndicatorsContext(r.Context(), true)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -451,7 +454,7 @@ func (a *App) adminIndicatorAction(w http.ResponseWriter, r *http.Request, path 
 		return
 	}
 	identifier, action := path[:separator], path[separator+1:]
-	items, err := a.store.Indicators()
+	items, err := a.store.IndicatorsContext(r.Context(), true)
 	if err != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "indicator query failed"})
 		return
@@ -904,13 +907,26 @@ func compatibilityRoutes(product string) []string {
 	return append([]string(nil), routes[product]...)
 }
 
-func (a *App) adminEventDetail(w http.ResponseWriter, _ *http.Request, eventID string) {
+func (a *App) adminEventDetail(w http.ResponseWriter, r *http.Request, eventID string) {
 	eventID, err := url.PathUnescape(strings.TrimSpace(eventID))
 	if err != nil || eventID == "" || strings.Contains(eventID, "/") {
 		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "event not found"})
 		return
 	}
-	events, err := a.store.Events(-1, "", "")
+	event, lookupErr := a.store.EventByIDContext(r.Context(), eventID)
+	if lookupErr == nil {
+		if event, lookupErr = a.displayEventDetail(r.Context(), event); lookupErr != nil {
+			a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "event query failed"})
+			return
+		}
+		a.writeAdminEventDetail(w, event)
+		return
+	}
+	if !errors.Is(lookupErr, sql.ErrNoRows) {
+		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "event query failed"})
+		return
+	}
+	events, err := a.store.EventsContext(r.Context(), -1, "", "", false)
 	if err != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "event query failed"})
 		return
@@ -920,34 +936,61 @@ func (a *App) adminEventDetail(w http.ResponseWriter, _ *http.Request, eventID s
 		if event.EventID != eventID {
 			continue
 		}
-		available := event.RawRequest != nil
-		response := map[string]any{"event": event, "raw_payload_available": available}
-		if available {
-			response["payload_view"] = "full_raw_request"
-			response["raw_request"] = event.RawRequest
-		} else {
-			response["payload_view"] = "legacy_missing_raw_request"
-			response["raw_request_note"] = "历史事件未记录原始请求"
-		}
-		a.writeJSON(w, http.StatusOK, response)
+		a.writeAdminEventDetail(w, event)
 		return
 	}
 	for _, event := range events {
 		if event.EventID == eventID {
-			available := event.RawRequest != nil
-			response := map[string]any{"event": event, "raw_payload_available": available}
-			if available {
-				response["payload_view"] = "full_raw_request"
-				response["raw_request"] = event.RawRequest
-			} else {
-				response["payload_view"] = "legacy_missing_raw_request"
-				response["raw_request_note"] = "历史事件未记录原始请求"
-			}
-			a.writeJSON(w, http.StatusOK, response)
+			a.writeAdminEventDetail(w, event)
 			return
 		}
 	}
 	a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "event not found"})
+}
+
+func (a *App) writeAdminEventDetail(w http.ResponseWriter, event model.Event) {
+	available := event.RawRequest != nil
+	response := map[string]any{"event": event, "raw_payload_available": available}
+	if available {
+		response["payload_view"] = "full_raw_request"
+		response["raw_request"] = event.RawRequest
+	} else {
+		response["payload_view"] = "legacy_missing_raw_request"
+		response["raw_request_note"] = "历史事件未记录原始请求"
+	}
+	a.writeJSON(w, http.StatusOK, response)
+}
+
+// displayEventDetail reconstructs a home-page aggregate only when the direct
+// event belongs to one. Ordinary detail lookups never scan the event stream.
+func (a *App) displayEventDetail(ctx context.Context, event model.Event) (model.Event, error) {
+	if (!isSub2APIHomeFrontendEvent(event) && !isNewAPIHomeFrontendEvent(event)) || (event.SourceIP == "" && event.SessionID == "") {
+		return event, nil
+	}
+	var candidates []model.Event
+	var err error
+	if event.SessionID != "" {
+		candidates, err = a.store.EventsByQueryContext(ctx, store.EventQuery{Product: event.Product, SessionID: event.SessionID, Summary: true})
+	} else {
+		candidates, err = a.store.EventSummariesContext(ctx, -1, event.Product, event.SourceIP)
+	}
+	if err != nil {
+		return model.Event{}, err
+	}
+	key := homeAggregationKey(event)
+	matched := make([]model.Event, 0, len(candidates))
+	for _, candidate := range candidates {
+		if homeAggregationKey(candidate) == key {
+			matched = append(matched, candidate)
+		}
+	}
+	for _, display := range adminDisplayEvents(matched) {
+		if display.EventID == event.EventID && display.DisplayRoute != "" {
+			display.RawRequest = event.RawRequest
+			return display, nil
+		}
+	}
+	return event, nil
 }
 
 type localSessionView struct {
@@ -1003,7 +1046,7 @@ func (a *App) sessionViews(events []model.Event) []localSessionView {
 }
 
 func (a *App) adminSessionsList(w http.ResponseWriter, r *http.Request) {
-	events, err := a.store.Events(-1, r.URL.Query().Get("product"), r.URL.Query().Get("ip"))
+	events, err := a.store.EventSummariesContext(r.Context(), -1, r.URL.Query().Get("product"), r.URL.Query().Get("ip"))
 	if err != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "session query failed"})
 		return
@@ -1027,10 +1070,25 @@ func (a *App) adminSessionDetail(w http.ResponseWriter, r *http.Request, session
 		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
 	}
-	events, err := a.store.Events(-1, "", "")
+	events, err := a.store.EventsByQueryContext(r.Context(), store.EventQuery{SessionID: sessionID})
 	if err != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "session query failed"})
 		return
+	}
+	if len(events) == 0 {
+		// An older binary can append a row whose typed projection columns are
+		// still empty. Keep detail compatibility by using the authoritative JSON
+		// only as a miss fallback; normal upgraded rows stay indexed.
+		legacyEvents, legacyErr := a.store.EventsContext(r.Context(), -1, "", "", false)
+		if legacyErr != nil {
+			a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "session query failed"})
+			return
+		}
+		for _, event := range legacyEvents {
+			if event.SessionID == sessionID {
+				events = append(events, event)
+			}
+		}
 	}
 	events = adminDisplayEvents(events)
 	filtered := make([]model.Event, 0)
@@ -1088,10 +1146,22 @@ func (a *App) adminInvocationDetail(w http.ResponseWriter, r *http.Request, invo
 		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "invocation not found"})
 		return
 	}
-	events, err := a.store.Events(-1, r.URL.Query().Get("product"), "")
+	events, err := a.store.EventsByQueryContext(r.Context(), store.EventQuery{Product: r.URL.Query().Get("product"), InvocationID: invocationID})
 	if err != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "invocation query failed"})
 		return
+	}
+	if len(events) == 0 {
+		legacyEvents, legacyErr := a.store.EventsContext(r.Context(), -1, r.URL.Query().Get("product"), "", false)
+		if legacyErr != nil {
+			a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "invocation query failed"})
+			return
+		}
+		for _, event := range legacyEvents {
+			if event.InvocationID == invocationID {
+				events = append(events, event)
+			}
+		}
 	}
 	matched := make([]model.Event, 0)
 	for _, event := range events {
@@ -1106,13 +1176,13 @@ func (a *App) adminInvocationDetail(w http.ResponseWriter, r *http.Request, invo
 	a.writeJSON(w, http.StatusOK, map[string]any{"invocation_id": invocationID, "events": matched, "event_count": len(matched), "synthetic_only": true, "real_inference": false})
 }
 
-func (a *App) adminInteractionChainDetail(w http.ResponseWriter, _ *http.Request, chainID string) {
+func (a *App) adminInteractionChainDetail(w http.ResponseWriter, r *http.Request, chainID string) {
 	chainID, err := url.PathUnescape(strings.TrimSpace(chainID))
 	if err != nil || chainID == "" || strings.Contains(chainID, "/") {
 		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "interaction chain not found"})
 		return
 	}
-	events, err := a.store.Events(-1, "", "")
+	events, err := a.store.EventsContext(r.Context(), -1, "", "", adminSummaryRequested(r))
 	if err != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "chain query failed"})
 		return
@@ -1187,23 +1257,19 @@ func buildInteractionChainView(id, sessionID string, events []model.Event) *inte
 	return view
 }
 
-func (a *App) adminActorDetail(w http.ResponseWriter, _ *http.Request, rawIP string) {
+func (a *App) adminActorDetail(w http.ResponseWriter, r *http.Request, rawIP string) {
 	ip, err := url.PathUnescape(strings.TrimSpace(rawIP))
 	if err != nil || net.ParseIP(ip) == nil {
 		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "actor not found"})
 		return
 	}
-	events, err := a.store.Events(-1, "", ip)
+	events, err := a.store.EventsContext(r.Context(), -1, "", ip, adminSummaryRequested(r))
 	if err != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "actor query failed"})
 		return
 	}
 	events = adminDisplayEvents(events)
-	indicators, err := a.store.Indicators()
-	if err != nil {
-		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "actor query failed"})
-		return
-	}
+	indicators := store.IndicatorsFromEvents(events)
 	var indicator model.Indicator
 	found := false
 	for _, item := range indicators {

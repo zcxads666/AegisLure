@@ -78,6 +78,10 @@ class APIError extends Error {
   }
 }
 
+function isAbortError(error) {
+  return error?.name === 'AbortError'
+}
+
 function icon(name, size = 18) {
   const paths = ICON_PATHS[name] || ICON_PATHS.spark
   return html`<svg class="icon" width=${size} height=${size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -231,7 +235,8 @@ function Modal({ title, eyebrow, onClose, children, wide = false }) {
   return html`<div class="modal-backdrop" onClick=${(event) => event.target === event.currentTarget && onClose()}><section class=${cn('modal', wide && 'modal-wide')} role="dialog" aria-modal="true" aria-label=${title}><header class="modal-header">${eyebrow ? html`<p class="eyebrow">${eyebrow}</p>` : null}<h2>${title}</h2><button class="icon-button" type="button" onClick=${onClose} aria-label="关闭">${icon('close', 19)}</button></header><div class="modal-body">${children}</div></section></div>`
 }
 
-function DataTable({ columns, rows, onRowClick, emptyTitle, emptyDescription }) {
+function DataTable({ columns, rows, onRowClick, emptyTitle, emptyDescription, loading = false, loadingLabel = '读取中…' }) {
+  if (loading) return html`<${LoadingState} label=${loadingLabel} />`
   if (!rows || rows.length === 0) return html`<${EmptyState} title=${emptyTitle} description=${emptyDescription} />`
   const headerCells = columns.map((column) => html`<th class=${column.className || ''}>${column.label}</th>`)
   const tableRows = rows.map((row, index) => {
@@ -419,6 +424,7 @@ function ActorDetailModal({ actor, onClose, onOpenEvent }) {
 
 function EventDetails({ event }) {
   if (!event) return null
+  if (event.loading) return html`<${Modal} title="观测详情" eyebrow="event" onClose=${event.onClose}><${LoadingState} label="正在读取完整原始请求…" /><//>`
   event = displayEventProjection(event)
   const displayedRoute = displayRoute(event)
   const fields = [['事件 ID', event.event_id], ['观测时间', formatTime(event.observed_at, true)], ['产品', profileLabel(event.product)], ['来源 IP', event.source_ip], ['展示路由', displayedRoute !== rawRequestRoute(event) ? displayedRoute : ''], ['原始请求路由', rawRequestRoute(event)], ['内部分类路由', semanticRoute(event)], ['请求方法', event.method], ['状态码', event.status], ['风险分', event.score], ['意图分类', event.intent_class], ['调用等级', levelLabel(event.invocation_level)], ['鉴权结果', event.auth_outcome], ['执行结果', event.execution_outcome], ['拒绝原因', rejectionReasonLabel(event.rejection_reason)], ['效果结果', event.effect_outcome], ['模型', event.model_id], ['会话 ID', event.session_id], ['聚合前端 GET', event.aggregate_count > 1 ? `${formatNumber(event.aggregate_count)} 次` : '']]
@@ -506,7 +512,7 @@ function chainModeLabel(value) {
   return value === 'session' ? '同一会话' : value || '未配置'
 }
 
-function ServerObservationsPage({ events = [], pagination, onRefresh, onOpenEvent, onSearch, onPageChange, onDelete }) {
+function ServerObservationsPage({ events = [], pagination, onRefresh, onOpenEvent, onSearch, onPageChange, onDelete, loading = false }) {
   const [product, setProduct] = useState('')
   const [query, setQuery] = useState('')
   const [minScore, setMinScore] = useState('')
@@ -522,10 +528,10 @@ function ServerObservationsPage({ events = [], pagination, onRefresh, onOpenEven
     { label: '风险', className: 'align-right', render: (row) => html`<${RiskBadge} score=${row.score} />` },
     { label: '操作', className: 'align-right', render: (row) => html`<${DeleteButton} onClick=${() => onDelete(row.event_id)} />` },
   ]
-  return html`<div class="page-stack"><${PageHeader} eyebrow="Evidence stream" title="观测记录" description="检索每一条请求的完整原始请求、调用阶段与风险证据。" actions=${html`<${Button} icon="refresh" onClick=${onRefresh}>刷新记录<//>`} /><${Panel} className="table-panel" title="事件流" action=${html`<span class="panel-meta">每页 10 条 · 共 ${formatNumber(pagination?.total || 0)} 条</span>`}><${FilterBar} onReset=${reset}><label class="search-field">${icon('search', 17)}<input value=${query} onInput=${(event) => setQuery(event.target.value)} onKeyDown=${(event) => event.key === 'Enter' && apply()} placeholder="搜索 IP、原始路由、请求体或事件类型" /></label><${Select} value=${product} onChange=${setProduct} options=${[{ value: '', label: '全部产品' }, ...Object.entries(PROFILE_LABELS).map(([value, label]) => ({ value, label }))]} /><label class="score-filter"><span>最低风险</span><input type="number" min="0" max="100" value=${minScore} onInput=${(event) => setMinScore(event.target.value)} placeholder="0" /></label><${SearchButton} onClick=${apply} /></${FilterBar}><${DataTable} columns=${columns} rows=${events} onRowClick=${onOpenEvent} emptyTitle="没有匹配的观测" emptyDescription="尝试清除筛选条件，或等待新的蜜罐请求。" /><${PaginationControls} pagination=${pagination} onPageChange=${onPageChange} /><//><p class="page-note">新事件显示完整原始 URL、路径、Host、重复请求头和 Base64 请求体；旧事件会明确标记原始请求缺失。超限请求显示已保存前缀和截断原因。</p></div>`
+  return html`<div class="page-stack"><${PageHeader} eyebrow="Evidence stream" title="观测记录" description="检索每一条请求的完整原始请求、调用阶段与风险证据。" actions=${html`<${Button} icon="refresh" onClick=${onRefresh}>刷新记录<//>`} /><${Panel} className="table-panel" title="事件流" action=${html`<span class="panel-meta">每页 10 条 · 共 ${formatNumber(pagination?.total || 0)} 条</span>`}><${FilterBar} onReset=${reset}><label class="search-field">${icon('search', 17)}<input value=${query} onInput=${(event) => setQuery(event.target.value)} onKeyDown=${(event) => event.key === 'Enter' && apply()} placeholder="搜索 IP、原始路由、请求体或事件类型" /></label><${Select} value=${product} onChange=${setProduct} options=${[{ value: '', label: '全部产品' }, ...Object.entries(PROFILE_LABELS).map(([value, label]) => ({ value, label }))]} /><label class="score-filter"><span>最低风险</span><input type="number" min="0" max="100" value=${minScore} onInput=${(event) => setMinScore(event.target.value)} placeholder="0" /></label><${SearchButton} onClick=${apply} /></${FilterBar}><${DataTable} columns=${columns} rows=${events} onRowClick=${onOpenEvent} loading=${loading} loadingLabel="正在加载观测记录…" emptyTitle="没有匹配的观测" emptyDescription="尝试清除筛选条件，或等待新的蜜罐请求。" /><${PaginationControls} pagination=${pagination} onPageChange=${onPageChange} /><//><p class="page-note">新事件显示完整原始 URL、路径、Host、重复请求头和 Base64 请求体；旧事件会明确标记原始请求缺失。超限请求显示已保存前缀和截断原因。</p></div>`
 }
 
-function ServerInvocationsPage({ invocations = [], pagination, onRefresh, onOpenEvent, onSearch, onPageChange, onDelete }) {
+function ServerInvocationsPage({ invocations = [], pagination, onRefresh, onOpenEvent, onSearch, onPageChange, onDelete, loading = false }) {
   const [query, setQuery] = useState('')
   const [level, setLevel] = useState('')
   const [auth, setAuth] = useState('')
@@ -544,19 +550,19 @@ function ServerInvocationsPage({ invocations = [], pagination, onRefresh, onOpen
     { label: '风险', className: 'align-right', render: (row) => html`<${RiskBadge} score=${row.score} />` },
     { label: '操作', className: 'align-right', render: (row) => html`<${DeleteButton} onClick=${() => onDelete(row.invocation_id)} />` },
   ]
-  return html`<div class="page-stack"><${PageHeader} eyebrow="Synthetic execution trail" title="调用分析" description="查看每次模型调用尝试、鉴权结果、拒绝原因与合成执行阶段。" actions=${html`<${Button} icon="refresh" onClick=${onRefresh}>刷新调用<//>`} /><div class="callout callout-blue">${icon('spark', 18)}<div><b>合成执行边界</b><p>所有“已接受”调用只返回确定性的兼容响应，不会加载模型、执行 prompt 工具或连接供应商；成功和失败尝试都会提高风险分。</p></div></div><${Panel} className="table-panel" title="调用事件" action=${html`<span class="panel-meta">每页 10 条 · 共 ${formatNumber(pagination?.total || 0)} 条</span>`}><${FilterBar} onReset=${reset}><label class="search-field">${icon('search', 17)}<input value=${query} onInput=${(event) => setQuery(event.target.value)} onKeyDown=${(event) => event.key === 'Enter' && apply()} placeholder="搜索调用 ID、模型、IP 或拒绝原因" /></label><${Select} value=${level} onChange=${setLevel} options=${[{ value: '', label: '全部阶段' }, ...Object.entries(LEVEL_LABELS).map(([value, label]) => ({ value, label }))]} /><${Select} value=${auth} onChange=${setAuth} options=${[{ value: '', label: '全部鉴权' }, { value: 'valid_honey_key', label: '有效 honey key' }, { value: 'bypass_simulated', label: '模拟绕过' }, { value: 'not_required', label: '未配置认证' }, { value: 'missing', label: '缺失' }, { value: 'invalid', label: '无效' }]} /><${Select} value=${execution} onChange=${setExecution} options=${[{ value: '', label: '全部执行结果' }, { value: 'synthetic_accepted', label: '合成已接受' }, { value: 'synthetic_stream_completed', label: '合成流完成' }, { value: 'rejected_before_dispatch', label: '派发前拒绝' }]} /><${SearchButton} onClick=${apply} /></${FilterBar}><${DataTable} columns=${columns} rows=${invocations} onRowClick=${onOpenEvent} emptyTitle="还没有调用事件" emptyDescription="蜜罐记录到调用请求后，分析结果会显示在这里。" /><${PaginationControls} pagination=${pagination} onPageChange=${onPageChange} /><//></div>`
+  return html`<div class="page-stack"><${PageHeader} eyebrow="Synthetic execution trail" title="调用分析" description="查看每次模型调用尝试、鉴权结果、拒绝原因与合成执行阶段。" actions=${html`<${Button} icon="refresh" onClick=${onRefresh}>刷新调用<//>`} /><div class="callout callout-blue">${icon('spark', 18)}<div><b>合成执行边界</b><p>所有“已接受”调用只返回确定性的兼容响应，不会加载模型、执行 prompt 工具或连接供应商；成功和失败尝试都会提高风险分。</p></div></div><${Panel} className="table-panel" title="调用事件" action=${html`<span class="panel-meta">每页 10 条 · 共 ${formatNumber(pagination?.total || 0)} 条</span>`}><${FilterBar} onReset=${reset}><label class="search-field">${icon('search', 17)}<input value=${query} onInput=${(event) => setQuery(event.target.value)} onKeyDown=${(event) => event.key === 'Enter' && apply()} placeholder="搜索调用 ID、模型、IP 或拒绝原因" /></label><${Select} value=${level} onChange=${setLevel} options=${[{ value: '', label: '全部阶段' }, ...Object.entries(LEVEL_LABELS).map(([value, label]) => ({ value, label }))]} /><${Select} value=${auth} onChange=${setAuth} options=${[{ value: '', label: '全部鉴权' }, { value: 'valid_honey_key', label: '有效 honey key' }, { value: 'bypass_simulated', label: '模拟绕过' }, { value: 'missing', label: '缺失' }, { value: 'invalid', label: '无效' }]} /><${Select} value=${execution} onChange=${(event) => setExecution(event.target.value)} options=${[{ value: '', label: '全部执行结果' }, { value: 'synthetic_accepted', label: '合成已接受' }, { value: 'synthetic_stream_completed', label: '合成流完成' }, { value: 'rejected_before_dispatch', label: '派发前拒绝' }]} /><${SearchButton} onClick=${apply} /></${FilterBar}><${DataTable} columns=${columns} rows=${invocations} onRowClick=${onOpenEvent} loading=${loading} loadingLabel="正在加载调用记录…" emptyTitle="还没有调用事件" emptyDescription="蜜罐记录到调用请求后，分析结果会显示在这里。" /><${PaginationControls} pagination=${pagination} onPageChange=${onPageChange} /><//></div>`
 }
 
-function ServerChainsPage({ chains = [], pagination, onRefresh, onOpenEvent, onSearch, onPageChange, onDelete }) {
+function ServerChainsPage({ chains = [], pagination, onRefresh, onOpenEvent, onSearch, onPageChange, onDelete, loading = false }) {
   const [query, setQuery] = useState('')
   const [expanded, setExpanded] = useState(null)
   chains = chains.map(displayChainProjection)
   const apply = () => onSearch({ page: 1, q: query })
   const reset = () => { setQuery(''); onSearch({ page: 1, q: '' }) }
-  return html`<div class="page-stack"><${PageHeader} eyebrow="Source intelligence" title="交互链路" description="同一 IP 按 Asia/Shanghai 自然日聚合，跨会话、跨蜜罐合并；午夜自动切分并生成稳定链路 ID。" actions=${html`<${Button} icon="refresh" onClick=${onRefresh}>刷新链路<//>`} /><${Panel} className="table-panel" title="链路筛选" action=${html`<span class="panel-meta">每页 10 条 · 共 ${formatNumber(pagination?.total || 0)} 条</span>`}><${FilterBar} onReset=${reset}><label class="search-field">${icon('search', 17)}<input value=${query} onInput=${(event) => setQuery(event.target.value)} onKeyDown=${(event) => event.key === 'Enter' && apply()} placeholder="搜索 IP、日期、产品或链路 ID" /></label><${SearchButton} onClick=${apply} /></${FilterBar}></${Panel}>${chains?.length ? html`<div class="chain-grid">${chains.map((chain) => html`<article class="chain-card" key=${chain.id}><header class="chain-card-header"><div class="chain-id"><span class="chain-mark">${icon('route', 17)}</span><div><b>${shortValue(chain.id, 24)}</b><small>${chain.source_ip || '—'} · ${chain.calendar_day || chain.session_id || chain.aggregation_key || '—'}</small></div></div><${RiskBadge} score=${chain.score} /></header><div class="chain-meta"><span>${icon('clock', 14)}${chain.event_count || 0} 个事件</span><span>${icon('clock', 14)}最新 ${formatTime(chain.latest_observed_at, true)}</span><span>${icon('spark', 14)}${levelLabel(chain.invocation_level)}</span><${Badge} tone="blue">${chainModeLabel(chain.aggregation_mode)}<//><${Badge} tone="blue">${chain.stage || 'discovery'}<//></div>${chain.products?.length ? html`<div class="chip-list chain-rules">${chain.products.map((product) => html`<${Badge} tone="neutral" key=${product}>${profileLabel(product)}<//>`)}</div>` : null}${chain.matched_rule_ids?.length ? html`<div class="chip-list chain-rules">${chain.matched_rule_ids.map((rule) => html`<${Badge} tone="warning" key=${rule}>${rule}<//>`)}</div>` : null}<div class="chain-line">${(chain.events || []).slice(-5).map((event, index, visible) => html`<button type="button" class="chain-event" onClick=${() => onOpenEvent(event)}><i class=${cn('chain-dot', event.score >= 60 && 'is-risk')}></i><span><b>${event.event_type || semanticRoute(event)}</b><small>${formatTime(event.observed_at)} · ${event.status || '—'} · ${rawRoute(event)}</small></span>${index === visible.length - 1 ? html`<em>latest</em>` : null}</button>`)}</div><div class="chain-card-actions"><button class="chain-expand" type="button" onClick=${() => setExpanded(expanded === chain.id ? null : chain.id)}>${expanded === chain.id ? '收起详情' : '查看完整链路'} ${icon('chevron', 14)}</button><${DeleteButton} onClick=${() => onDelete(chain.id)} /></div>${expanded === chain.id ? html`<div class="chain-expanded"><pre class="json-view">${JSON.stringify(chain, null, 2)}</pre></div>` : null}</article>`)}</div>` : html`<${Panel}><${EmptyState} icon="route" title="还没有交互链路" description="同一来源建立事件后，链路会自动聚合。" /><//>`}<${PaginationControls} pagination=${pagination} onPageChange=${onPageChange} /></div>`
+  return html`<div class="page-stack"><${PageHeader} eyebrow="Source intelligence" title="交互链路" description="同一 IP 按 Asia/Shanghai 自然日聚合，跨会话、跨蜜罐合并；午夜自动切分并生成稳定链路 ID。" actions=${html`<${Button} icon="refresh" onClick=${onRefresh}>刷新链路<//>`} /><${Panel} className="table-panel" title="链路筛选" action=${html`<span class="panel-meta">每页 10 条 · 共 ${formatNumber(pagination?.total || 0)} 条</span>`}><${FilterBar} onReset=${reset}><label class="search-field">${icon('search', 17)}<input value=${query} onInput=${(event) => setQuery(event.target.value)} onKeyDown=${(event) => event.key === 'Enter' && apply()} placeholder="搜索 IP、日期、产品或链路 ID" /></label><${SearchButton} onClick=${apply} /></${FilterBar}></${Panel}>${loading ? html`<${LoadingState} label="正在加载交互链路…" />` : chains?.length ? html`<div class="chain-grid">${chains.map((chain) => html`<article class="chain-card" key=${chain.id}><header class="chain-card-header"><div class="chain-id"><span class="chain-mark">${icon('route', 17)}</span><div><b>${shortValue(chain.id, 24)}</b><small>${chain.source_ip || '—'} · ${chain.calendar_day || chain.session_id || chain.aggregation_key || '—'}</small></div></div><${RiskBadge} score=${chain.score} /></header><div class="chain-meta"><span>${icon('clock', 14)}${chain.event_count || 0} 个事件</span><span>${icon('clock', 14)}最新 ${formatTime(chain.latest_observed_at, true)}</span><span>${icon('spark', 14)}${levelLabel(chain.invocation_level)}</span><${Badge} tone="blue">${chainModeLabel(chain.aggregation_mode)}<//><${Badge} tone="blue">${chain.stage || 'discovery'}<//></div>${chain.products?.length ? html`<div class="chip-list chain-rules">${chain.products.map((product) => html`<${Badge} tone="neutral" key=${product}>${profileLabel(product)}<//>`)}</div>` : null}${chain.matched_rule_ids?.length ? html`<div class="chip-list chain-rules">${chain.matched_rule_ids.map((rule) => html`<${Badge} tone="warning" key=${rule}>${rule}<//>`)}</div>` : null}<div class="chain-line">${(chain.events || []).slice(-5).map((event, index, visible) => html`<button type="button" class="chain-event" onClick=${() => onOpenEvent(event)}><i class=${cn('chain-dot', event.score >= 60 && 'is-risk')}></i><span><b>${event.event_type || semanticRoute(event)}</b><small>${formatTime(event.observed_at)} · ${event.status || '—'} · ${rawRoute(event)}</small></span>${index === visible.length - 1 ? html`<em>latest</em>` : null}</button>`)}</div><div class="chain-card-actions"><button class="chain-expand" type="button" onClick=${() => setExpanded(expanded === chain.id ? null : chain.id)}>${expanded === chain.id ? '收起详情' : '查看完整链路'} ${icon('chevron', 14)}</button><${DeleteButton} onClick=${() => onDelete(chain.id)} /></div>${expanded === chain.id ? html`<div class="chain-expanded"><pre class="json-view">${JSON.stringify(chain, null, 2)}</pre></div>` : null}</article>`)}</div>` : html`<${Panel}><${EmptyState} icon="route" title="还没有交互链路" description="同一来源建立事件后，链路会自动聚合。" /><//>`}<${PaginationControls} pagination=${pagination} onPageChange=${onPageChange} /></div>`
 }
 
-function ServerIndicatorsPage({ indicators = [], pagination, onRefresh, onOpenIndicator, onSearch, onPageChange, onDelete }) {
+function ServerIndicatorsPage({ indicators = [], pagination, onRefresh, onOpenIndicator, onSearch, onPageChange, onDelete, loading = false }) {
   const [query, setQuery] = useState('')
   const [minScore, setMinScore] = useState(0)
   const apply = () => onSearch({ page: 1, q: query, min_score: minScore })
@@ -572,7 +578,7 @@ function ServerIndicatorsPage({ indicators = [], pagination, onRefresh, onOpenIn
     { label: '证据', render: (row) => html`<span>${formatNumber(row.evidence_count)} 次</span>` },
     { label: '操作', className: 'align-right', render: (row) => html`<${DeleteButton} onClick=${() => onDelete(row.id || row.ip)} />` },
   ]
-  return html`<div class="page-stack"><${PageHeader} eyebrow="Risk intelligence" title="IP 情报" description="国家/地区、国家码、城市和 ASN 直接展示；支持 IP 精确或部分匹配以及逻辑删除。" actions=${html`<div class="button-group"><${Button} icon="download" size="sm" onClick=${() => exportIndicators('csv')}>导出 CSV<//><${Button} icon="refresh" size="sm" onClick=${onRefresh}>刷新<//></div>`} /><${Panel} className="table-panel" title="指标列表" action=${html`<span class="panel-meta">每页 10 条 · 共 ${formatNumber(pagination?.total || 0)} 个指标</span>`}><${FilterBar} onReset=${reset}><label class="search-field">${icon('search', 17)}<input value=${query} onInput=${(event) => setQuery(event.target.value)} onKeyDown=${(event) => event.key === 'Enter' && apply()} placeholder="搜索 IP（完整或部分）" /></label><label class="score-filter"><span>最低风险</span><input type="number" min="0" max="100" value=${minScore} onInput=${(event) => setMinScore(event.target.value)} /></label><${SearchButton} onClick=${apply} /><//><div class="indicator-tools"><div class="button-group"><button class="outline-button" type="button" onClick=${() => exportIndicators('plain')}>导出纯文本</button><button class="outline-button" type="button" onClick=${() => exportIndicators('csv')}>下载 CSV</button></div></div><${DataTable} columns=${columns} rows=${indicators} onRowClick=${onOpenIndicator} emptyTitle="还没有 IP 指标" emptyDescription="当观测到公开蜜罐端点请求后，风险聚合会出现在这里。" /><${PaginationControls} pagination=${pagination} onPageChange=${onPageChange} /><//><p class="page-note">地理信息由当前 GeoIP provider 查询；provider 切换后会重新查询历史 IP。删除 IP 只写入事件 tombstone，不修改权威原始事件。</p></div>`
+  return html`<div class="page-stack"><${PageHeader} eyebrow="Risk intelligence" title="IP 情报" description="国家/地区、国家码、城市和 ASN 直接展示；支持 IP 精确或部分匹配以及逻辑删除。" actions=${html`<div class="button-group"><${Button} icon="download" size="sm" onClick=${() => exportIndicators('csv')}>导出 CSV<//><${Button} icon="refresh" size="sm" onClick=${onRefresh}>刷新<//></div>`} /><${Panel} className="table-panel" title="指标列表" action=${html`<span class="panel-meta">每页 10 条 · 共 ${formatNumber(pagination?.total || 0)} 个指标</span>`}><${FilterBar} onReset=${reset}><label class="search-field">${icon('search', 17)}<input value=${query} onInput=${(event) => setQuery(event.target.value)} onKeyDown=${(event) => event.key === 'Enter' && apply()} placeholder="搜索 IP（完整或部分）" /></label><label class="score-filter"><span>最低风险</span><input type="number" min="0" max="100" value=${minScore} onInput=${(event) => setMinScore(event.target.value)} /></label><${SearchButton} onClick=${apply} /><//><div class="indicator-tools"><div class="button-group"><button class="outline-button" type="button" onClick=${() => exportIndicators('plain')}>导出纯文本</button><button class="outline-button" type="button" onClick=${() => exportIndicators('csv')}>下载 CSV</button></div></div><${DataTable} columns=${columns} rows=${indicators} onRowClick=${onOpenIndicator} loading=${loading} loadingLabel="正在加载 IP 指标…" emptyTitle="还没有 IP 指标" emptyDescription="当观测到公开蜜罐端点请求后，风险聚合会出现在这里。" /><${PaginationControls} pagination=${pagination} onPageChange=${onPageChange} /><//><p class="page-note">地理信息由当前 GeoIP provider 查询；provider 切换后会重新查询历史 IP。删除 IP 只写入事件 tombstone，不修改权威原始事件。</p></div>`
 }
 
 function InstanceCard({ instance, busy, onAction }) {
@@ -815,30 +821,96 @@ function App() {
   const [route, setRoute] = useState(routeFromLocation()); const [auth, setAuth] = useState('checking'); const [username, setUsername] = useState(''); const [lastUpdated, setLastUpdated] = useState(null); const [busy, setBusy] = useState(false); const [loadError, setLoadError] = useState(''); const [toast, setToast] = useState(null); const [selectedEvent, setSelectedEvent] = useState(null); const [selectedActor, setSelectedActor] = useState(null); const [data, setData] = useState({ dashboard: null, instances: [], events: [], invocations: [], chains: [], indicators: [], packs: null, policies: null, ipinfo: null, pagination: { observations: null, invocations: null, chains: null, indicators: null } })
   const [, setListParams] = useState(LIST_DEFAULTS)
   const listParamsRef = useRef(LIST_DEFAULTS)
+  const routeRequestsRef = useRef(new Map())
+  const listLoadingRef = useRef(null)
+  const [listLoading, setListLoading] = useState(null)
+  const busyRequestRef = useRef(null)
+  const detailRequestRef = useRef(null)
   const showToast = useCallback((message, tone = 'success') => { setToast({ message, tone }); window.setTimeout(() => setToast(null), 4200) }, [])
   const onNavigate = useCallback((next) => { setLoadError(''); navigateTo(next) }, [])
+  const beginDetailRequest = useCallback(() => {
+    detailRequestRef.current?.controller?.abort()
+    const requestState = { controller: new AbortController(), version: Date.now() + Math.random() }
+    detailRequestRef.current = requestState
+    return requestState
+  }, [])
+  const isCurrentDetailRequest = useCallback((requestState) => detailRequestRef.current === requestState, [])
+  const openEvent = useCallback(async (event) => {
+    const eventID = event?.event_id || event?.id || ''
+    if (!eventID) return
+    const requestState = beginDetailRequest()
+    setSelectedEvent({ ...event, loading: true })
+    try {
+      const result = await request(`events/${encodeURIComponent(eventID)}`, { signal: requestState.controller.signal })
+      if (!isCurrentDetailRequest(requestState)) return
+      setSelectedEvent(result?.event || result)
+    } catch (error) {
+      if (isAbortError(error) || !isCurrentDetailRequest(requestState)) return
+      setSelectedEvent(null)
+      showToast(error.message || '事件详情读取失败', 'error')
+    }
+  }, [beginDetailRequest, isCurrentDetailRequest, showToast])
   const openActor = useCallback(async (indicator) => {
     const ip = indicator?.ip || ''
     if (!ip) return
+    const requestState = beginDetailRequest()
     setSelectedActor({ ip, loading: true })
-    try { setSelectedActor(await request(`actors/${encodeURIComponent(ip)}`)) } catch (error) { setSelectedActor(null); showToast(error.message || 'IP 详情读取失败', 'error') }
-  }, [showToast])
+    try {
+      const result = await request(`actors/${encodeURIComponent(ip)}?projection=summary`, { signal: requestState.controller.signal })
+      if (!isCurrentDetailRequest(requestState)) return
+      setSelectedActor(result)
+    } catch (error) {
+      if (isAbortError(error) || !isCurrentDetailRequest(requestState)) return
+      setSelectedActor(null)
+      showToast(error.message || 'IP 详情读取失败', 'error')
+    }
+  }, [beginDetailRequest, isCurrentDetailRequest, showToast])
+  const closeDetail = useCallback(() => {
+    detailRequestRef.current?.controller?.abort()
+    detailRequestRef.current = null
+    setSelectedActor(null)
+    setSelectedEvent(null)
+  }, [])
   useEffect(() => { const handlePop = () => setRoute(routeFromLocation()); window.addEventListener('popstate', handlePop); return () => window.removeEventListener('popstate', handlePop) }, [])
+  useEffect(() => {
+    const activeKey = `route:${route}`
+    for (const [key, requestState] of routeRequestsRef.current.entries()) {
+      if (key === activeKey) continue
+      requestState.controller.abort()
+      routeRequestsRef.current.delete(key)
+    }
+  }, [route])
   const loadRoute = useCallback(async (target = route, quiet = false, overrideParams = null) => {
     if (auth !== 'app') return
-    if (!quiet) setBusy(true); setLoadError('')
+    const key = `route:${target}`
+    const existing = routeRequestsRef.current.get(key)
+    if (existing && quiet) return null
+    existing?.controller?.abort()
+    const requestState = { controller: new AbortController(), version: Date.now() + Math.random() }
+    routeRequestsRef.current.set(key, requestState)
+    const current = () => routeRequestsRef.current.get(key) === requestState
+    const options = { signal: requestState.controller.signal }
+    const isListTarget = target === 'observations' || target === 'invocations' || target === 'chains' || target === 'indicators'
+    if (!quiet && isListTarget) {
+      const loading = { target, query: overrideParams !== null, requestState }
+      listLoadingRef.current = loading
+      setListLoading({ target, query: loading.query })
+    }
+    if (!quiet) { busyRequestRef.current = requestState; setBusy(true) }
+    setLoadError('')
     let loaded = null
     try {
-      if (target === 'dashboard') { const [dashboard, instances] = await Promise.all([request('dashboard'), request('instances')]); dashboard.recent_events = (dashboard.recent_events || []).map(displayEventProjection); setData((current) => ({ ...current, dashboard, instances: instances.instances || [] })) }
-      else if (target === 'observations') { const params = overrideParams || listParamsRef.current.observations; const query = new URLSearchParams({ page: String(params.page || 1), page_size: '10' }); if (params.q) query.set('q', params.q); if (params.product) query.set('product', params.product); if (params.min_score !== '' && params.min_score != null) query.set('min_score', String(params.min_score)); loaded = await request(`events?${query}`); setData((current) => ({ ...current, events: loaded.events || [], pagination: { ...current.pagination, observations: responsePagination(loaded) } })) }
-      else if (target === 'invocations') { const params = overrideParams || listParamsRef.current.invocations; const query = new URLSearchParams({ page: String(params.page || 1), page_size: '10' }); if (params.q) query.set('q', params.q); if (params.level) query.set('level', params.level); if (params.auth) query.set('auth', params.auth); if (params.execution) query.set('execution', params.execution); loaded = await request(`invocations?${query}`); setData((current) => ({ ...current, invocations: loaded.invocations || [], pagination: { ...current.pagination, invocations: responsePagination(loaded) } })) }
-      else if (target === 'chains') { const params = overrideParams || listParamsRef.current.chains; const query = new URLSearchParams({ page: String(params.page || 1), page_size: '10' }); if (params.q) query.set('q', params.q); loaded = await request(`interaction-chains?${query}`); setData((current) => ({ ...current, chains: loaded.chains || [], pagination: { ...current.pagination, chains: responsePagination(loaded) } })) }
-      else if (target === 'indicators') { const params = overrideParams || listParamsRef.current.indicators; const query = new URLSearchParams({ page: String(params.page || 1), page_size: '10' }); if (params.q) query.set('q', params.q); if (params.min_score !== '' && params.min_score != null) query.set('min_score', String(params.min_score)); loaded = await request(`indicators?${query}`); setData((current) => ({ ...current, indicators: loaded.items || [], pagination: { ...current.pagination, indicators: responsePagination(loaded) } })) }
-      else if (target === 'instances') { const result = await request('instances'); setData((current) => ({ ...current, instances: result.instances || [] })) }
-      else if (target === 'packs') { const [packs, policies] = await Promise.all([request('packs'), request('identity-policies')]); setData((current) => ({ ...current, packs, policies })) }
-      else if (target === 'settings') { const ipinfo = await request('ipinfo-lite'); setData((current) => ({ ...current, ipinfo })) }
+      if (target === 'dashboard') { const results = await Promise.allSettled([request('dashboard?projection=summary', options).then((dashboard) => { if (current()) { dashboard.recent_events = (dashboard.recent_events || []).map(displayEventProjection); setData((value) => ({ ...value, dashboard })) }; return dashboard }), request('instances', options).then((instances) => { if (current()) setData((value) => ({ ...value, instances: instances.instances || [] })); return instances })]); const failed = results.find((result) => result.status === 'rejected'); if (failed) throw failed.reason }
+      else if (target === 'observations') { const params = overrideParams || listParamsRef.current.observations; const query = new URLSearchParams({ page: String(params.page || 1), page_size: '10', projection: 'summary' }); if (params.q) query.set('q', params.q); if (params.product) query.set('product', params.product); if (params.min_score !== '' && params.min_score != null) query.set('min_score', String(params.min_score)); loaded = await request(`events?${query}`, options); if (!current()) return null; setData((value) => ({ ...value, events: loaded.events || [], pagination: { ...value.pagination, observations: responsePagination(loaded) } })) }
+      else if (target === 'invocations') { const params = overrideParams || listParamsRef.current.invocations; const query = new URLSearchParams({ page: String(params.page || 1), page_size: '10', projection: 'summary' }); if (params.q) query.set('q', params.q); if (params.level) query.set('level', params.level); if (params.auth) query.set('auth', params.auth); if (params.execution) query.set('execution', params.execution); loaded = await request(`invocations?${query}`, options); if (!current()) return null; setData((value) => ({ ...value, invocations: loaded.invocations || [], pagination: { ...value.pagination, invocations: responsePagination(loaded) } })) }
+      else if (target === 'chains') { const params = overrideParams || listParamsRef.current.chains; const query = new URLSearchParams({ page: String(params.page || 1), page_size: '10', projection: 'summary' }); if (params.q) query.set('q', params.q); loaded = await request(`interaction-chains?${query}`, options); if (!current()) return null; setData((value) => ({ ...value, chains: loaded.chains || [], pagination: { ...value.pagination, chains: responsePagination(loaded) } })) }
+      else if (target === 'indicators') { const params = overrideParams || listParamsRef.current.indicators; const query = new URLSearchParams({ page: String(params.page || 1), page_size: '10' }); if (params.q) query.set('q', params.q); if (params.min_score !== '' && params.min_score != null) query.set('min_score', String(params.min_score)); loaded = await request(`indicators?${query}`, options); if (!current()) return null; setData((value) => ({ ...value, indicators: loaded.items || [], pagination: { ...value.pagination, indicators: responsePagination(loaded) } })) }
+      else if (target === 'instances') { const result = await request('instances', options); if (!current()) return null; setData((value) => ({ ...value, instances: result.instances || [] })) }
+      else if (target === 'packs') { const [packs, policies] = await Promise.all([request('packs', options), request('identity-policies', options)]); if (!current()) return null; setData((value) => ({ ...value, packs, policies })) }
+      else if (target === 'settings') { const ipinfo = await request('ipinfo-lite', options); if (!current()) return null; setData((value) => ({ ...value, ipinfo })) }
+      if (!current()) return null
       setLastUpdated(new Date()); return loaded
-    } catch (error) { if (error.status === 401) { setAuth('login'); navigateTo('login', true) } else setLoadError(error.message || '数据读取失败'); return null } finally { if (!quiet) setBusy(false) }
+    } catch (error) { if (isAbortError(error) || !current()) return null; if (error.status === 401) { setAuth('login'); navigateTo('login', true) } else setLoadError(error.message || '数据读取失败'); return null } finally { if (current()) routeRequestsRef.current.delete(key); if (!quiet && busyRequestRef.current === requestState) { busyRequestRef.current = null; setBusy(false) } if (!quiet && listLoadingRef.current?.requestState === requestState) { listLoadingRef.current = null; setListLoading(null) } }
   }, [auth, route])
   const loadList = useCallback(async (target, changes = {}, quiet = false) => {
     const previous = listParamsRef.current[target] || { page: 1 }
@@ -846,6 +918,10 @@ function App() {
     const nextState = { ...listParamsRef.current, [target]: next }
     listParamsRef.current = nextState
     setListParams(nextState)
+    if (!quiet) {
+      const dataKey = target === 'observations' ? 'events' : target
+      setData((value) => ({ ...value, [dataKey]: [], pagination: { ...value.pagination, [target]: null } }))
+    }
     return loadRoute(target, quiet, next)
   }, [loadRoute])
   const deleteListItem = useCallback(async (target, identifier) => {
@@ -863,15 +939,16 @@ function App() {
   }, [loadList, loadRoute, showToast])
   useEffect(() => {
     let active = true
+    const controller = new AbortController()
     const initialize = async () => {
       try {
-        const status = await request('setup/status'); if (!active) return
+        const status = await request('setup/status', { signal: controller.signal }); if (!active) return
         if (!status.initialized) { setAuth('setup'); navigateTo('setup', true); return }
-        try { const dashboard = await request('dashboard'); if (!active) return; setAuth('app'); setData((current) => ({ ...current, dashboard })); if (route === 'login' || route === 'setup') navigateTo('dashboard', true) }
-        catch (error) { if (!active) return; if (error.status === 401) { setAuth('login'); if (route !== 'login') navigateTo('login', true) } else { setLoadError(error.message || '控制平面不可用'); setAuth('login') } }
-      } catch (error) { if (active) { setLoadError(error.message || '无法读取初始化状态'); setAuth('login') } }
+        try { const session = await request('auth/session', { signal: controller.signal }); if (!active) return; setUsername(session.username || ''); setAuth('app'); if (route === 'login' || route === 'setup') navigateTo('dashboard', true) }
+        catch (error) { if (!active || isAbortError(error)) return; if (error.status === 401) { setAuth('login'); if (route !== 'login') navigateTo('login', true) } else { setLoadError(error.message || '控制平面不可用'); setAuth('login') } }
+      } catch (error) { if (active && !isAbortError(error)) { setLoadError(error.message || '无法读取初始化状态'); setAuth('login') } }
     }
-    initialize(); return () => { active = false }
+    initialize(); return () => { active = false; controller.abort() }
   }, [])
   useEffect(() => { if (auth === 'app') loadRoute(route) }, [auth, route])
   useEffect(() => { if (auth !== 'app') return undefined; const timer = window.setInterval(() => loadRoute(route, true), 30000); return () => window.clearInterval(timer) }, [auth, route, loadRoute])
@@ -899,7 +976,7 @@ function App() {
   const setup = async (name, password) => { if (name === 'continue') { setAuth('login'); navigateTo('login', true); return {} } const result = await request('setup/create-owner', { method: 'POST', body: JSON.stringify({ username: name, password }) }); setUsername(name); showToast('owner 已创建，请先保存恢复码'); return result }
   const forgotPassword = async (name) => request('auth/forgot-password', { method: 'POST', body: JSON.stringify({ username: name }) })
   const recoveryReset = async (name, code, password) => { await request('auth/recovery-code/reset', { method: 'POST', body: JSON.stringify({ username: name, recovery_code: code, new_password: password }) }); showToast('密码已重置，请使用新密码登录') }
-  const logout = async () => { try { await request('auth/logout', { method: 'POST' }) } catch (_) {} setAuth('login'); setUsername(''); setSelectedActor(null); setSelectedEvent(null); setListParams(LIST_DEFAULTS); listParamsRef.current = LIST_DEFAULTS; setData({ dashboard: null, instances: [], events: [], invocations: [], chains: [], indicators: [], packs: null, policies: null, ipinfo: null, pagination: { observations: null, invocations: null, chains: null, indicators: null } }); navigateTo('login', true) }
+  const logout = async () => { for (const requestState of routeRequestsRef.current.values()) requestState.controller.abort(); routeRequestsRef.current.clear(); listLoadingRef.current = null; setListLoading(null); busyRequestRef.current = null; setBusy(false); detailRequestRef.current?.controller?.abort(); detailRequestRef.current = null; try { await request('auth/logout', { method: 'POST' }) } catch (_) {} setAuth('login'); setUsername(''); setSelectedActor(null); setSelectedEvent(null); setListParams(LIST_DEFAULTS); listParamsRef.current = LIST_DEFAULTS; setData({ dashboard: null, instances: [], events: [], invocations: [], chains: [], indicators: [], packs: null, policies: null, ipinfo: null, pagination: { observations: null, invocations: null, chains: null, indicators: null } }); navigateTo('login', true) }
   const rotateEntry = async () => { try { const result = await request('admin-entry:rotate', { method: 'POST' }); if (result.new_path) { window.location.assign(`${result.new_path}login`); return } setAuth('login'); navigateTo('login', true); showToast('入口已轮换，请从配置文件获取新路径') } catch (error) { showToast(error.message || '入口轮换失败', 'error') } }
   const instanceAction = async (instance, action) => {
     if (action === 'start-all') { setBusy(true); try { for (const item of data.instances) if (item.state !== 'running') await request(`instances/${item.product}/start`, { method: 'POST' }); await loadRoute('instances', true); showToast('启动指令已应用') } catch (error) { showToast(error.message || '启动实例失败', 'error') } finally { setBusy(false) }; return }
@@ -908,8 +985,8 @@ function App() {
   if (auth === 'checking') return html`<${AuthLoading} />`
   if (auth === 'setup') return html`<${SetupPage} onSetup=${setup} />`
   if (auth === 'login') return html`<${LoginPage} onLogin=${login} onForgot=${forgotPassword} onRecovery=${recoveryReset} />`
-  const page = route === 'observations' ? html`<${ObservationsPage} events=${data.events} pagination=${data.pagination.observations} onRefresh=${() => loadRoute('observations')} onSearch=${(changes) => loadList('observations', changes)} onPageChange=${(page) => loadList('observations', { page })} onDelete=${(id) => deleteListItem('observations', id)} onOpenEvent=${(event) => setSelectedEvent(event)} />` : route === 'invocations' ? html`<${InvocationsPage} invocations=${data.invocations} pagination=${data.pagination.invocations} onRefresh=${() => loadRoute('invocations')} onSearch=${(changes) => loadList('invocations', changes)} onPageChange=${(page) => loadList('invocations', { page })} onDelete=${(id) => deleteListItem('invocations', id)} onOpenEvent=${(event) => setSelectedEvent(event)} />` : route === 'chains' ? html`<${ChainsPage} chains=${data.chains} pagination=${data.pagination.chains} onRefresh=${() => loadRoute('chains')} onSearch=${(changes) => loadList('chains', changes)} onPageChange=${(page) => loadList('chains', { page })} onDelete=${(id) => deleteListItem('chains', id)} onOpenEvent=${(event) => setSelectedEvent(event)} />` : route === 'indicators' ? html`<${IndicatorsPage} indicators=${data.indicators} pagination=${data.pagination.indicators} onRefresh=${() => loadRoute('indicators')} onSearch=${(changes) => loadList('indicators', changes)} onPageChange=${(page) => loadList('indicators', { page })} onDelete=${(id) => deleteListItem('indicators', id)} onOpenIndicator=${openActor} />` : route === 'instances' ? html`<${InstancesPage} instances=${data.instances} onRefresh=${() => loadRoute('instances')} onAction=${instanceAction} busy=${busy} />` : route === 'packs' ? html`<${PacksPage} packs=${data.packs} policies=${data.policies} onRefresh=${() => loadRoute('packs')} />` : route === 'settings' ? html`<${SettingsPage} username=${username} ipinfo=${data.ipinfo} onRotateEntry=${rotateEntry} onSaveIPInfo=${saveIPInfo} />` : html`<${DashboardPage} dashboard=${data.dashboard} instances=${data.instances} onNavigate=${onNavigate} onRefresh=${() => loadRoute('dashboard')} onOpenEvent=${(event) => setSelectedEvent(event)} />`
-  return html`<${AppShell} route=${route} onNavigate=${onNavigate} onLogout=${logout} username=${username} lastUpdated=${lastUpdated}><div class=${cn(loadError && 'has-page-error')}>${loadError ? html`<div class="page-error">${icon('warning', 17)}<span>${loadError}</span><button class="text-button" type="button" onClick=${() => loadRoute(route)}>重试</button></div>` : null}${page}</div><//>${selectedActor ? html`<${ActorDetailModal} actor=${selectedActor} onClose=${() => setSelectedActor(null)} onOpenEvent=${(event) => setSelectedEvent(event)} />` : null}${selectedEvent ? html`<${EventDetails} event=${{ ...selectedEvent, onClose: () => setSelectedEvent(null) }} />` : null}<${Toast} toast=${toast} onClose=${() => setToast(null)} />`
+  const page = route === 'observations' ? html`<${ObservationsPage} events=${data.events} pagination=${data.pagination.observations} onRefresh=${() => loadRoute('observations')} onSearch=${(changes) => loadList('observations', changes)} onPageChange=${(page) => loadList('observations', { page })} onDelete=${(id) => deleteListItem('observations', id)} onOpenEvent=${openEvent} loading=${listLoading?.target === 'observations' && (listLoading.query || data.events.length === 0)} />` : route === 'invocations' ? html`<${InvocationsPage} invocations=${data.invocations} pagination=${data.pagination.invocations} onRefresh=${() => loadRoute('invocations')} onSearch=${(changes) => loadList('invocations', changes)} onPageChange=${(page) => loadList('invocations', { page })} onDelete=${(id) => deleteListItem('invocations', id)} onOpenEvent=${openEvent} loading=${listLoading?.target === 'invocations' && (listLoading.query || data.invocations.length === 0)} />` : route === 'chains' ? html`<${ChainsPage} chains=${data.chains} pagination=${data.pagination.chains} onRefresh=${() => loadRoute('chains')} onSearch=${(changes) => loadList('chains', changes)} onPageChange=${(page) => loadList('chains', { page })} onDelete=${(id) => deleteListItem('chains', id)} onOpenEvent=${openEvent} loading=${listLoading?.target === 'chains' && (listLoading.query || data.chains.length === 0)} />` : route === 'indicators' ? html`<${IndicatorsPage} indicators=${data.indicators} pagination=${data.pagination.indicators} onRefresh=${() => loadRoute('indicators')} onSearch=${(changes) => loadList('indicators', changes)} onPageChange=${(page) => loadList('indicators', { page })} onDelete=${(id) => deleteListItem('indicators', id)} onOpenIndicator=${openActor} loading=${listLoading?.target === 'indicators' && (listLoading.query || data.indicators.length === 0)} />` : route === 'instances' ? html`<${InstancesPage} instances=${data.instances} onRefresh=${() => loadRoute('instances')} onAction=${instanceAction} busy=${busy} />` : route === 'packs' ? html`<${PacksPage} packs=${data.packs} policies=${data.policies} onRefresh=${() => loadRoute('packs')} />` : route === 'settings' ? html`<${SettingsPage} username=${username} ipinfo=${data.ipinfo} onRotateEntry=${rotateEntry} onSaveIPInfo=${saveIPInfo} />` : html`<${DashboardPage} dashboard=${data.dashboard} instances=${data.instances} onNavigate=${onNavigate} onRefresh=${() => loadRoute('dashboard')} onOpenEvent=${openEvent} />`
+  return html`<${AppShell} route=${route} onNavigate=${onNavigate} onLogout=${logout} username=${username} lastUpdated=${lastUpdated}><div class=${cn(loadError && 'has-page-error')}>${loadError ? html`<div class="page-error">${icon('warning', 17)}<span>${loadError}</span><button class="text-button" type="button" onClick=${() => loadRoute(route)}>重试</button></div>` : null}${page}</div><//>${selectedActor ? html`<${ActorDetailModal} actor=${selectedActor} onClose=${closeDetail} onOpenEvent=${openEvent} />` : null}${selectedEvent ? html`<${EventDetails} event=${{ ...selectedEvent, onClose: closeDetail }} />` : null}<${Toast} toast=${toast} onClose=${() => setToast(null)} />`
 }
 
 render(html`<${App} />`, document.getElementById('app'))

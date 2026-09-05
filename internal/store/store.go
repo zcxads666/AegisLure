@@ -30,18 +30,19 @@ const (
 )
 
 type Store struct {
-	mu             sync.RWMutex
-	dir            string
-	key            string
-	driver         string
-	db             *sql.DB
-	dbPath         string
-	dbTarget       string
-	state          model.State
-	eventSeq       uint64
-	maxEvents      int
-	eventRetention time.Duration
-	mirrorMaxBytes int64
+	mu                sync.RWMutex
+	dir               string
+	key               string
+	driver            string
+	db                *sql.DB
+	dbPath            string
+	dbTarget          string
+	state             model.State
+	eventSeq          uint64
+	maxEvents         int
+	eventRetention    time.Duration
+	mirrorMaxBytes    int64
+	searchIndexCancel context.CancelFunc
 }
 
 type Options struct {
@@ -63,11 +64,18 @@ type EventQuery struct {
 	Query            string
 	Product          string
 	SourceIP         string
+	SessionID        string
+	InvocationID     string
 	MinScore         int
 	InvocationOnly   bool
 	InvocationLevel  string
 	AuthOutcome      string
 	ExecutionOutcome string
+	// Summary selects the additive list projection. It keeps the fields used
+	// by admin tables and aggregation, but removes the large raw body/header
+	// payload. The default remains false so existing callers keep the complete
+	// event response.
+	Summary bool
 }
 
 type PageInfo struct {
@@ -97,6 +105,10 @@ const (
 func (s *Store) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.searchIndexCancel != nil {
+		s.searchIndexCancel()
+		s.searchIndexCancel = nil
+	}
 	if s.db == nil {
 		return nil
 	}
@@ -502,6 +514,13 @@ func OpenWithOptions(dir, key string, options Options) (*Store, error) {
 			return nil, err
 		}
 	}
+	if driver == DriverPostgres {
+		// The optional trigram index is built after the store is usable. Its
+		// concurrent build must not extend application startup or block the
+		// first dashboard request; searches remain correct through LIKE while it
+		// is being built.
+		s.searchIndexCancel = startPostgresSearchIndex(db)
+	}
 	return s, nil
 }
 
@@ -604,8 +623,10 @@ CREATE TABLE IF NOT EXISTS events (
 	source_ip TEXT NOT NULL,
 	route_template TEXT NOT NULL,
 	event_json TEXT NOT NULL,
+	event_list_json TEXT NOT NULL DEFAULT '',
 	score INTEGER NOT NULL DEFAULT 0,
 	invocation_id TEXT NOT NULL DEFAULT '',
+	session_id TEXT NOT NULL DEFAULT '',
 	invocation_level TEXT NOT NULL DEFAULT '',
 	auth_outcome TEXT NOT NULL DEFAULT '',
 	execution_outcome TEXT NOT NULL DEFAULT ''
@@ -651,6 +672,12 @@ CREATE INDEX IF NOT EXISTS audit_created_at_idx ON audit_log(created_at);
 	if err := ensureEventQueryColumns(db, DriverSQLite); err != nil {
 		return fmt.Errorf("migrate sqlite event query columns: %w", err)
 	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS events_session_sequence_idx ON events(session_id, sequence DESC)`); err != nil {
+		return fmt.Errorf("create sqlite session index: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS events_invocation_sequence_idx ON events(invocation_id, sequence DESC)`); err != nil {
+		return fmt.Errorf("create sqlite invocation index: %w", err)
+	}
 	return nil
 }
 
@@ -668,8 +695,10 @@ CREATE TABLE IF NOT EXISTS events (
 	source_ip TEXT NOT NULL,
 	route_template TEXT NOT NULL,
 	event_json TEXT NOT NULL,
+	event_list_json TEXT NOT NULL DEFAULT '',
 	score INTEGER NOT NULL DEFAULT 0,
 	invocation_id TEXT NOT NULL DEFAULT '',
+	session_id TEXT NOT NULL DEFAULT '',
 	invocation_level TEXT NOT NULL DEFAULT '',
 	auth_outcome TEXT NOT NULL DEFAULT '',
 	execution_outcome TEXT NOT NULL DEFAULT ''
@@ -725,6 +754,12 @@ CREATE SEQUENCE IF NOT EXISTS aegislure_event_sequence;
 	if err := ensureEventQueryColumns(db, DriverPostgres); err != nil {
 		return fmt.Errorf("migrate postgres event query columns: %w", err)
 	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS events_session_sequence_idx ON events(session_id, sequence DESC)`); err != nil {
+		return fmt.Errorf("create postgres session index: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS events_invocation_sequence_idx ON events(invocation_id, sequence DESC)`); err != nil {
+		return fmt.Errorf("create postgres invocation index: %w", err)
+	}
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin postgres event sequence setup: %w", err)
@@ -750,7 +785,35 @@ CREATE SEQUENCE IF NOT EXISTS aegislure_event_sequence;
 	return nil
 }
 
-const eventQueryColumnsVersion = "1"
+// ensurePostgresSearchIndex is deliberately best effort. pg_trgm is an
+// optional PostgreSQL extension and managed databases commonly deny CREATE
+// EXTENSION; the original escaped LIKE query remains the correctness fallback.
+// The index is created outside the schema/sequence transaction and CONCURRENTLY
+// so opening a large existing database does not take a table-writing lock.
+func startPostgresSearchIndex(db *sql.DB) context.CancelFunc {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	go func() {
+		defer cancel()
+		ensurePostgresSearchIndex(ctx, db)
+	}()
+	return cancel
+}
+
+func ensurePostgresSearchIndex(ctx context.Context, db *sql.DB) {
+	const indexName = "events_event_json_lower_trgm_idx"
+	var valid bool
+	if err := db.QueryRowContext(ctx, `SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid WHERE c.relname=$1`, indexName).Scan(&valid); err == nil && !valid {
+		// A cancelled/failed concurrent build leaves an invalid index behind;
+		// remove only this known optional index so a later startup can retry.
+		_, _ = db.ExecContext(ctx, `DROP INDEX CONCURRENTLY IF EXISTS events_event_json_lower_trgm_idx`)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS pg_trgm`); err != nil {
+		return
+	}
+	_, _ = db.ExecContext(ctx, `CREATE INDEX CONCURRENTLY IF NOT EXISTS events_event_json_lower_trgm_idx ON events USING GIN (LOWER(event_json) gin_trgm_ops)`)
+}
+
+const eventQueryColumnsVersion = "2"
 
 type eventQueryColumn struct {
 	name         string
@@ -759,8 +822,10 @@ type eventQueryColumn struct {
 }
 
 var eventQueryColumns = []eventQueryColumn{
+	{name: "event_list_json", sqliteType: "TEXT NOT NULL DEFAULT ''", postgresType: "TEXT NOT NULL DEFAULT ''"},
 	{name: "score", sqliteType: "INTEGER NOT NULL DEFAULT 0", postgresType: "INTEGER NOT NULL DEFAULT 0"},
 	{name: "invocation_id", sqliteType: "TEXT NOT NULL DEFAULT ''", postgresType: "TEXT NOT NULL DEFAULT ''"},
+	{name: "session_id", sqliteType: "TEXT NOT NULL DEFAULT ''", postgresType: "TEXT NOT NULL DEFAULT ''"},
 	{name: "invocation_level", sqliteType: "TEXT NOT NULL DEFAULT ''", postgresType: "TEXT NOT NULL DEFAULT ''"},
 	{name: "auth_outcome", sqliteType: "TEXT NOT NULL DEFAULT ''", postgresType: "TEXT NOT NULL DEFAULT ''"},
 	{name: "execution_outcome", sqliteType: "TEXT NOT NULL DEFAULT ''", postgresType: "TEXT NOT NULL DEFAULT ''"},
@@ -810,8 +875,10 @@ func ensureEventQueryColumns(db *sql.DB, driver string) error {
 
 type eventQueryColumnValues struct {
 	sequence         int64
+	eventListJSON    string
 	score            int
 	invocationID     string
+	sessionID        string
 	invocationLevel  string
 	authOutcome      string
 	executionOutcome string
@@ -822,7 +889,15 @@ func backfillEventQueryColumns(db *sql.DB, driver string) error {
 	var version string
 	versionErr := db.QueryRow(bindDatabaseQuery(driver, `SELECT value FROM metadata WHERE key=?`), versionKey).Scan(&version)
 	if versionErr == nil && version == eventQueryColumnsVersion {
-		return nil
+		// A legacy binary may have appended rows after this migration and left
+		// the new projection column at its default. Detect that mixed-version
+		// case so summary reads converge on the lightweight representation.
+		var missing int
+		if err := db.QueryRow(`SELECT 1 FROM events WHERE event_list_json='' LIMIT 1`).Scan(&missing); errors.Is(err, sql.ErrNoRows) {
+			return nil
+		} else if err != nil {
+			return err
+		}
 	}
 	if versionErr != nil && !errors.Is(versionErr, sql.ErrNoRows) {
 		return versionErr
@@ -844,10 +919,16 @@ func backfillEventQueryColumns(db *sql.DB, driver string) error {
 		if err := json.Unmarshal([]byte(raw), &event); err != nil {
 			continue
 		}
+		listJSON, err := marshalEventListProjection(event)
+		if err != nil {
+			return fmt.Errorf("encode event list projection: %w", err)
+		}
 		values = append(values, eventQueryColumnValues{
 			sequence:         sequence,
+			eventListJSON:    string(listJSON),
 			score:            event.Score,
 			invocationID:     event.InvocationID,
+			sessionID:        event.SessionID,
 			invocationLevel:  string(event.InvocationLevel),
 			authOutcome:      event.AuthOutcome,
 			executionOutcome: event.ExecutionOutcome,
@@ -866,12 +947,12 @@ func backfillEventQueryColumns(db *sql.DB, driver string) error {
 		return err
 	}
 	defer tx.Rollback()
-	update, err := tx.Prepare(bindDatabaseQuery(driver, `UPDATE events SET score=?,invocation_id=?,invocation_level=?,auth_outcome=?,execution_outcome=? WHERE sequence=?`))
+	update, err := tx.Prepare(bindDatabaseQuery(driver, `UPDATE events SET event_list_json=?,score=?,invocation_id=?,session_id=?,invocation_level=?,auth_outcome=?,execution_outcome=? WHERE sequence=?`))
 	if err != nil {
 		return err
 	}
 	for _, value := range values {
-		if _, err := update.Exec(value.score, value.invocationID, value.invocationLevel, value.authOutcome, value.executionOutcome, value.sequence); err != nil {
+		if _, err := update.Exec(value.eventListJSON, value.score, value.invocationID, value.sessionID, value.invocationLevel, value.authOutcome, value.executionOutcome, value.sequence); err != nil {
 			_ = update.Close()
 			return err
 		}
@@ -945,7 +1026,13 @@ func (s *Store) importLegacyEventsIfNeeded() error {
 		if event.Sequence > sequence {
 			sequence = event.Sequence
 		}
-		if _, err := tx.Exec(s.bind(`INSERT INTO events(sequence,event_id,observed_at,product,source_ip,route_template,event_json,score,invocation_id,invocation_level,auth_outcome,execution_outcome) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`), event.Sequence, event.EventID, event.ObservedAt.Format(time.RFC3339Nano), event.Product, event.SourceIP, event.RouteTemplate, string(mustJSON(event)), event.Score, event.InvocationID, string(event.InvocationLevel), event.AuthOutcome, event.ExecutionOutcome); err != nil {
+		encoded := mustJSON(event)
+		listEncoded, err := marshalEventListProjection(event)
+		if err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("encode legacy event list projection: %w", err)
+		}
+		if _, err := tx.Exec(s.bind(`INSERT INTO events(sequence,event_id,observed_at,product,source_ip,route_template,event_json,event_list_json,score,invocation_id,session_id,invocation_level,auth_outcome,execution_outcome) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`), event.Sequence, event.EventID, event.ObservedAt.Format(time.RFC3339Nano), event.Product, event.SourceIP, event.RouteTemplate, string(encoded), string(listEncoded), event.Score, event.InvocationID, event.SessionID, string(event.InvocationLevel), event.AuthOutcome, event.ExecutionOutcome); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("migrate legacy event: %w", err)
 		}
@@ -963,6 +1050,32 @@ func (s *Store) importLegacyEventsIfNeeded() error {
 func mustJSON(value any) []byte {
 	data, _ := json.Marshal(value)
 	return data
+}
+
+// marshalEventListProjection keeps the fields needed by admin tables and the
+// derived display aggregators while excluding the high-volume request body and
+// repeated headers. The authoritative event_json remains lossless and is used
+// by detail endpoints and the compatibility search path.
+func marshalEventListProjection(event model.Event) ([]byte, error) {
+	projection := event
+	if event.RawRequest != nil {
+		raw := *event.RawRequest
+		raw.Headers = nil
+		raw.BodyBase64 = ""
+		projection.RawRequest = &raw
+	}
+	return json.Marshal(projection)
+}
+
+func eventListProjection(event model.Event) model.Event {
+	if event.RawRequest == nil {
+		return event
+	}
+	raw := *event.RawRequest
+	raw.Headers = nil
+	raw.BodyBase64 = ""
+	event.RawRequest = &raw
+	return event
 }
 
 func (s *Store) loadEventSequence() error {
@@ -2193,8 +2306,12 @@ func (s *Store) AppendEvent(event model.Event) error {
 	if err != nil {
 		return err
 	}
+	listEncoded, err := marshalEventListProjection(event)
+	if err != nil {
+		return err
+	}
 	if s.db != nil {
-		if _, err := s.db.Exec(s.bind(`INSERT INTO events(sequence,event_id,observed_at,product,source_ip,route_template,event_json,score,invocation_id,invocation_level,auth_outcome,execution_outcome) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`), event.Sequence, event.EventID, event.ObservedAt.Format(time.RFC3339Nano), event.Product, event.SourceIP, event.RouteTemplate, string(encoded), event.Score, event.InvocationID, string(event.InvocationLevel), event.AuthOutcome, event.ExecutionOutcome); err != nil {
+		if _, err := s.db.Exec(s.bind(`INSERT INTO events(sequence,event_id,observed_at,product,source_ip,route_template,event_json,event_list_json,score,invocation_id,session_id,invocation_level,auth_outcome,execution_outcome) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`), event.Sequence, event.EventID, event.ObservedAt.Format(time.RFC3339Nano), event.Product, event.SourceIP, event.RouteTemplate, string(encoded), string(listEncoded), event.Score, event.InvocationID, event.SessionID, string(event.InvocationLevel), event.AuthOutcome, event.ExecutionOutcome); err != nil {
 			return fmt.Errorf("append %s event: %w", s.driver, err)
 		}
 		pruned, err := s.pruneEventsLocked(time.Now().UTC())
@@ -2268,6 +2385,10 @@ func (s *Store) AppendImportedEvent(event model.Event, sourceID, sourceFileID st
 	if err != nil {
 		return false, err
 	}
+	listEncoded, err := marshalEventListProjection(event)
+	if err != nil {
+		return false, err
+	}
 	result, err := tx.Exec(s.bind(`INSERT INTO external_event_refs(source_id,source_file_id,source_offset,source_event_hash,event_sequence) VALUES(?,?,?,?,?) ON CONFLICT DO NOTHING`), sourceID, sourceFileID, sourceOffset, sourceHash, event.Sequence)
 	if err != nil {
 		return false, fmt.Errorf("append imported provenance: %w", err)
@@ -2275,7 +2396,7 @@ func (s *Store) AppendImportedEvent(event model.Event, sourceID, sourceFileID st
 	if affected, rowsErr := result.RowsAffected(); rowsErr == nil && affected == 0 {
 		return false, nil
 	}
-	if _, err := tx.Exec(s.bind(`INSERT INTO events(sequence,event_id,observed_at,product,source_ip,route_template,event_json,score,invocation_id,invocation_level,auth_outcome,execution_outcome) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`), event.Sequence, event.EventID, event.ObservedAt.Format(time.RFC3339Nano), event.Product, event.SourceIP, event.RouteTemplate, string(encoded), event.Score, event.InvocationID, string(event.InvocationLevel), event.AuthOutcome, event.ExecutionOutcome); err != nil {
+	if _, err := tx.Exec(s.bind(`INSERT INTO events(sequence,event_id,observed_at,product,source_ip,route_template,event_json,event_list_json,score,invocation_id,session_id,invocation_level,auth_outcome,execution_outcome) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`), event.Sequence, event.EventID, event.ObservedAt.Format(time.RFC3339Nano), event.Product, event.SourceIP, event.RouteTemplate, string(encoded), string(listEncoded), event.Score, event.InvocationID, event.SessionID, string(event.InvocationLevel), event.AuthOutcome, event.ExecutionOutcome); err != nil {
 		return false, fmt.Errorf("append imported %s event: %w", s.driver, err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -2327,25 +2448,30 @@ func (s *Store) pruneEventsLocked(now time.Time) (bool, error) {
 	} else if affected, rowsErr := result.RowsAffected(); rowsErr == nil && affected > 0 {
 		changed = true
 	}
-	var count int
-	if err := s.db.QueryRow(s.bind(`SELECT COUNT(*) FROM events`)).Scan(&count); err != nil {
-		return false, fmt.Errorf("count retained %s events: %w", s.driver, err)
-	}
-	if count > s.maxEvents {
-		if result, err := s.db.Exec(s.bind(`DELETE FROM events WHERE sequence IN (SELECT sequence FROM events ORDER BY sequence ASC LIMIT ?)`), count-s.maxEvents); err != nil {
+	if s.eventSeq > uint64(s.maxEvents) {
+		// The scalar subquery identifies the oldest row that belongs to the
+		// newest maxEvents rows. When the table has fewer rows it returns NULL,
+		// and the positive event sequence domain makes the predicate a no-op.
+		// This preserves the strict count bound without a separate COUNT scan.
+		maxEventsCutoff := s.maxEvents - 1
+		if result, err := s.db.Exec(s.bind(`DELETE FROM events WHERE sequence < COALESCE((SELECT sequence FROM events ORDER BY sequence DESC LIMIT 1 OFFSET ?), 0)`), maxEventsCutoff); err != nil {
 			return false, fmt.Errorf("prune %s event count: %w", s.driver, err)
 		} else if affected, rowsErr := result.RowsAffected(); rowsErr == nil && affected > 0 {
 			changed = true
 		}
 	}
-	// Provenance is useful only while its corresponding event is retained;
-	// keeping the same bound prevents an import source from growing state
-	// independently of the event retention policy.
-	if _, err := s.db.Exec(s.bind(`DELETE FROM external_event_refs WHERE event_sequence NOT IN (SELECT sequence FROM events)`)); err != nil {
-		return false, fmt.Errorf("prune imported event provenance: %w", err)
-	}
-	if _, err := s.db.Exec(s.bind(`DELETE FROM event_tombstones WHERE event_id NOT IN (SELECT event_id FROM events)`)); err != nil {
-		return false, fmt.Errorf("prune event tombstones: %w", err)
+	if changed {
+		// Provenance is useful only while its corresponding event is retained;
+		// keeping the same bound prevents an import source from growing state
+		// independently of the event retention policy. Tombstones follow the
+		// same cleanup rule. Avoid both scans on the normal append path where no
+		// event was removed.
+		if _, err := s.db.Exec(s.bind(`DELETE FROM external_event_refs WHERE event_sequence NOT IN (SELECT sequence FROM events)`)); err != nil {
+			return false, fmt.Errorf("prune imported event provenance: %w", err)
+		}
+		if _, err := s.db.Exec(s.bind(`DELETE FROM event_tombstones WHERE event_id NOT IN (SELECT event_id FROM events)`)); err != nil {
+			return false, fmt.Errorf("prune event tombstones: %w", err)
+		}
 	}
 	return changed, nil
 }
@@ -2433,6 +2559,14 @@ func buildEventListFilter(query EventQuery) eventListFilter {
 		conditions = append(conditions, "e.source_ip=?")
 		args = append(args, query.SourceIP)
 	}
+	if query.SessionID != "" {
+		conditions = append(conditions, "e.session_id=?")
+		args = append(args, query.SessionID)
+	}
+	if query.InvocationID != "" {
+		conditions = append(conditions, "e.invocation_id=?")
+		args = append(args, query.InvocationID)
+	}
 	if query.MinScore > 0 {
 		conditions = append(conditions, "e.score>=?")
 		args = append(args, query.MinScore)
@@ -2467,13 +2601,40 @@ func escapeEventLikePattern(value string) string {
 }
 
 func (s *Store) Events(limit int, product, sourceIP string) ([]model.Event, error) {
+	return s.EventsContext(context.Background(), limit, product, sourceIP, false)
+}
+
+// EventSummaries returns the lightweight projection used by derived admin
+// views. It preserves the historical newest-first limit behavior while keeping
+// the full event_json available to detail and export callers.
+func (s *Store) EventSummaries(limit int, product, sourceIP string) ([]model.Event, error) {
+	return s.EventsContext(context.Background(), limit, product, sourceIP, true)
+}
+
+func (s *Store) EventSummariesContext(ctx context.Context, limit int, product, sourceIP string) ([]model.Event, error) {
+	return s.EventsContext(ctx, limit, product, sourceIP, true)
+}
+
+func (s *Store) EventsContext(ctx context.Context, limit int, product, sourceIP string, summary bool) ([]model.Event, error) {
 	if limit == 0 || limit > 1000 {
 		limit = 100
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if limit > 0 && s.db != nil {
-		return s.queryEventRowsLocked(buildEventListFilter(EventQuery{Product: product, SourceIP: sourceIP}), true, limit, 0)
+	if s.db != nil {
+		events, err := s.queryEventRowsLocked(ctx, buildEventListFilter(EventQuery{Product: product, SourceIP: sourceIP, Summary: summary}), limit > 0, limit, 0, summary)
+		if err != nil {
+			return nil, err
+		}
+		if limit <= 0 {
+			for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
+				events[i], events[j] = events[j], events[i]
+			}
+		}
+		return events, nil
 	}
 	all, err := s.readEventsLocked(product, sourceIP)
 	if err != nil {
@@ -2485,7 +2646,131 @@ func (s *Store) Events(limit int, product, sourceIP string) ([]model.Event, erro
 	for i, j := 0, len(all)-1; i < j; i, j = i+1, j-1 {
 		all[i], all[j] = all[j], all[i]
 	}
+	if summary {
+		for index := range all {
+			all[index] = eventListProjection(all[index])
+		}
+	}
 	return all, nil
+}
+
+// EventsByQueryContext reads all active rows matching structured filters in
+// append order. It is used by detail/derived endpoints that previously loaded
+// every event and filtered it in the application process.
+func (s *Store) EventsByQueryContext(ctx context.Context, query EventQuery) ([]model.Event, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.db != nil {
+		return s.queryEventRowsLocked(ctx, buildEventListFilter(query), false, 0, 0, query.Summary)
+	}
+	all, err := s.readEventsLocked(query.Product, query.SourceIP)
+	if err != nil {
+		return nil, err
+	}
+	filtered := make([]model.Event, 0, len(all))
+	for _, event := range all {
+		if !eventMatchesListQuery(event, query) {
+			continue
+		}
+		if query.Summary {
+			event = eventListProjection(event)
+		}
+		filtered = append(filtered, event)
+	}
+	return filtered, nil
+}
+
+func (s *Store) EventsByQuery(query EventQuery) ([]model.Event, error) {
+	return s.EventsByQueryContext(context.Background(), query)
+}
+
+// EventRowsContext reads one page without issuing a COUNT query. Callers that
+// already have an exact total (for example the <=1000 synthetic aggregation
+// path) can therefore avoid repeating the count.
+func (s *Store) EventRowsContext(ctx context.Context, query EventQuery) ([]model.Event, error) {
+	if query.Page < 1 {
+		query.Page = 1
+	}
+	if query.PageSize < 1 {
+		query.PageSize = 10
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.db != nil {
+		return s.queryEventRowsLocked(ctx, buildEventListFilter(query), true, query.PageSize, (query.Page-1)*query.PageSize, query.Summary)
+	}
+	all, err := s.readEventsLocked(query.Product, query.SourceIP)
+	if err != nil {
+		return nil, err
+	}
+	filtered := make([]model.Event, 0, len(all))
+	for _, event := range all {
+		if eventMatchesListQuery(event, query) {
+			filtered = append(filtered, event)
+		}
+	}
+	for i, j := 0, len(filtered)-1; i < j; i, j = i+1, j-1 {
+		filtered[i], filtered[j] = filtered[j], filtered[i]
+	}
+	start := (query.Page - 1) * query.PageSize
+	if start >= len(filtered) {
+		return []model.Event{}, nil
+	}
+	end := minInt(start+query.PageSize, len(filtered))
+	page := filtered[start:end]
+	if query.Summary {
+		for index := range page {
+			page[index] = eventListProjection(page[index])
+		}
+	}
+	return page, nil
+}
+
+// EventByIDContext is the detail-path lookup. It uses the event_id primary
+// lookup and still joins tombstones so logically deleted evidence is not
+// exposed through a direct URL.
+func (s *Store) EventByIDContext(ctx context.Context, eventID string) (model.Event, error) {
+	eventID = strings.TrimSpace(eventID)
+	if eventID == "" {
+		return model.Event{}, sql.ErrNoRows
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.db == nil {
+		all, err := s.readEventsLocked("", "")
+		if err != nil {
+			return model.Event{}, err
+		}
+		for _, event := range all {
+			if event.EventID == eventID {
+				return event, nil
+			}
+		}
+		return model.Event{}, sql.ErrNoRows
+	}
+	var raw string
+	err := s.db.QueryRowContext(ctx, s.bind(`SELECT e.event_json FROM events e LEFT JOIN event_tombstones t ON t.event_id=e.event_id WHERE e.event_id=? AND t.event_id IS NULL`), eventID).Scan(&raw)
+	if err != nil {
+		return model.Event{}, err
+	}
+	var event model.Event
+	if err := json.Unmarshal([]byte(raw), &event); err != nil {
+		return model.Event{}, fmt.Errorf("decode %s event: %w", s.driver, err)
+	}
+	return event, nil
+}
+
+func (s *Store) EventByID(eventID string) (model.Event, error) {
+	return s.EventByIDContext(context.Background(), eventID)
 }
 
 // readEventsLocked returns active events in append order. Callers must hold at
@@ -2493,7 +2778,7 @@ func (s *Store) Events(limit int, product, sourceIP string) ([]model.Event, erro
 // derived views and management lists.
 func (s *Store) readEventsLocked(product, sourceIP string) ([]model.Event, error) {
 	if s.db != nil {
-		return s.queryEventRowsLocked(buildEventListFilter(EventQuery{Product: product, SourceIP: sourceIP}), false, 0, 0)
+		return s.queryEventRowsLocked(context.Background(), buildEventListFilter(EventQuery{Product: product, SourceIP: sourceIP}), false, 0, 0, false)
 	}
 	path := filepath.Join(s.dir, "events.jsonl")
 	f, err := os.Open(path)
@@ -2526,12 +2811,19 @@ func (s *Store) readEventsLocked(product, sourceIP string) ([]model.Event, error
 	return all, nil
 }
 
-func (s *Store) queryEventRowsLocked(filter eventListFilter, descending bool, limit, offset int) ([]model.Event, error) {
+func (s *Store) queryEventRowsLocked(ctx context.Context, filter eventListFilter, descending bool, limit, offset int, summary bool) ([]model.Event, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	direction := "ASC"
 	if descending {
 		direction = "DESC"
 	}
-	query := `SELECT e.event_json FROM events e LEFT JOIN event_tombstones t ON t.event_id=e.event_id WHERE ` + filter.where + ` ORDER BY e.sequence ` + direction
+	selectedJSON := "e.event_json"
+	if summary {
+		selectedJSON = "COALESCE(NULLIF(e.event_list_json,''), e.event_json)"
+	}
+	query := `SELECT ` + selectedJSON + ` FROM events e LEFT JOIN event_tombstones t ON t.event_id=e.event_id WHERE ` + filter.where + ` ORDER BY e.sequence ` + direction
 	args := append([]any(nil), filter.args...)
 	if limit > 0 {
 		query += ` LIMIT ?`
@@ -2541,7 +2833,7 @@ func (s *Store) queryEventRowsLocked(filter eventListFilter, descending bool, li
 			args = append(args, offset)
 		}
 	}
-	rows, err := s.db.Query(s.bind(query), args...)
+	rows, err := s.db.QueryContext(ctx, s.bind(query), args...)
 	if err != nil {
 		return nil, fmt.Errorf("query %s events: %w", s.driver, err)
 	}
@@ -2579,11 +2871,18 @@ func pageInfo(page, pageSize, total int) PageInfo {
 }
 
 func (s *Store) EventPage(query EventQuery) (EventPage, error) {
+	return s.EventPageContext(context.Background(), query)
+}
+
+func (s *Store) EventPageContext(ctx context.Context, query EventQuery) (EventPage, error) {
 	if query.Page < 1 {
 		query.Page = 1
 	}
 	if query.PageSize < 1 {
 		query.PageSize = 10
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -2610,16 +2909,22 @@ func (s *Store) EventPage(query EventQuery) (EventPage, error) {
 		if end > len(filtered) {
 			end = len(filtered)
 		}
-		return EventPage{Events: filtered[start:end], Pagination: pagination}, nil
+		page := filtered[start:end]
+		if query.Summary {
+			for index := range page {
+				page[index] = eventListProjection(page[index])
+			}
+		}
+		return EventPage{Events: page, Pagination: pagination}, nil
 	}
 
 	filter := buildEventListFilter(query)
 	var total int
 	countQuery := `SELECT COUNT(*) FROM events e LEFT JOIN event_tombstones t ON t.event_id=e.event_id WHERE ` + filter.where
-	if err := s.db.QueryRow(s.bind(countQuery), filter.args...).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(ctx, s.bind(countQuery), filter.args...).Scan(&total); err != nil {
 		return EventPage{}, fmt.Errorf("count %s event page: %w", s.driver, err)
 	}
-	page, err := s.queryEventRowsLocked(filter, true, query.PageSize, (query.Page-1)*query.PageSize)
+	page, err := s.queryEventRowsLocked(ctx, filter, true, query.PageSize, (query.Page-1)*query.PageSize, query.Summary)
 	if err != nil {
 		return EventPage{}, err
 	}
@@ -2631,6 +2936,12 @@ func eventMatchesListQuery(event model.Event, query EventQuery) bool {
 		return false
 	}
 	if query.SourceIP != "" && event.SourceIP != query.SourceIP {
+		return false
+	}
+	if query.SessionID != "" && event.SessionID != query.SessionID {
+		return false
+	}
+	if query.InvocationID != "" && event.InvocationID != query.InvocationID {
 		return false
 	}
 	if query.InvocationOnly && event.InvocationID == "" {
@@ -2756,18 +3067,47 @@ func (s *Store) RestoreEventIDs(ids []string) (int, error) {
 }
 
 func (s *Store) EventIDsForInvocation(invocationID string) ([]string, error) {
+	return s.EventIDsForInvocationContext(context.Background(), invocationID)
+}
+
+func (s *Store) EventIDsForInvocationContext(ctx context.Context, invocationID string) ([]string, error) {
 	invocationID = strings.TrimSpace(invocationID)
 	if invocationID == "" {
 		return nil, nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.db != nil {
+		rows, err := s.db.QueryContext(ctx, s.bind(`SELECT e.event_id FROM events e LEFT JOIN event_tombstones t ON t.event_id=e.event_id WHERE t.event_id IS NULL AND e.invocation_id=? ORDER BY e.sequence ASC`), invocationID)
+		if err != nil {
+			return nil, fmt.Errorf("query %s invocation event IDs: %w", s.driver, err)
+		}
+		defer rows.Close()
+		ids := make([]string, 0)
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return nil, err
+			}
+			ids = append(ids, id)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return ids, nil
+	}
 	all, err := s.readEventsLocked("", "")
 	if err != nil {
 		return nil, err
 	}
 	ids := make([]string, 0)
 	for _, event := range all {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if event.InvocationID == invocationID {
 			ids = append(ids, event.EventID)
 		}
@@ -2776,28 +3116,71 @@ func (s *Store) EventIDsForInvocation(invocationID string) ([]string, error) {
 }
 
 func (s *Store) EventIDsForSourceIP(sourceIP string) ([]string, error) {
+	return s.EventIDsForSourceIPContext(context.Background(), sourceIP)
+}
+
+func (s *Store) EventIDsForSourceIPContext(ctx context.Context, sourceIP string) ([]string, error) {
 	sourceIP = strings.TrimSpace(sourceIP)
 	if sourceIP == "" {
 		return nil, nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.db != nil {
+		rows, err := s.db.QueryContext(ctx, s.bind(`SELECT e.event_id FROM events e LEFT JOIN event_tombstones t ON t.event_id=e.event_id WHERE t.event_id IS NULL AND e.source_ip=? ORDER BY e.sequence ASC`), sourceIP)
+		if err != nil {
+			return nil, fmt.Errorf("query %s source event IDs: %w", s.driver, err)
+		}
+		defer rows.Close()
+		ids := make([]string, 0)
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return nil, err
+			}
+			ids = append(ids, id)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return ids, nil
+	}
 	all, err := s.readEventsLocked("", sourceIP)
 	if err != nil {
 		return nil, err
 	}
 	ids := make([]string, 0, len(all))
 	for _, event := range all {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		ids = append(ids, event.EventID)
 	}
 	return ids, nil
 }
 
 func (s *Store) Indicators() ([]model.Indicator, error) {
-	events, err := s.Events(-1, "", "")
+	return s.IndicatorsContext(context.Background(), false)
+}
+
+// IndicatorsContext shares the event projection with the caller. Admin list
+// paths only need indicator fields and aggregation metadata, so they can avoid
+// loading request bodies while the legacy Indicators method remains lossless.
+func (s *Store) IndicatorsContext(ctx context.Context, summary bool) ([]model.Indicator, error) {
+	events, err := s.EventsContext(ctx, -1, "", "", summary)
 	if err != nil {
 		return nil, err
 	}
+	return IndicatorsFromEvents(events), nil
+}
+
+// IndicatorsFromEvents is the pure aggregation step shared by the dashboard
+// and the standalone indicator endpoint. Sharing the already-loaded event
+// projection avoids a second full event read on dashboard requests.
+func IndicatorsFromEvents(events []model.Event) []model.Indicator {
 	type aggregate struct {
 		item    model.Indicator
 		prod    map[string]bool
@@ -2863,7 +3246,7 @@ func (s *Store) Indicators() ([]model.Indicator, error) {
 		}
 		return result[i].IP < result[j].IP
 	})
-	return result, nil
+	return result
 }
 
 func confidenceForScore(score int) string {
