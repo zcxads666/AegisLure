@@ -55,6 +55,43 @@ func TestEventPageFiltersUseStoredEventColumns(t *testing.T) {
 	}
 }
 
+func TestEventsByQueryPreservesNewestFirstOrder(t *testing.T) {
+	st, err := Open(t.TempDir(), "event-query-order-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	base := time.Now().UTC()
+	for index := 0; index < 3; index++ {
+		if err := st.AppendEvent(model.Event{
+			EventID:    "order-event-" + strconv.Itoa(index),
+			Product:    model.ProductOllama,
+			SourceIP:   "198.51.100.50",
+			SessionID:  "order-session",
+			ObservedAt: base.Add(time.Duration(index) * time.Second),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := st.Events(-1, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.EventsByQuery(EventQuery{SessionID: "order-session"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(want) != len(got) {
+		t.Fatalf("filtered event count = %d, want %d", len(got), len(want))
+	}
+	for index := range want {
+		if got[index].EventID != want[index].EventID {
+			t.Fatalf("filtered event order = %v, want %v", got, want)
+		}
+	}
+}
+
 func TestEventSummaryProjectionKeepsFullDetailAndIndexedLookups(t *testing.T) {
 	st, err := Open(t.TempDir(), "event-summary-key")
 	if err != nil {

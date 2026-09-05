@@ -2655,8 +2655,9 @@ func (s *Store) EventsContext(ctx context.Context, limit int, product, sourceIP 
 }
 
 // EventsByQueryContext reads all active rows matching structured filters in
-// append order. It is used by detail/derived endpoints that previously loaded
-// every event and filtered it in the application process.
+// newest-first order, matching the historical Events(-1, ...) behavior. It is
+// used by detail/derived endpoints that previously loaded every event and
+// filtered it in the application process.
 func (s *Store) EventsByQueryContext(ctx context.Context, query EventQuery) ([]model.Event, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -2664,7 +2665,7 @@ func (s *Store) EventsByQueryContext(ctx context.Context, query EventQuery) ([]m
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.db != nil {
-		return s.queryEventRowsLocked(ctx, buildEventListFilter(query), false, 0, 0, query.Summary)
+		return s.queryEventRowsLocked(ctx, buildEventListFilter(query), true, 0, 0, query.Summary)
 	}
 	all, err := s.readEventsLocked(query.Product, query.SourceIP)
 	if err != nil {
@@ -2679,6 +2680,9 @@ func (s *Store) EventsByQueryContext(ctx context.Context, query EventQuery) ([]m
 			event = eventListProjection(event)
 		}
 		filtered = append(filtered, event)
+	}
+	for i, j := 0, len(filtered)-1; i < j; i, j = i+1, j-1 {
+		filtered[i], filtered[j] = filtered[j], filtered[i]
 	}
 	return filtered, nil
 }
