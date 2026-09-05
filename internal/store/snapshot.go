@@ -224,12 +224,15 @@ func (s *Store) RestoreSnapshot(snapshot Snapshot) error {
 	if _, err := tx.Exec(s.bind(`INSERT INTO metadata(key,value) VALUES('state_json',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`), string(encodedState)); err != nil {
 		return fmt.Errorf("restore %s state: %w", s.driver, err)
 	}
+	if _, err := tx.Exec(s.bind(`INSERT INTO metadata(key,value) VALUES('events_query_columns_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`), eventQueryColumnsVersion); err != nil {
+		return fmt.Errorf("restore %s event query columns version: %w", s.driver, err)
+	}
 	for _, event := range snapshot.Events {
 		encoded, err := json.Marshal(event)
 		if err != nil {
 			return fmt.Errorf("encode snapshot event: %w", err)
 		}
-		if _, err := tx.Exec(s.bind(`INSERT INTO events(sequence,event_id,observed_at,product,source_ip,route_template,event_json) VALUES(?,?,?,?,?,?,?)`), event.Sequence, event.EventID, event.ObservedAt.Format(time.RFC3339Nano), event.Product, event.SourceIP, event.RouteTemplate, string(encoded)); err != nil {
+		if _, err := tx.Exec(s.bind(`INSERT INTO events(sequence,event_id,observed_at,product,source_ip,route_template,event_json,score,invocation_id,invocation_level,auth_outcome,execution_outcome) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`), event.Sequence, event.EventID, event.ObservedAt.Format(time.RFC3339Nano), event.Product, event.SourceIP, event.RouteTemplate, string(encoded), event.Score, event.InvocationID, string(event.InvocationLevel), event.AuthOutcome, event.ExecutionOutcome); err != nil {
 			return fmt.Errorf("restore %s event: %w", s.driver, err)
 		}
 	}

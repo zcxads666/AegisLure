@@ -801,27 +801,48 @@ func (a *App) adminEvents(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "min_score must be between 0 and 100"})
 		return
 	}
-	events, err := a.store.Events(-1, r.URL.Query().Get("product"), r.URL.Query().Get("ip"))
+	result, err := a.store.EventPage(store.EventQuery{
+		Page:     page,
+		PageSize: adminPageSize,
+		Query:    query,
+		Product:  r.URL.Query().Get("product"),
+		SourceIP: r.URL.Query().Get("ip"),
+		MinScore: minScore,
+	})
 	if err != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "event query failed"})
 		return
 	}
-	events = adminDisplayEvents(events)
-	needle := strings.ToLower(strings.TrimSpace(query))
-	filtered := make([]model.Event, 0, len(events))
-	for _, event := range events {
-		if minScore > 0 && event.Score < minScore {
-			continue
+	events := result.Events
+	pagination := result.Pagination
+	if pagination.Total > 0 && pagination.Total <= adminPageFullAggregationLimit {
+		// Preserve the existing synthetic-event aggregation for small histories;
+		// large histories keep the database-bounded page to avoid a full scan.
+		allQuery := store.EventQuery{
+			Page:     1,
+			PageSize: pagination.Total,
+			Query:    query,
+			Product:  r.URL.Query().Get("product"),
+			SourceIP: r.URL.Query().Get("ip"),
+			MinScore: minScore,
 		}
-		if needle != "" {
-			encoded, _ := json.Marshal(event)
-			if !strings.Contains(strings.ToLower(string(encoded)), needle) {
-				continue
-			}
+		allResult, allErr := a.store.EventPage(allQuery)
+		if allErr != nil {
+			a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "event query failed"})
+			return
 		}
-		filtered = append(filtered, event)
+		events = allResult.Events
+		events = adminDisplayEvents(events)
+		pageEvents, pagination := paginateAdminValues(events, page)
+		response := adminPagePayload(pagination)
+		response["events"] = pageEvents
+		response["count"] = len(pageEvents)
+		response["synthetic_only"] = true
+		a.writeJSON(w, http.StatusOK, response)
+		return
 	}
-	pageEvents, pagination := paginateAdminValues(filtered, page)
+	events = adminDisplayEvents(events)
+	pageEvents := events
 	response := adminPagePayload(pagination)
 	response["events"] = pageEvents
 	response["count"] = len(pageEvents)
@@ -1298,7 +1319,10 @@ func queryInt(r *http.Request, name string, fallback int) int {
 	return result
 }
 
-const adminPageSize = 10
+const (
+	adminPageSize                 = 10
+	adminPageFullAggregationLimit = 1000
+)
 
 func adminPageParams(r *http.Request) (int, string, error) {
 	page := 1

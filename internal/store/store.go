@@ -603,12 +603,19 @@ CREATE TABLE IF NOT EXISTS events (
 	product TEXT NOT NULL,
 	source_ip TEXT NOT NULL,
 	route_template TEXT NOT NULL,
-	event_json TEXT NOT NULL
+	event_json TEXT NOT NULL,
+	score INTEGER NOT NULL DEFAULT 0,
+	invocation_id TEXT NOT NULL DEFAULT '',
+	invocation_level TEXT NOT NULL DEFAULT '',
+	auth_outcome TEXT NOT NULL DEFAULT '',
+	execution_outcome TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS events_observed_at_idx ON events(observed_at);
 CREATE INDEX IF NOT EXISTS events_product_idx ON events(product, observed_at);
 CREATE INDEX IF NOT EXISTS events_source_ip_idx ON events(source_ip, observed_at);
 CREATE INDEX IF NOT EXISTS events_route_idx ON events(route_template, observed_at);
+CREATE INDEX IF NOT EXISTS events_product_sequence_idx ON events(product, sequence DESC);
+CREATE INDEX IF NOT EXISTS events_source_ip_sequence_idx ON events(source_ip, sequence DESC);
 CREATE TABLE IF NOT EXISTS event_tombstones (
 	event_id TEXT PRIMARY KEY NOT NULL,
 	deleted_at TEXT NOT NULL,
@@ -641,6 +648,9 @@ CREATE INDEX IF NOT EXISTS audit_created_at_idx ON audit_log(created_at);
 	if err != nil {
 		return fmt.Errorf("create sqlite schema: %w", err)
 	}
+	if err := ensureEventQueryColumns(db, DriverSQLite); err != nil {
+		return fmt.Errorf("migrate sqlite event query columns: %w", err)
+	}
 	return nil
 }
 
@@ -657,12 +667,19 @@ CREATE TABLE IF NOT EXISTS events (
 	product TEXT NOT NULL,
 	source_ip TEXT NOT NULL,
 	route_template TEXT NOT NULL,
-	event_json TEXT NOT NULL
+	event_json TEXT NOT NULL,
+	score INTEGER NOT NULL DEFAULT 0,
+	invocation_id TEXT NOT NULL DEFAULT '',
+	invocation_level TEXT NOT NULL DEFAULT '',
+	auth_outcome TEXT NOT NULL DEFAULT '',
+	execution_outcome TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS events_observed_at_idx ON events(observed_at);
 CREATE INDEX IF NOT EXISTS events_product_idx ON events(product, observed_at);
 CREATE INDEX IF NOT EXISTS events_source_ip_idx ON events(source_ip, observed_at);
 CREATE INDEX IF NOT EXISTS events_route_idx ON events(route_template, observed_at);
+CREATE INDEX IF NOT EXISTS events_product_sequence_idx ON events(product, sequence DESC);
+CREATE INDEX IF NOT EXISTS events_source_ip_sequence_idx ON events(source_ip, sequence DESC);
 CREATE TABLE IF NOT EXISTS event_tombstones (
 	event_id TEXT PRIMARY KEY NOT NULL,
 	deleted_at TEXT NOT NULL,
@@ -705,6 +722,9 @@ CREATE SEQUENCE IF NOT EXISTS aegislure_event_sequence;
 			return fmt.Errorf("create postgres schema statement %q: %w", statement, err)
 		}
 	}
+	if err := ensureEventQueryColumns(db, DriverPostgres); err != nil {
+		return fmt.Errorf("migrate postgres event query columns: %w", err)
+	}
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin postgres event sequence setup: %w", err)
@@ -728,6 +748,148 @@ CREATE SEQUENCE IF NOT EXISTS aegislure_event_sequence;
 		return fmt.Errorf("commit postgres event sequence setup: %w", err)
 	}
 	return nil
+}
+
+const eventQueryColumnsVersion = "1"
+
+type eventQueryColumn struct {
+	name         string
+	sqliteType   string
+	postgresType string
+}
+
+var eventQueryColumns = []eventQueryColumn{
+	{name: "score", sqliteType: "INTEGER NOT NULL DEFAULT 0", postgresType: "INTEGER NOT NULL DEFAULT 0"},
+	{name: "invocation_id", sqliteType: "TEXT NOT NULL DEFAULT ''", postgresType: "TEXT NOT NULL DEFAULT ''"},
+	{name: "invocation_level", sqliteType: "TEXT NOT NULL DEFAULT ''", postgresType: "TEXT NOT NULL DEFAULT ''"},
+	{name: "auth_outcome", sqliteType: "TEXT NOT NULL DEFAULT ''", postgresType: "TEXT NOT NULL DEFAULT ''"},
+	{name: "execution_outcome", sqliteType: "TEXT NOT NULL DEFAULT ''", postgresType: "TEXT NOT NULL DEFAULT ''"},
+}
+
+func ensureEventQueryColumns(db *sql.DB, driver string) error {
+	if driver == DriverSQLite {
+		rows, err := db.Query(`PRAGMA table_info(events)`)
+		if err != nil {
+			return err
+		}
+		existing := make(map[string]bool, len(eventQueryColumns))
+		for rows.Next() {
+			var cid, notNull, primaryKey int
+			var name, columnType string
+			var defaultValue any
+			if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			existing[name] = true
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		for _, column := range eventQueryColumns {
+			if existing[column.name] {
+				continue
+			}
+			if _, err := db.Exec("ALTER TABLE events ADD COLUMN " + column.name + " " + column.sqliteType); err != nil {
+				return fmt.Errorf("add %s: %w", column.name, err)
+			}
+		}
+	} else {
+		for _, column := range eventQueryColumns {
+			if _, err := db.Exec("ALTER TABLE events ADD COLUMN IF NOT EXISTS " + column.name + " " + column.postgresType); err != nil {
+				return fmt.Errorf("add %s: %w", column.name, err)
+			}
+		}
+	}
+	return backfillEventQueryColumns(db, driver)
+}
+
+type eventQueryColumnValues struct {
+	sequence         int64
+	score            int
+	invocationID     string
+	invocationLevel  string
+	authOutcome      string
+	executionOutcome string
+}
+
+func backfillEventQueryColumns(db *sql.DB, driver string) error {
+	versionKey := "events_query_columns_version"
+	var version string
+	versionErr := db.QueryRow(bindDatabaseQuery(driver, `SELECT value FROM metadata WHERE key=?`), versionKey).Scan(&version)
+	if versionErr == nil && version == eventQueryColumnsVersion {
+		return nil
+	}
+	if versionErr != nil && !errors.Is(versionErr, sql.ErrNoRows) {
+		return versionErr
+	}
+
+	rows, err := db.Query(bindDatabaseQuery(driver, `SELECT sequence,event_json FROM events ORDER BY sequence ASC`))
+	if err != nil {
+		return err
+	}
+	values := make([]eventQueryColumnValues, 0)
+	for rows.Next() {
+		var sequence int64
+		var raw string
+		if err := rows.Scan(&sequence, &raw); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		var event model.Event
+		if err := json.Unmarshal([]byte(raw), &event); err != nil {
+			continue
+		}
+		values = append(values, eventQueryColumnValues{
+			sequence:         sequence,
+			score:            event.Score,
+			invocationID:     event.InvocationID,
+			invocationLevel:  string(event.InvocationLevel),
+			authOutcome:      event.AuthOutcome,
+			executionOutcome: event.ExecutionOutcome,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	update, err := tx.Prepare(bindDatabaseQuery(driver, `UPDATE events SET score=?,invocation_id=?,invocation_level=?,auth_outcome=?,execution_outcome=? WHERE sequence=?`))
+	if err != nil {
+		return err
+	}
+	for _, value := range values {
+		if _, err := update.Exec(value.score, value.invocationID, value.invocationLevel, value.authOutcome, value.executionOutcome, value.sequence); err != nil {
+			_ = update.Close()
+			return err
+		}
+	}
+	if err := update.Close(); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(bindDatabaseQuery(driver, `INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`), versionKey, eventQueryColumnsVersion); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func bindDatabaseQuery(driver, query string) string {
+	if driver == DriverPostgres {
+		return rebindPostgres(query)
+	}
+	return query
 }
 
 func (s *Store) loadStateFromDatabase() (bool, error) {
@@ -783,7 +945,7 @@ func (s *Store) importLegacyEventsIfNeeded() error {
 		if event.Sequence > sequence {
 			sequence = event.Sequence
 		}
-		if _, err := tx.Exec(s.bind(`INSERT INTO events(sequence,event_id,observed_at,product,source_ip,route_template,event_json) VALUES(?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`), event.Sequence, event.EventID, event.ObservedAt.Format(time.RFC3339Nano), event.Product, event.SourceIP, event.RouteTemplate, string(mustJSON(event))); err != nil {
+		if _, err := tx.Exec(s.bind(`INSERT INTO events(sequence,event_id,observed_at,product,source_ip,route_template,event_json,score,invocation_id,invocation_level,auth_outcome,execution_outcome) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`), event.Sequence, event.EventID, event.ObservedAt.Format(time.RFC3339Nano), event.Product, event.SourceIP, event.RouteTemplate, string(mustJSON(event)), event.Score, event.InvocationID, string(event.InvocationLevel), event.AuthOutcome, event.ExecutionOutcome); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("migrate legacy event: %w", err)
 		}
@@ -2032,7 +2194,7 @@ func (s *Store) AppendEvent(event model.Event) error {
 		return err
 	}
 	if s.db != nil {
-		if _, err := s.db.Exec(s.bind(`INSERT INTO events(sequence,event_id,observed_at,product,source_ip,route_template,event_json) VALUES(?,?,?,?,?,?,?)`), event.Sequence, event.EventID, event.ObservedAt.Format(time.RFC3339Nano), event.Product, event.SourceIP, event.RouteTemplate, string(encoded)); err != nil {
+		if _, err := s.db.Exec(s.bind(`INSERT INTO events(sequence,event_id,observed_at,product,source_ip,route_template,event_json,score,invocation_id,invocation_level,auth_outcome,execution_outcome) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`), event.Sequence, event.EventID, event.ObservedAt.Format(time.RFC3339Nano), event.Product, event.SourceIP, event.RouteTemplate, string(encoded), event.Score, event.InvocationID, string(event.InvocationLevel), event.AuthOutcome, event.ExecutionOutcome); err != nil {
 			return fmt.Errorf("append %s event: %w", s.driver, err)
 		}
 		pruned, err := s.pruneEventsLocked(time.Now().UTC())
@@ -2113,7 +2275,7 @@ func (s *Store) AppendImportedEvent(event model.Event, sourceID, sourceFileID st
 	if affected, rowsErr := result.RowsAffected(); rowsErr == nil && affected == 0 {
 		return false, nil
 	}
-	if _, err := tx.Exec(s.bind(`INSERT INTO events(sequence,event_id,observed_at,product,source_ip,route_template,event_json) VALUES(?,?,?,?,?,?,?)`), event.Sequence, event.EventID, event.ObservedAt.Format(time.RFC3339Nano), event.Product, event.SourceIP, event.RouteTemplate, string(encoded)); err != nil {
+	if _, err := tx.Exec(s.bind(`INSERT INTO events(sequence,event_id,observed_at,product,source_ip,route_template,event_json,score,invocation_id,invocation_level,auth_outcome,execution_outcome) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`), event.Sequence, event.EventID, event.ObservedAt.Format(time.RFC3339Nano), event.Product, event.SourceIP, event.RouteTemplate, string(encoded), event.Score, event.InvocationID, string(event.InvocationLevel), event.AuthOutcome, event.ExecutionOutcome); err != nil {
 		return false, fmt.Errorf("append imported %s event: %w", s.driver, err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -2255,12 +2417,64 @@ func minInt(left, right int) int {
 	return right
 }
 
+type eventListFilter struct {
+	where string
+	args  []any
+}
+
+func buildEventListFilter(query EventQuery) eventListFilter {
+	conditions := []string{"t.event_id IS NULL"}
+	args := make([]any, 0, 8)
+	if query.Product != "" {
+		conditions = append(conditions, "e.product=?")
+		args = append(args, query.Product)
+	}
+	if query.SourceIP != "" {
+		conditions = append(conditions, "e.source_ip=?")
+		args = append(args, query.SourceIP)
+	}
+	if query.MinScore > 0 {
+		conditions = append(conditions, "e.score>=?")
+		args = append(args, query.MinScore)
+	}
+	if query.InvocationOnly {
+		conditions = append(conditions, "e.invocation_id<>''")
+	}
+	if query.InvocationLevel != "" {
+		conditions = append(conditions, "e.invocation_level=?")
+		args = append(args, query.InvocationLevel)
+	}
+	if query.AuthOutcome != "" {
+		conditions = append(conditions, "e.auth_outcome=?")
+		args = append(args, query.AuthOutcome)
+	}
+	if query.ExecutionOutcome != "" {
+		conditions = append(conditions, "e.execution_outcome=?")
+		args = append(args, query.ExecutionOutcome)
+	}
+	if needle := strings.ToLower(strings.TrimSpace(query.Query)); needle != "" {
+		conditions = append(conditions, "LOWER(e.event_json) LIKE ? ESCAPE '!'")
+		args = append(args, "%"+escapeEventLikePattern(needle)+"%")
+	}
+	return eventListFilter{where: strings.Join(conditions, " AND "), args: args}
+}
+
+func escapeEventLikePattern(value string) string {
+	value = strings.ReplaceAll(value, "!", "!!")
+	value = strings.ReplaceAll(value, "%", "!%")
+	value = strings.ReplaceAll(value, "_", "!_")
+	return value
+}
+
 func (s *Store) Events(limit int, product, sourceIP string) ([]model.Event, error) {
 	if limit == 0 || limit > 1000 {
 		limit = 100
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if limit > 0 && s.db != nil {
+		return s.queryEventRowsLocked(buildEventListFilter(EventQuery{Product: product, SourceIP: sourceIP}), true, limit, 0)
+	}
 	all, err := s.readEventsLocked(product, sourceIP)
 	if err != nil {
 		return nil, err
@@ -2279,33 +2493,7 @@ func (s *Store) Events(limit int, product, sourceIP string) ([]model.Event, erro
 // derived views and management lists.
 func (s *Store) readEventsLocked(product, sourceIP string) ([]model.Event, error) {
 	if s.db != nil {
-		rows, err := s.db.Query(s.bind(`SELECT e.event_json FROM events e LEFT JOIN event_tombstones t ON t.event_id=e.event_id WHERE t.event_id IS NULL ORDER BY e.sequence ASC`))
-		if err != nil {
-			return nil, fmt.Errorf("query %s events: %w", s.driver, err)
-		}
-		defer rows.Close()
-		var all []model.Event
-		for rows.Next() {
-			var raw string
-			if err := rows.Scan(&raw); err != nil {
-				return nil, err
-			}
-			var event model.Event
-			if json.Unmarshal([]byte(raw), &event) != nil {
-				continue
-			}
-			if product != "" && event.Product != product {
-				continue
-			}
-			if sourceIP != "" && event.SourceIP != sourceIP {
-				continue
-			}
-			all = append(all, event)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
-		return all, nil
+		return s.queryEventRowsLocked(buildEventListFilter(EventQuery{Product: product, SourceIP: sourceIP}), false, 0, 0)
 	}
 	path := filepath.Join(s.dir, "events.jsonl")
 	f, err := os.Open(path)
@@ -2338,6 +2526,44 @@ func (s *Store) readEventsLocked(product, sourceIP string) ([]model.Event, error
 	return all, nil
 }
 
+func (s *Store) queryEventRowsLocked(filter eventListFilter, descending bool, limit, offset int) ([]model.Event, error) {
+	direction := "ASC"
+	if descending {
+		direction = "DESC"
+	}
+	query := `SELECT e.event_json FROM events e LEFT JOIN event_tombstones t ON t.event_id=e.event_id WHERE ` + filter.where + ` ORDER BY e.sequence ` + direction
+	args := append([]any(nil), filter.args...)
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+		if offset > 0 {
+			query += ` OFFSET ?`
+			args = append(args, offset)
+		}
+	}
+	rows, err := s.db.Query(s.bind(query), args...)
+	if err != nil {
+		return nil, fmt.Errorf("query %s events: %w", s.driver, err)
+	}
+	defer rows.Close()
+	events := make([]model.Event, 0)
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var event model.Event
+		if json.Unmarshal([]byte(raw), &event) != nil {
+			continue
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
 func pageInfo(page, pageSize, total int) PageInfo {
 	if page < 1 {
 		page = 1
@@ -2361,70 +2587,74 @@ func (s *Store) EventPage(query EventQuery) (EventPage, error) {
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	all, err := s.readEventsLocked(query.Product, query.SourceIP)
-	if err != nil {
-		return EventPage{}, err
-	}
-	needle := strings.ToLower(strings.TrimSpace(query.Query))
-	if needle != "" {
-		filtered := all[:0]
+	if s.db == nil {
+		all, err := s.readEventsLocked(query.Product, query.SourceIP)
+		if err != nil {
+			return EventPage{}, err
+		}
+		filtered := make([]model.Event, 0, len(all))
 		for _, event := range all {
-			if query.InvocationOnly && event.InvocationID == "" {
-				continue
-			}
-			if query.MinScore > 0 && event.Score < query.MinScore {
-				continue
-			}
-			if query.InvocationLevel != "" && string(event.InvocationLevel) != query.InvocationLevel {
-				continue
-			}
-			if query.AuthOutcome != "" && event.AuthOutcome != query.AuthOutcome {
-				continue
-			}
-			if query.ExecutionOutcome != "" && event.ExecutionOutcome != query.ExecutionOutcome {
-				continue
-			}
-			encoded, _ := json.Marshal(event)
-			if strings.Contains(strings.ToLower(string(encoded)), needle) {
+			if eventMatchesListQuery(event, query) {
 				filtered = append(filtered, event)
 			}
 		}
-		all = filtered
-	} else if query.MinScore > 0 || query.InvocationOnly || query.InvocationLevel != "" || query.AuthOutcome != "" || query.ExecutionOutcome != "" {
-		filtered := all[:0]
-		for _, event := range all {
-			if query.InvocationOnly && event.InvocationID == "" {
-				continue
-			}
-			if query.MinScore > 0 && event.Score < query.MinScore {
-				continue
-			}
-			if query.InvocationLevel != "" && string(event.InvocationLevel) != query.InvocationLevel {
-				continue
-			}
-			if query.AuthOutcome != "" && event.AuthOutcome != query.AuthOutcome {
-				continue
-			}
-			if query.ExecutionOutcome != "" && event.ExecutionOutcome != query.ExecutionOutcome {
-				continue
-			}
-			filtered = append(filtered, event)
+		for i, j := 0, len(filtered)-1; i < j; i, j = i+1, j-1 {
+			filtered[i], filtered[j] = filtered[j], filtered[i]
 		}
-		all = filtered
+		pagination := pageInfo(query.Page, query.PageSize, len(filtered))
+		start := (pagination.Page - 1) * pagination.PageSize
+		if start >= len(filtered) {
+			return EventPage{Events: []model.Event{}, Pagination: pagination}, nil
+		}
+		end := start + pagination.PageSize
+		if end > len(filtered) {
+			end = len(filtered)
+		}
+		return EventPage{Events: filtered[start:end], Pagination: pagination}, nil
 	}
-	for i, j := 0, len(all)-1; i < j; i, j = i+1, j-1 {
-		all[i], all[j] = all[j], all[i]
+
+	filter := buildEventListFilter(query)
+	var total int
+	countQuery := `SELECT COUNT(*) FROM events e LEFT JOIN event_tombstones t ON t.event_id=e.event_id WHERE ` + filter.where
+	if err := s.db.QueryRow(s.bind(countQuery), filter.args...).Scan(&total); err != nil {
+		return EventPage{}, fmt.Errorf("count %s event page: %w", s.driver, err)
 	}
-	pagination := pageInfo(query.Page, query.PageSize, len(all))
-	start := (pagination.Page - 1) * pagination.PageSize
-	if start >= len(all) {
-		return EventPage{Events: []model.Event{}, Pagination: pagination}, nil
+	page, err := s.queryEventRowsLocked(filter, true, query.PageSize, (query.Page-1)*query.PageSize)
+	if err != nil {
+		return EventPage{}, err
 	}
-	end := start + pagination.PageSize
-	if end > len(all) {
-		end = len(all)
+	return EventPage{Events: page, Pagination: pageInfo(query.Page, query.PageSize, total)}, nil
+}
+
+func eventMatchesListQuery(event model.Event, query EventQuery) bool {
+	if query.Product != "" && event.Product != query.Product {
+		return false
 	}
-	return EventPage{Events: all[start:end], Pagination: pagination}, nil
+	if query.SourceIP != "" && event.SourceIP != query.SourceIP {
+		return false
+	}
+	if query.InvocationOnly && event.InvocationID == "" {
+		return false
+	}
+	if query.MinScore > 0 && event.Score < query.MinScore {
+		return false
+	}
+	if query.InvocationLevel != "" && string(event.InvocationLevel) != query.InvocationLevel {
+		return false
+	}
+	if query.AuthOutcome != "" && event.AuthOutcome != query.AuthOutcome {
+		return false
+	}
+	if query.ExecutionOutcome != "" && event.ExecutionOutcome != query.ExecutionOutcome {
+		return false
+	}
+	if needle := strings.ToLower(strings.TrimSpace(query.Query)); needle != "" {
+		encoded, _ := json.Marshal(event)
+		if !strings.Contains(strings.ToLower(string(encoded)), needle) {
+			return false
+		}
+	}
+	return true
 }
 
 // SoftDeleteEventIDs adds tombstones without changing or removing event rows.
