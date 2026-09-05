@@ -74,8 +74,132 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 &
     fi
   }
 
+  compose_has_edge_egress_for_project() {
+    local project_dir="$1"
+    local rendered
+    rendered="$(cd "$project_dir" && docker compose -f docker-compose.yml config 2>/dev/null)" || return 1
+    awk '
+      $0 == "  edge_net:" { in_edge = 1; next }
+      in_edge && $0 ~ /^  [^[:space:]][^:]*:/ { in_edge = 0 }
+      in_edge && $0 ~ /com\.docker\.network\.bridge\.enable_ip_masquerade:/ {
+        value = $0
+        sub(/^.*enable_ip_masquerade:[[:space:]]*/, "", value)
+        gsub(/[^[:alnum:]_]/, "", value)
+        found = (value == "true")
+      }
+      END { exit found ? 0 : 1 }
+    ' <<<"$rendered"
+  }
+
+  run_image_action_without_go() {
+    local action="$1"
+    shift
+    local image=""
+    local project_dir="$ROOT_DIR"
+    local pull=true
+
+    while (($# > 0)); do
+      case "$1" in
+        --image)
+          if (($# < 2)); then
+            echo "--image requires a value" >&2
+            exit 2
+          fi
+          image="$2"
+          shift 2
+          ;;
+        --image=*)
+          image="${1#*=}"
+          shift
+          ;;
+        --project-dir)
+          if (($# < 2)); then
+            echo "--project-dir requires a value" >&2
+            exit 2
+          fi
+          project_dir="$2"
+          shift 2
+          ;;
+        --project-dir=*)
+          project_dir="${1#*=}"
+          shift
+          ;;
+        --pull)
+          if (($# > 1)) && [[ "$2" == "true" || "$2" == "false" ]]; then
+            pull="$2"
+            shift 2
+          else
+            pull=true
+            shift
+          fi
+          ;;
+        --pull=*)
+          pull="${1#*=}"
+          if [[ "$pull" != "true" && "$pull" != "false" ]]; then
+            echo "--pull must be true or false" >&2
+            exit 2
+          fi
+          shift
+          ;;
+        *)
+          echo "flag provided but not defined: $1" >&2
+          exit 2
+          ;;
+      esac
+    done
+
+    if [[ ! "$image" =~ ^[A-Za-z0-9][A-Za-z0-9._/@:-]*@sha256:[a-fA-F0-9]{64}$ ]]; then
+      echo "--image must be a safe immutable image reference containing @sha256:" >&2
+      exit 1
+    fi
+    if ! project_dir="$(cd "$project_dir" 2>/dev/null && pwd -P)"; then
+      echo "project directory is not accessible: $project_dir" >&2
+      exit 1
+    fi
+    if [[ ! -f "$project_dir/docker-compose.yml" ]]; then
+      echo "docker-compose.yml is missing from project directory: $project_dir" >&2
+      exit 1
+    fi
+    if ! compose_has_edge_egress_for_project "$project_dir"; then
+      echo "AegisLure requires edge_net outbound egress (enable_ip_masquerade=true) for IPinfo API queries." >&2
+      exit 1
+    fi
+
+    local compose_args=(-f docker-compose.yml)
+    local mode="${HP_DB_DRIVER:-}"
+    if [[ -z "$mode" && -f "$project_dir/.env" ]]; then
+      mode="$(awk -F= '/^HP_DB_DRIVER=/ { print $2; exit }' "$project_dir/.env")"
+    fi
+    local profile_args=()
+    local mode_lower
+    mode_lower="$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')"
+    if [[ "$mode_lower" == "postgres" || "$mode_lower" == "postgresql" ]]; then
+      compose_args+=(-f docker-compose.pg.yml)
+      local external_url="${HP_DATABASE_URL:-}"
+      local external_url_file="${HP_DATABASE_URL_FILE:-}"
+      if [[ -f "$project_dir/.env" ]]; then
+        [[ -n "$external_url" ]] || external_url="$(awk -F= '/^HP_DATABASE_URL=/ { print substr($0, index($0, "=")+1); exit }' "$project_dir/.env")"
+        [[ -n "$external_url_file" ]] || external_url_file="$(awk -F= '/^HP_DATABASE_URL_FILE=/ { print substr($0, index($0, "=")+1); exit }' "$project_dir/.env")"
+      fi
+      if [[ -z "$external_url" && -z "$external_url_file" ]]; then
+        profile_args+=(--profile bundled-pg)
+      fi
+    fi
+    local compose_action=(docker compose "${compose_args[@]}")
+    if ((${#profile_args[@]} > 0)); then
+      compose_action+=("${profile_args[@]}")
+    fi
+    if [[ "$action" == "upgrade" && "$pull" == "true" ]]; then
+      (cd "$project_dir" && HP_IMAGE="$image" "${compose_action[@]}" pull aegislure
+      )
+    fi
+    (cd "$project_dir" && HP_IMAGE="$image" "${compose_action[@]}" up -d --no-build aegislure
+    )
+    printf "%s applied image=%s\n" "$action" "$image"
+  }
+
   case "${1:-}" in
-    start|restart|upgrade|rollback) require_edge_egress ;;
+    start|restart) require_edge_egress ;;
   esac
 
   docker_service_running() {
@@ -111,6 +235,7 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 &
       start) exec "${compose_command[@]}" up -d ;;
       stop) exec "${compose_command[@]}" stop ;;
       restart) exec "${compose_command[@]}" restart ;;
+      upgrade|rollback) run_image_action_without_go "$@"; exit ;;
       *) exec "${compose_command[@]}" run --rm --no-deps --entrypoint /usr/local/bin/hpctl aegislure "$@" ;;
     esac
   fi
