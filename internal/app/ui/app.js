@@ -139,8 +139,20 @@ const LIST_DEFAULTS = {
   observations: { page: 1, q: '', product: '', min_score: '' },
   invocations: { page: 1, q: '', level: '', auth: '', execution: '' },
   chains: { page: 1, q: '' },
-  indicators: { page: 1, q: '', min_score: 0 },
+  indicators: { page: 1, q: '', risk_level: '', sort: 'latest' },
 }
+
+const INDICATOR_RISK_OPTIONS = [
+  { value: '', label: '全部风险' },
+  { value: 'high', label: '高风险 · 60–100 分' },
+  { value: 'medium', label: '中风险 · 30–59 分' },
+  { value: 'low', label: '低风险 · 0–29 分' },
+]
+
+const INDICATOR_SORT_OPTIONS = [
+  { value: 'latest', label: '最近出现优先' },
+  { value: 'risk', label: '风险分从高到低' },
+]
 
 function responsePagination(result) {
   return result?.pagination || {
@@ -564,10 +576,15 @@ function ServerChainsPage({ chains = [], pagination, onRefresh, onOpenEvent, onS
 
 function ServerIndicatorsPage({ indicators = [], pagination, onRefresh, onOpenIndicator, onSearch, onPageChange, onDelete, loading = false }) {
   const [query, setQuery] = useState('')
-  const [minScore, setMinScore] = useState(0)
-  const apply = () => onSearch({ page: 1, q: query, min_score: minScore })
-  const reset = () => { setQuery(''); setMinScore(0); onSearch({ page: 1, q: '', min_score: 0 }) }
-  const exportIndicators = (format) => { const link = document.createElement('a'); link.href = `${apiPath('indicators')}?format=${format}&q=${encodeURIComponent(query)}&min_score=${encodeURIComponent(minScore)}`; link.download = `aegislure-indicators.${format}`; document.body.appendChild(link); link.click(); link.remove() }
+  const [riskLevel, setRiskLevel] = useState('')
+  const [sortMode, setSortMode] = useState('latest')
+  const apply = () => onSearch({ page: 1, q: query, risk_level: riskLevel, sort: sortMode })
+  const reset = () => { setQuery(''); setRiskLevel(''); setSortMode('latest'); onSearch({ page: 1, q: '', risk_level: '', sort: 'latest' }) }
+  const exportIndicators = (format) => {
+    const params = new URLSearchParams({ format, q: query, sort: sortMode })
+    if (riskLevel) params.set('risk_level', riskLevel)
+    const link = document.createElement('a'); link.href = `${apiPath('indicators')}?${params}`; link.download = `aegislure-indicators.${format}`; document.body.appendChild(link); link.click(); link.remove()
+  }
   const columns = [
     { label: '来源 IP', render: (row) => html`<code class="mono ip-cell">${row.ip}</code>` },
     { label: '国家/地区', render: (row) => html`<span class="geo-cell">${row.country_zh || indicatorCountry(row)}</span><small class="geo-subcell">${row.country_code || '—'}</small>` },
@@ -576,9 +593,12 @@ function ServerIndicatorsPage({ indicators = [], pagination, onRefresh, onOpenIn
     { label: '来源', render: (row) => html`<span class="geo-cell">${geoSourceLabel(row.geo_source)}</span>` },
     { label: '风险分', render: (row) => html`<${RiskBadge} score=${row.score} />` },
     { label: '证据', render: (row) => html`<span>${formatNumber(row.evidence_count)} 次</span>` },
+    { label: '最近出现', render: (row) => html`<span class="table-time">${formatTime(row.last_seen)}</span>` },
     { label: '操作', className: 'align-right', render: (row) => html`<${DeleteButton} onClick=${() => onDelete(row.id || row.ip)} />` },
   ]
-  return html`<div class="page-stack"><${PageHeader} eyebrow="Risk intelligence" title="IP 情报" description="国家/地区、国家码、城市和 ASN 直接展示；支持 IP 精确或部分匹配以及逻辑删除。" actions=${html`<div class="button-group"><${Button} icon="download" size="sm" onClick=${() => exportIndicators('csv')}>导出 CSV<//><${Button} icon="refresh" size="sm" onClick=${onRefresh}>刷新<//></div>`} /><${Panel} className="table-panel" title="指标列表" action=${html`<span class="panel-meta">每页 10 条 · 共 ${formatNumber(pagination?.total || 0)} 个指标</span>`}><${FilterBar} onReset=${reset}><label class="search-field">${icon('search', 17)}<input value=${query} onInput=${(event) => setQuery(event.target.value)} onKeyDown=${(event) => event.key === 'Enter' && apply()} placeholder="搜索 IP（完整或部分）" /></label><label class="score-filter"><span>最低风险</span><input type="number" min="0" max="100" value=${minScore} onInput=${(event) => setMinScore(event.target.value)} /></label><${SearchButton} onClick=${apply} /><//><div class="indicator-tools"><div class="button-group"><button class="outline-button" type="button" onClick=${() => exportIndicators('plain')}>导出纯文本</button><button class="outline-button" type="button" onClick=${() => exportIndicators('csv')}>下载 CSV</button></div></div><${DataTable} columns=${columns} rows=${indicators} onRowClick=${onOpenIndicator} loading=${loading} loadingLabel="正在加载 IP 指标…" emptyTitle="还没有 IP 指标" emptyDescription="当观测到公开蜜罐端点请求后，风险聚合会出现在这里。" /><${PaginationControls} pagination=${pagination} onPageChange=${onPageChange} /><//><p class="page-note">地理信息由当前 GeoIP provider 查询；provider 切换后会重新查询历史 IP。删除 IP 只写入事件 tombstone，不修改权威原始事件。</p></div>`
+  const selectedRiskLabel = INDICATOR_RISK_OPTIONS.find((option) => option.value === riskLevel)?.label || '全部风险'
+  const selectedSortLabel = INDICATOR_SORT_OPTIONS.find((option) => option.value === sortMode)?.label || '最近出现优先'
+  return html`<div class="page-stack"><${PageHeader} eyebrow="Risk intelligence" title="IP 情报" description="默认按最近出现时间排序；也可切换为风险分从高到低，并按低、中、高风险区间筛选。" actions=${html`<div class="button-group"><${Button} icon="download" size="sm" onClick=${() => exportIndicators('csv')}>导出 CSV<//><${Button} icon="refresh" size="sm" onClick=${onRefresh}>刷新<//></div>`} /><${Panel} className="table-panel" title="指标列表" action=${html`<span class="panel-meta">每页 10 条 · 共 ${formatNumber(pagination?.total || 0)} 个指标</span>`}><${FilterBar} onReset=${reset}><label class="search-field">${icon('search', 17)}<input value=${query} onInput=${(event) => setQuery(event.target.value)} onKeyDown=${(event) => event.key === 'Enter' && apply()} placeholder="搜索 IP（完整或部分）" /></label><${Select} label="风险等级" value=${riskLevel} onChange=${setRiskLevel} options=${INDICATOR_RISK_OPTIONS} /><${Select} label="排序方式" value=${sortMode} onChange=${setSortMode} options=${INDICATOR_SORT_OPTIONS} /><${SearchButton} onClick=${apply} /><//><div class="indicator-tools"><div class="indicator-order-note"><span>筛选：${selectedRiskLabel}</span><span>排序：${selectedSortLabel}</span></div><div class="button-group"><button class="outline-button" type="button" onClick=${() => exportIndicators('plain')}>导出纯文本</button><button class="outline-button" type="button" onClick=${() => exportIndicators('csv')}>下载 CSV</button></div></div><${DataTable} columns=${columns} rows=${indicators} onRowClick=${onOpenIndicator} loading=${loading} loadingLabel="正在加载 IP 指标…" emptyTitle="还没有 IP 指标" emptyDescription="当观测到公开蜜罐端点请求后，风险聚合会出现在这里。" /><${PaginationControls} pagination=${pagination} onPageChange=${onPageChange} /><//><p class="page-note">地理信息由当前 GeoIP provider 查询；provider 切换后会重新查询历史 IP。删除 IP 只写入事件 tombstone，不修改权威原始事件。</p></div>`
 }
 
 function InstanceCard({ instance, busy, onAction }) {
@@ -904,7 +924,7 @@ function App() {
       else if (target === 'observations') { const params = overrideParams || listParamsRef.current.observations; const query = new URLSearchParams({ page: String(params.page || 1), page_size: '10', projection: 'summary' }); if (params.q) query.set('q', params.q); if (params.product) query.set('product', params.product); if (params.min_score !== '' && params.min_score != null) query.set('min_score', String(params.min_score)); loaded = await request(`events?${query}`, options); if (!current()) return null; setData((value) => ({ ...value, events: loaded.events || [], pagination: { ...value.pagination, observations: responsePagination(loaded) } })) }
       else if (target === 'invocations') { const params = overrideParams || listParamsRef.current.invocations; const query = new URLSearchParams({ page: String(params.page || 1), page_size: '10', projection: 'summary' }); if (params.q) query.set('q', params.q); if (params.level) query.set('level', params.level); if (params.auth) query.set('auth', params.auth); if (params.execution) query.set('execution', params.execution); loaded = await request(`invocations?${query}`, options); if (!current()) return null; setData((value) => ({ ...value, invocations: loaded.invocations || [], pagination: { ...value.pagination, invocations: responsePagination(loaded) } })) }
       else if (target === 'chains') { const params = overrideParams || listParamsRef.current.chains; const query = new URLSearchParams({ page: String(params.page || 1), page_size: '10', projection: 'summary' }); if (params.q) query.set('q', params.q); loaded = await request(`interaction-chains?${query}`, options); if (!current()) return null; setData((value) => ({ ...value, chains: loaded.chains || [], pagination: { ...value.pagination, chains: responsePagination(loaded) } })) }
-      else if (target === 'indicators') { const params = overrideParams || listParamsRef.current.indicators; const query = new URLSearchParams({ page: String(params.page || 1), page_size: '10' }); if (params.q) query.set('q', params.q); if (params.min_score !== '' && params.min_score != null) query.set('min_score', String(params.min_score)); loaded = await request(`indicators?${query}`, options); if (!current()) return null; setData((value) => ({ ...value, indicators: loaded.items || [], pagination: { ...value.pagination, indicators: responsePagination(loaded) } })) }
+      else if (target === 'indicators') { const params = overrideParams || listParamsRef.current.indicators; const query = new URLSearchParams({ page: String(params.page || 1), page_size: '10' }); if (params.q) query.set('q', params.q); if (params.risk_level) query.set('risk_level', params.risk_level); if (params.sort) query.set('sort', params.sort); if (params.min_score !== '' && params.min_score != null) query.set('min_score', String(params.min_score)); loaded = await request(`indicators?${query}`, options); if (!current()) return null; setData((value) => ({ ...value, indicators: loaded.items || [], pagination: { ...value.pagination, indicators: responsePagination(loaded) } })) }
       else if (target === 'instances') { const result = await request('instances', options); if (!current()) return null; setData((value) => ({ ...value, instances: result.instances || [] })) }
       else if (target === 'packs') { const [packs, policies] = await Promise.all([request('packs', options), request('identity-policies', options)]); if (!current()) return null; setData((value) => ({ ...value, packs, policies })) }
       else if (target === 'settings') { const ipinfo = await request('ipinfo-lite', options); if (!current()) return null; setData((value) => ({ ...value, ipinfo })) }

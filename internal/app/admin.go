@@ -1229,6 +1229,10 @@ func (a *App) adminIndicators(w http.ResponseWriter, r *http.Request) {
 	response := adminPagePayload(pagination)
 	response["items"] = views
 	response["count"] = len(views)
+	riskLevel, _ := indicatorRiskLevelQuery(r)
+	sortMode, _ := indicatorSortQuery(r)
+	response["risk_level"] = riskLevel
+	response["sort"] = sortMode
 	response["approved_only"] = r.URL.Query().Get("status") == "approved"
 	response["note"] = "Standalone decisions require manual approval and always carry a TTL; no permanent block is emitted."
 	a.writeJSON(w, http.StatusOK, response)

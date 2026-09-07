@@ -219,6 +219,79 @@ func indicatorQueryInt(r *http.Request, name string, fallback int) (int, error) 
 	return parsed, nil
 }
 
+func indicatorRiskLevelQuery(r *http.Request) (string, error) {
+	value := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("risk_level")))
+	if value == "" {
+		// Accept the shorter alias for API clients while keeping risk_level as
+		// the canonical query parameter used by the admin UI.
+		value = strings.ToLower(strings.TrimSpace(r.URL.Query().Get("risk")))
+	}
+	if value == "" {
+		return "all", nil
+	}
+	switch value {
+	case "all", "low", "medium", "high":
+		return value, nil
+	default:
+		return "", invalidIndicatorQuery(fmt.Sprintf("unsupported indicator risk level %q", value))
+	}
+}
+
+func indicatorSortQuery(r *http.Request) (string, error) {
+	value := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("sort")))
+	if value == "" {
+		return "latest", nil
+	}
+	switch value {
+	case "latest", "last_seen", "newest":
+		return "latest", nil
+	case "risk", "risk_desc", "score", "score_desc":
+		return "risk", nil
+	default:
+		return "", invalidIndicatorQuery(fmt.Sprintf("unsupported indicator sort %q", value))
+	}
+}
+
+func indicatorRiskLevel(score int) string {
+	switch {
+	case score >= 60:
+		return "high"
+	case score >= 30:
+		return "medium"
+	default:
+		return "low"
+	}
+}
+
+func indicatorMatchesRiskLevel(score int, level string) bool {
+	return level == "all" || indicatorRiskLevel(score) == level
+}
+
+func sortIndicators(items []model.Indicator, sortMode string) {
+	sort.SliceStable(items, func(i, j int) bool {
+		left, right := items[i], items[j]
+		if sortMode == "risk" && left.Score != right.Score {
+			return left.Score > right.Score
+		}
+		if sortMode != "risk" && !left.LastSeen.Equal(right.LastSeen) {
+			return left.LastSeen.After(right.LastSeen)
+		}
+		if left.Score != right.Score {
+			return left.Score > right.Score
+		}
+		if sortMode == "risk" && !left.LastSeen.Equal(right.LastSeen) {
+			return left.LastSeen.After(right.LastSeen)
+		}
+		if left.EvidenceCount != right.EvidenceCount {
+			return left.EvidenceCount > right.EvidenceCount
+		}
+		if !left.FirstSeen.Equal(right.FirstSeen) {
+			return left.FirstSeen.After(right.FirstSeen)
+		}
+		return left.IP < right.IP
+	})
+}
+
 func (a *App) filteredIndicators(r *http.Request) ([]model.Indicator, map[string]model.IndicatorDecision, error) {
 	items, err := a.store.IndicatorsContext(r.Context(), true)
 	if err != nil {
@@ -241,6 +314,14 @@ func (a *App) filteredIndicators(r *http.Request) ([]model.Indicator, map[string
 	}
 	if minScore < 0 || minScore > 100 {
 		return nil, nil, invalidIndicatorQuery("min_score must be between 0 and 100")
+	}
+	riskLevel, err := indicatorRiskLevelQuery(r)
+	if err != nil {
+		return nil, nil, err
+	}
+	sortMode, err := indicatorSortQuery(r)
+	if err != nil {
+		return nil, nil, err
 	}
 	minSensors, err := indicatorQueryInt(r, "min_sensor_count", 0)
 	if err != nil {
@@ -271,7 +352,7 @@ func (a *App) filteredIndicators(r *http.Request) ([]model.Indicator, map[string
 	}
 	filtered := make([]model.Indicator, 0, len(items))
 	for _, item := range items {
-		if item.Score < minScore || item.SensorCount < minSensors || (confidenceFilter != "" && item.Confidence != confidenceFilter) || (!seenSince.IsZero() && item.LastSeen.Before(seenSince)) {
+		if item.Score < minScore || item.SensorCount < minSensors || !indicatorMatchesRiskLevel(item.Score, riskLevel) || (confidenceFilter != "" && item.Confidence != confidenceFilter) || (!seenSince.IsZero() && item.LastSeen.Before(seenSince)) {
 			continue
 		}
 		if query != "" && !strings.Contains(strings.ToLower(item.IP), query) {
@@ -282,6 +363,7 @@ func (a *App) filteredIndicators(r *http.Request) ([]model.Indicator, map[string
 		}
 		filtered = append(filtered, item)
 	}
+	sortIndicators(filtered, sortMode)
 	return filtered, decisions, nil
 }
 

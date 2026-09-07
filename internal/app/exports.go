@@ -33,6 +33,8 @@ type localExportJob struct {
 type indicatorExportRequest struct {
 	Status         string `json:"status"`
 	MinScore       *int   `json:"min_score"`
+	RiskLevel      string `json:"risk_level"`
+	Sort           string `json:"sort"`
 	Confidence     string `json:"confidence"`
 	SiteID         string `json:"site_id"`
 	MinSensorCount *int   `json:"min_sensor_count"`
@@ -68,6 +70,12 @@ func (a *App) adminExportCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if request.MinScore != nil {
 		filters.Set("min_score", strconv.Itoa(*request.MinScore))
+	}
+	if request.RiskLevel != "" {
+		filters.Set("risk_level", request.RiskLevel)
+	}
+	if request.Sort != "" {
+		filters.Set("sort", request.Sort)
 	}
 	if request.Confidence != "" {
 		filters.Set("confidence", request.Confidence)
