@@ -92,6 +92,47 @@ func TestAdminIndicatorsDefaultSortRiskSortAndRiskLevelFilter(t *testing.T) {
 	}
 }
 
+func TestAdminIndicatorsExposeAssociatedIPMarker(t *testing.T) {
+	a, cfg, st := newTestApp(t, true)
+	defer st.Close()
+	base := time.Date(2026, time.September, 9, 10, 0, 0, 0, time.UTC)
+	if err := st.AppendEvent(model.Event{
+		EventID:    "associated-indicator-source",
+		Product:    model.ProductNewAPI,
+		SourceIP:   "198.51.100.20",
+		ObservedAt: base,
+		Score:      41,
+		Metadata: map[string]string{
+			model.MetadataRiskAssociatedIPs:     "198.51.100.21",
+			model.MetadataRiskAssociationReason: "frontend_webrtc_ip_mismatch",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	admin := &inProcessClient{handler: a.adminHandler(), cookies: map[string]string{}}
+	if resp, _ := doJSON(t, admin, http.MethodPost, cfg.AdminPath+"admin/api/v1/auth/login", map[string]string{"username": "owner", "password": "correct horse battery staple"}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin login status = %d", resp.StatusCode)
+	}
+	resp, body := doJSON(t, admin, http.MethodGet, cfg.AdminPath+"admin/api/v1/indicators?sort=risk", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("indicator response status = %d body = %#v", resp.StatusCode, body)
+	}
+	rawItems, ok := body["items"].([]any)
+	if !ok || len(rawItems) != 2 {
+		t.Fatalf("associated indicator items = %#v", body["items"])
+	}
+	for _, raw := range rawItems {
+		item := raw.(map[string]any)
+		if item["associated"] != true || item["score"] != float64(41) {
+			t.Fatalf("indicator association marker = %#v", item)
+		}
+		peers, ok := item["associated_ips"].([]any)
+		if !ok || len(peers) != 1 {
+			t.Fatalf("indicator associated peers = %#v", item["associated_ips"])
+		}
+	}
+}
+
 func equalStrings(left, right []string) bool {
 	if len(left) != len(right) {
 		return false

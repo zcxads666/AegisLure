@@ -388,6 +388,7 @@ func indicatorView(item model.Indicator, decision model.IndicatorDecision, key s
 		"first_seen": item.FirstSeen, "last_seen": item.LastSeen, "expires_at": item.ExpiresAt,
 		"reason_codes": item.ReasonCodes, "products": item.Products, "sensor_count": item.SensorCount, "site_count": item.SiteCount,
 		"recommended_action": item.RecommendedAction, "evidence_count": item.EvidenceCount, "status": status,
+		"associated": item.Associated, "associated_ips": item.AssociatedIPs, "association_reasons": item.AssociationReasons,
 		"decision_reviewer": decision.Reviewer, "decision_reason": decision.Reason, "decision_expires_at": decision.ExpiresAt,
 	}
 }
@@ -433,12 +434,12 @@ func renderIndicatorExport(items []model.Indicator, decisions map[string]model.I
 	case "csv":
 		var buffer bytes.Buffer
 		writer := csv.NewWriter(&buffer)
-		if err := writer.Write([]string{"id", "ip", "score", "confidence", "status", "first_seen", "last_seen", "expires_at", "reason_codes"}); err != nil {
+		if err := writer.Write([]string{"id", "ip", "score", "confidence", "status", "first_seen", "last_seen", "expires_at", "reason_codes", "associated", "associated_ips", "association_reasons"}); err != nil {
 			return "", "", err
 		}
 		for _, item := range items {
 			decision := decisions[item.IP]
-			values := []string{indicatorID(key, item.IP), item.IP, fmt.Sprintf("%d", item.Score), item.Confidence, indicatorDecisionStatus(decision, time.Now().UTC()), item.FirstSeen.Format(time.RFC3339), item.LastSeen.Format(time.RFC3339), item.ExpiresAt.Format(time.RFC3339), strings.Join(item.ReasonCodes, "|")}
+			values := []string{indicatorID(key, item.IP), item.IP, fmt.Sprintf("%d", item.Score), item.Confidence, indicatorDecisionStatus(decision, time.Now().UTC()), item.FirstSeen.Format(time.RFC3339), item.LastSeen.Format(time.RFC3339), item.ExpiresAt.Format(time.RFC3339), strings.Join(item.ReasonCodes, "|"), strconv.FormatBool(item.Associated), strings.Join(item.AssociatedIPs, "|"), strings.Join(item.AssociationReasons, "|")}
 			for i, value := range values {
 				if strings.HasPrefix(value, "=") || strings.HasPrefix(value, "+") || strings.HasPrefix(value, "-") || strings.HasPrefix(value, "@") {
 					values[i] = "'" + value
@@ -467,7 +468,7 @@ func renderIndicatorExport(items []model.Indicator, decisions map[string]model.I
 			hash := security.Fingerprint(key, "stix-indicator\x00"+item.IP)
 			objectID := "indicator--" + hash[:8] + "-" + hash[8:12] + "-" + hash[12:16] + "-" + hash[16:20] + "-" + hash[20:32]
 			decision := decisions[item.IP]
-			objects = append(objects, map[string]any{"type": "indicator", "spec_version": "2.1", "id": objectID, "created": item.FirstSeen.UTC(), "modified": item.LastSeen.UTC(), "name": "AegisLure local IP indicator", "pattern": "[" + objectType + ":value = '" + item.IP + "']", "pattern_type": "stix", "valid_from": item.FirstSeen.UTC(), "valid_until": item.ExpiresAt.UTC(), "labels": []string{"aegislure:" + indicatorDecisionStatus(decision, time.Now().UTC())}, "confidence": item.Score, "x_aegislure_reason_codes": item.ReasonCodes})
+			objects = append(objects, map[string]any{"type": "indicator", "spec_version": "2.1", "id": objectID, "created": item.FirstSeen.UTC(), "modified": item.LastSeen.UTC(), "name": "AegisLure local IP indicator", "pattern": "[" + objectType + ":value = '" + item.IP + "']", "pattern_type": "stix", "valid_from": item.FirstSeen.UTC(), "valid_until": item.ExpiresAt.UTC(), "labels": []string{"aegislure:" + indicatorDecisionStatus(decision, time.Now().UTC())}, "confidence": item.Score, "x_aegislure_reason_codes": item.ReasonCodes, "x_aegislure_associated": item.Associated, "x_aegislure_associated_ips": item.AssociatedIPs, "x_aegislure_association_reasons": item.AssociationReasons})
 		}
 		bundleParts := make([]string, 0, len(objects))
 		for _, item := range items {

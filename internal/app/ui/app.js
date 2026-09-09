@@ -599,7 +599,7 @@ function ServerIndicatorsPage({ indicators = [], pagination, onRefresh, onOpenIn
     const link = document.createElement('a'); link.href = `${apiPath('indicators')}?${params}`; link.download = `aegislure-indicators.${format}`; document.body.appendChild(link); link.click(); link.remove()
   }
   const columns = [
-    { label: '来源 IP', render: (row) => html`<code class="mono ip-cell">${row.ip}</code>` },
+    { label: '来源 IP', render: (row) => html`<div class="indicator-ip-stack"><div><code class="mono ip-cell">${row.ip}</code>${row.associated ? html`<${Badge} tone="warning">已关联<//>` : null}</div>${row.associated ? html`<small class="geo-subcell">关联：${(row.associated_ips || []).join(' · ') || '—'}</small>` : null}</div>` },
     { label: '国家/地区', render: (row) => html`<span class="geo-cell">${row.country_zh || indicatorCountry(row)}</span><small class="geo-subcell">${row.country_code || '—'}</small>` },
     { label: '城市 / 地区', render: (row) => html`<span class="geo-cell">${indicatorPlace(row)}</span>` },
     { label: '网络 / ASN', render: (row) => html`<span class="geo-cell">${indicatorNetwork(row)}</span>` },

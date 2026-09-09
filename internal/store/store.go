@@ -10,10 +10,12 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -3273,26 +3275,72 @@ func (s *Store) IndicatorsContext(ctx context.Context, summary bool) ([]model.In
 // projection avoids a second full event read on dashboard requests.
 func IndicatorsFromEvents(events []model.Event) []model.Indicator {
 	type aggregate struct {
-		item    model.Indicator
-		prod    map[string]bool
-		reasons map[string]bool
+		item               model.Indicator
+		prod               map[string]bool
+		reasons            map[string]bool
+		associationReasons map[string]bool
+	}
+	type relationGroup struct {
+		creationIPs  map[string]bool
+		usageIPs     map[string]bool
+		creationSeen bool
+		usageSeen    bool
 	}
 	byIP := make(map[string]*aggregate)
+	associated := make(map[string]map[string]bool)
+	accountGroups := make(map[string]*relationGroup)
+	keyGroups := make(map[string]*relationGroup)
+	const associationRiskReason = "associated_ip_risk"
+
+	ensureAggregate := func(ip string, observedAt time.Time) *aggregate {
+		a := byIP[ip]
+		if a == nil {
+			a = &aggregate{
+				item:               model.Indicator{IP: ip, FirstSeen: observedAt, LastSeen: observedAt},
+				prod:               map[string]bool{},
+				reasons:            map[string]bool{},
+				associationReasons: map[string]bool{},
+			}
+			byIP[ip] = a
+			return a
+		}
+		if !observedAt.IsZero() && (a.item.FirstSeen.IsZero() || observedAt.Before(a.item.FirstSeen)) {
+			a.item.FirstSeen = observedAt
+		}
+		if observedAt.After(a.item.LastSeen) {
+			a.item.LastSeen = observedAt
+		}
+		return a
+	}
+	addAssociation := func(left, right, reason string) {
+		left = strings.TrimSpace(left)
+		right = strings.TrimSpace(right)
+		if left == "" || right == "" || left == right {
+			return
+		}
+		leftAggregate := ensureAggregate(left, time.Time{})
+		rightAggregate := ensureAggregate(right, time.Time{})
+		if associated[left] == nil {
+			associated[left] = make(map[string]bool)
+		}
+		if associated[right] == nil {
+			associated[right] = make(map[string]bool)
+		}
+		associated[left][right] = true
+		associated[right][left] = true
+		if reason == "" {
+			reason = associationRiskReason
+		}
+		leftAggregate.associationReasons[reason] = true
+		rightAggregate.associationReasons[reason] = true
+	}
+
 	for _, event := range events {
-		if event.SourceIP == "" {
+		sourceIP := strings.TrimSpace(event.SourceIP)
+		if sourceIP == "" {
 			continue
 		}
-		a := byIP[event.SourceIP]
-		if a == nil {
-			a = &aggregate{item: model.Indicator{IP: event.SourceIP, FirstSeen: event.ObservedAt, LastSeen: event.ObservedAt}, prod: map[string]bool{}, reasons: map[string]bool{}}
-			byIP[event.SourceIP] = a
-		}
-		if event.ObservedAt.Before(a.item.FirstSeen) {
-			a.item.FirstSeen = event.ObservedAt
-		}
-		if event.ObservedAt.After(a.item.LastSeen) {
-			a.item.LastSeen = event.ObservedAt
-		}
+		a := ensureAggregate(sourceIP, event.ObservedAt)
 		a.item.SensorCount = 1
 		a.item.SiteCount = 1
 		if event.Score > a.item.Score {
@@ -3303,6 +3351,147 @@ func IndicatorsFromEvents(events []model.Event) []model.Indicator {
 		for _, reason := range event.ReasonCodes {
 			a.reasons[reason] = true
 		}
+		if userID := strings.TrimSpace(event.Metadata["honey_user_id"]); userID != "" && !strings.HasPrefix(userID, "hu_root_") {
+			group := accountGroups[userID]
+			if group == nil {
+				group = &relationGroup{creationIPs: make(map[string]bool), usageIPs: make(map[string]bool)}
+				accountGroups[userID] = group
+			}
+			if indicatorAccountCreation(event) {
+				group.creationSeen = true
+				group.creationIPs[sourceIP] = true
+			} else if indicatorAccountUse(event) {
+				group.usageSeen = true
+				group.usageIPs[sourceIP] = true
+			}
+		}
+		if keyID := indicatorKeyID(event); keyID != "" {
+			group := keyGroups[keyID]
+			if group == nil {
+				group = &relationGroup{creationIPs: make(map[string]bool), usageIPs: make(map[string]bool)}
+				keyGroups[keyID] = group
+			}
+			if indicatorKeyCreation(event) {
+				group.creationSeen = true
+				group.creationIPs[sourceIP] = true
+			} else if indicatorKeyUse(event) {
+				group.usageSeen = true
+				group.usageIPs[sourceIP] = true
+			}
+		}
+		for _, associatedIP := range indicatorAssociatedIPs(event) {
+			peer := ensureAggregate(associatedIP, event.ObservedAt)
+			for _, reason := range indicatorAssociationReasons(event, associationRiskReason) {
+				addAssociation(sourceIP, peer.item.IP, reason)
+			}
+		}
+	}
+	linkRelationGroups := func(groups map[string]*relationGroup, reason string) {
+		for _, group := range groups {
+			if !group.creationSeen || !group.usageSeen {
+				continue
+			}
+			ips := make([]string, 0, len(group.creationIPs)+len(group.usageIPs))
+			seen := make(map[string]bool, len(group.creationIPs)+len(group.usageIPs))
+			for ip := range group.creationIPs {
+				seen[ip] = true
+				ips = append(ips, ip)
+			}
+			for ip := range group.usageIPs {
+				if !seen[ip] {
+					seen[ip] = true
+					ips = append(ips, ip)
+				}
+			}
+			if len(ips) < 2 {
+				continue
+			}
+			differentIP := false
+			for ip := range group.usageIPs {
+				if !group.creationIPs[ip] {
+					differentIP = true
+					break
+				}
+			}
+			if !differentIP {
+				continue
+			}
+			sort.Strings(ips)
+			for i := 0; i < len(ips); i++ {
+				for j := i + 1; j < len(ips); j++ {
+					addAssociation(ips[i], ips[j], reason)
+				}
+			}
+		}
+	}
+	linkRelationGroups(accountGroups, "account_cross_ip")
+	linkRelationGroups(keyGroups, "key_cross_ip")
+
+	// Treat associations as an undirected graph. A single high-risk event on
+	// any member therefore gives every member in that connected component the
+	// same highest score, while preserving each IP's own evidence count.
+	ips := make([]string, 0, len(byIP))
+	for ip := range byIP {
+		ips = append(ips, ip)
+	}
+	sort.Strings(ips)
+	visited := make(map[string]bool, len(byIP))
+	for _, start := range ips {
+		if visited[start] {
+			continue
+		}
+		component := make([]string, 0, 1)
+		stack := []string{start}
+		visited[start] = true
+		for len(stack) > 0 {
+			last := len(stack) - 1
+			ip := stack[last]
+			stack = stack[:last]
+			component = append(component, ip)
+			neighbors := make([]string, 0, len(associated[ip]))
+			for neighbor := range associated[ip] {
+				neighbors = append(neighbors, neighbor)
+			}
+			sort.Strings(neighbors)
+			for _, neighbor := range neighbors {
+				if !visited[neighbor] {
+					visited[neighbor] = true
+					stack = append(stack, neighbor)
+				}
+			}
+		}
+		if len(component) < 2 {
+			continue
+		}
+		commonScore := 0
+		componentReasons := make(map[string]bool)
+		for _, ip := range component {
+			if byIP[ip].item.Score > commonScore {
+				commonScore = byIP[ip].item.Score
+			}
+			for reason := range byIP[ip].associationReasons {
+				componentReasons[reason] = true
+			}
+		}
+		for _, ip := range component {
+			a := byIP[ip]
+			a.item.Associated = true
+			a.item.Score = commonScore
+			for _, peer := range component {
+				if peer != ip {
+					a.item.AssociatedIPs = append(a.item.AssociatedIPs, peer)
+				}
+			}
+			for reason := range componentReasons {
+				a.associationReasons[reason] = true
+			}
+			a.associationReasons[associationRiskReason] = true
+			a.reasons[associationRiskReason] = true
+			for reason := range a.associationReasons {
+				a.reasons[reason] = true
+			}
+			sort.Strings(a.item.AssociatedIPs)
+		}
 	}
 	result := make([]model.Indicator, 0, len(byIP))
 	for _, a := range byIP {
@@ -3312,8 +3501,12 @@ func IndicatorsFromEvents(events []model.Event) []model.Indicator {
 		for reason := range a.reasons {
 			a.item.ReasonCodes = append(a.item.ReasonCodes, reason)
 		}
+		for reason := range a.associationReasons {
+			a.item.AssociationReasons = append(a.item.AssociationReasons, reason)
+		}
 		sort.Strings(a.item.Products)
 		sort.Strings(a.item.ReasonCodes)
+		sort.Strings(a.item.AssociationReasons)
 		a.item.Confidence = confidenceForScore(a.item.Score)
 		a.item.ExpiresAt = a.item.LastSeen.Add(ttlForScore(a.item.Score))
 		switch {
@@ -3337,6 +3530,105 @@ func IndicatorsFromEvents(events []model.Event) []model.Indicator {
 		}
 		return result[i].IP < result[j].IP
 	})
+	return result
+}
+
+func indicatorAssociatedIPs(event model.Event) []string {
+	if len(event.Metadata) == 0 {
+		return nil
+	}
+	keys := []string{model.MetadataRiskAssociatedIPs, "associated_ips", "associated_ip", "risk_associated_ip"}
+	result := make([]string, 0, 2)
+	seen := make(map[string]bool)
+	for _, key := range keys {
+		value := strings.TrimSpace(event.Metadata[key])
+		if value == "" {
+			continue
+		}
+		values := make([]string, 0, 2)
+		if strings.HasPrefix(value, "[") {
+			_ = json.Unmarshal([]byte(value), &values)
+		}
+		if len(values) == 0 {
+			values = strings.FieldsFunc(value, func(r rune) bool {
+				return r == ',' || r == ';' || r == ' ' || r == '\n' || r == '\r' || r == '\t'
+			})
+		}
+		for _, raw := range values {
+			raw = strings.Trim(raw, "\"'[](),")
+			ip := net.ParseIP(raw)
+			if ip == nil || ip.IsUnspecified() || ip.IsMulticast() {
+				continue
+			}
+			canonical := ip.String()
+			if !seen[canonical] {
+				seen[canonical] = true
+				result = append(result, canonical)
+			}
+		}
+	}
+	sort.Strings(result)
+	return result
+}
+
+func indicatorAssociationReasons(event model.Event, fallback string) []string {
+	value := strings.TrimSpace(event.Metadata[model.MetadataRiskAssociationReason])
+	if value == "" {
+		return []string{fallback}
+	}
+	values := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == ';' || r == ' ' || r == '\n' || r == '\r' || r == '\t'
+	})
+	result := make([]string, 0, len(values))
+	for _, item := range values {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			result = append(result, item)
+		}
+	}
+	if len(result) == 0 {
+		return []string{fallback}
+	}
+	return uniqueSortedStrings(result)
+}
+
+func indicatorAccountCreation(event model.Event) bool {
+	return event.EventType == "newapi.user.register.success" || event.EventType == "sub2api.user.register.success"
+}
+
+func indicatorAccountUse(event model.Event) bool {
+	if indicatorAccountCreation(event) || strings.HasPrefix(event.EventType, "frontend.detection.") {
+		return false
+	}
+	return strings.TrimSpace(event.Metadata["honey_user_id"]) != ""
+}
+
+func indicatorKeyID(event model.Event) string {
+	value := strings.TrimSpace(event.CredentialFingerprint)
+	if value == "" {
+		value = strings.TrimSpace(event.Metadata["key_fingerprint"])
+	}
+	return value
+}
+
+func indicatorKeyCreation(event model.Event) bool {
+	return event.EventType == "newapi.token.created" || event.EventType == "sub2api.key.created"
+}
+
+func indicatorKeyUse(event model.Event) bool {
+	return !indicatorKeyCreation(event) && !strings.HasPrefix(event.EventType, "frontend.detection.") && indicatorKeyID(event) != ""
+}
+
+func uniqueSortedStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value != "" && !seen[value] {
+			seen[value] = true
+			result = append(result, value)
+		}
+	}
+	sort.Strings(result)
 	return result
 }
 
@@ -3383,11 +3675,11 @@ func (s *Store) Export(format string, minScore int) (string, string, error) {
 	case "csv":
 		var builder strings.Builder
 		writer := csv.NewWriter(&builder)
-		if err := writer.Write([]string{"ip", "score", "confidence", "first_seen", "last_seen", "reason_codes"}); err != nil {
+		if err := writer.Write([]string{"ip", "score", "confidence", "first_seen", "last_seen", "reason_codes", "associated", "associated_ips", "association_reasons"}); err != nil {
 			return "", "", err
 		}
 		for _, item := range items {
-			if err := writer.Write([]string{item.IP, fmt.Sprintf("%d", item.Score), item.Confidence, item.FirstSeen.Format(time.RFC3339), item.LastSeen.Format(time.RFC3339), strings.Join(item.ReasonCodes, "|")}); err != nil {
+			if err := writer.Write([]string{item.IP, fmt.Sprintf("%d", item.Score), item.Confidence, item.FirstSeen.Format(time.RFC3339), item.LastSeen.Format(time.RFC3339), strings.Join(item.ReasonCodes, "|"), strconv.FormatBool(item.Associated), strings.Join(item.AssociatedIPs, "|"), strings.Join(item.AssociationReasons, "|")}); err != nil {
 				return "", "", err
 			}
 		}

@@ -72,6 +72,24 @@ func TestFrontendDetectionReportRecordsWebRTCMismatch(t *testing.T) {
 	if obs.EventType != "frontend.detection.mismatch" || obs.Metadata["detection_mismatch"] != "true" || obs.Metadata["inferred_ip"] != "198.51.100.5" {
 		t.Fatalf("WebRTC mismatch metadata = %#v, event=%q", obs.Metadata, obs.EventType)
 	}
+	if obs.Metadata[model.MetadataRiskAssociatedIPs] != "198.51.100.5" || obs.Metadata[model.MetadataRiskAssociationReason] != "frontend_webrtc_ip_mismatch" {
+		t.Fatalf("WebRTC mismatch association metadata = %#v", obs.Metadata)
+	}
+	if !containsAppString(obs.ExtraReasons, "frontend_webrtc_ip_mismatch") || !containsAppString(obs.ExtraReasons, "frontend_identity_consistency_mismatch") {
+		t.Fatalf("WebRTC mismatch risk reasons = %#v", obs.ExtraReasons)
+	}
+	if obs.ExtraScore != 25 {
+		t.Fatalf("WebRTC mismatch extra risk score = %d, want 25", obs.ExtraScore)
+	}
+}
+
+func containsAppString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestFrontendDetectionScriptInjectionIsIdempotent(t *testing.T) {

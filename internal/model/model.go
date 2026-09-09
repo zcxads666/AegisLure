@@ -12,6 +12,13 @@ const (
 	ProductSGLang  = "sglang"
 	ProductLocalAI = "localai"
 	ProductSub2API = "sub2api"
+
+	// Event metadata keys used to connect an inferred IP back to the source
+	// IP that produced the evidence. They intentionally remain metadata so
+	// imported and future event producers can participate without changing the
+	// persisted event envelope again.
+	MetadataRiskAssociatedIPs     = "risk_associated_ips"
+	MetadataRiskAssociationReason = "risk_association_reasons"
 )
 
 // Products is the canonical product order used by the control plane. Keep
@@ -350,18 +357,21 @@ type ConfigPack struct {
 }
 
 type Indicator struct {
-	IP                string    `json:"ip"`
-	Score             int       `json:"score"`
-	Confidence        string    `json:"confidence"`
-	FirstSeen         time.Time `json:"first_seen"`
-	LastSeen          time.Time `json:"last_seen"`
-	ExpiresAt         time.Time `json:"expires_at"`
-	ReasonCodes       []string  `json:"reason_codes"`
-	Products          []string  `json:"products"`
-	SensorCount       int       `json:"sensor_count"`
-	SiteCount         int       `json:"site_count"`
-	RecommendedAction string    `json:"recommended_action"`
-	EvidenceCount     int       `json:"evidence_count"`
+	IP                 string    `json:"ip"`
+	Score              int       `json:"score"`
+	Confidence         string    `json:"confidence"`
+	FirstSeen          time.Time `json:"first_seen"`
+	LastSeen           time.Time `json:"last_seen"`
+	ExpiresAt          time.Time `json:"expires_at"`
+	ReasonCodes        []string  `json:"reason_codes"`
+	Products           []string  `json:"products"`
+	SensorCount        int       `json:"sensor_count"`
+	SiteCount          int       `json:"site_count"`
+	RecommendedAction  string    `json:"recommended_action"`
+	EvidenceCount      int       `json:"evidence_count"`
+	Associated         bool      `json:"associated,omitempty"`
+	AssociatedIPs      []string  `json:"associated_ips,omitempty"`
+	AssociationReasons []string  `json:"association_reasons,omitempty"`
 }
 
 // ImportSource is a local, read-only declaration for an offline event source.

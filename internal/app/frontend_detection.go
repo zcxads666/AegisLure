@@ -257,17 +257,39 @@ func (a *App) handleFrontendDetectionReport(w *captureWriter, r *http.Request, s
 	}
 	metadata["detection_mismatch"] = strconv.FormatBool(len(kinds) > 0)
 	if len(kinds) > 0 {
-		metadata["detection_kind"] = strings.Join(uniqueStrings(kinds), ",")
+		kinds = uniqueStrings(kinds)
+		metadata["detection_kind"] = strings.Join(kinds, ",")
 		metadata["inferred_ip"] = inferredIP
 		metadata["inferred_region"] = boundedFrontendValue(inferredRegion, 128)
 		metadata["detection_reported"] = "true"
+		reasons := make([]string, 0, len(kinds))
+		for _, kind := range kinds {
+			reasons = append(reasons, frontendDetectionReason(kind))
+		}
+		metadata["risk_ip_markers"] = strings.Join(reasons, ",")
+		if inferredIP != "" && inferredIP != sourceIP {
+			metadata[model.MetadataRiskAssociatedIPs] = inferredIP
+			metadata[model.MetadataRiskAssociationReason] = frontendDetectionReason("webrtc_ip")
+		}
 		obs.EventType = "frontend.detection.mismatch"
 		obs.ExtraScore += 25
+		obs.ExtraReasons = append(obs.ExtraReasons, reasons...)
 		obs.ExtraReasons = append(obs.ExtraReasons, "frontend_identity_consistency_mismatch")
 	} else {
 		obs.EventType = "frontend.detection.report"
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func frontendDetectionReason(kind string) string {
+	switch kind {
+	case "dns_region":
+		return "frontend_dns_region_mismatch"
+	case "webrtc_ip":
+		return "frontend_webrtc_ip_mismatch"
+	default:
+		return "frontend_identity_consistency_mismatch"
+	}
 }
 
 func normalizeFrontendRegion(value string) string {
