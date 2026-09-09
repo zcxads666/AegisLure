@@ -268,6 +268,7 @@ type State struct {
 	Packs                      map[string]ConfigPack                `json:"packs,omitempty"`
 	PackBindings               map[string]string                    `json:"pack_bindings,omitempty"`
 	InteractionChain           InteractionChainConfig               `json:"interaction_chain,omitempty"`
+	FrontendDetection          FrontendDetectionConfig              `json:"frontend_detection,omitempty"`
 	ImportSources              map[string]ImportSource              `json:"import_sources,omitempty"`
 	IndicatorDecisions         map[string]IndicatorDecision         `json:"indicator_decisions,omitempty"`
 	IdentityIndicatorDecisions map[string]IdentityIndicatorDecision `json:"identity_indicator_decisions,omitempty"`
@@ -283,6 +284,19 @@ type InteractionChainConfig struct {
 	WindowSeconds int    `json:"window_seconds"`
 	MaxEvents     int    `json:"max_events"`
 	Timezone      string `json:"timezone,omitempty"`
+}
+
+// FrontendDetectionConfig controls the opt-in browser-side checks injected
+// into the New API and Sub2API public applications. The checks only run after
+// a successful frontend login and report bounded metadata to the local event
+// stream; they never collect credentials or page contents.
+type FrontendDetectionConfig struct {
+	DNSLeakDetection  bool `json:"dns_leak_detection"`
+	WebRTCIPDetection bool `json:"webrtc_ip_detection"`
+}
+
+func DefaultFrontendDetectionConfig() FrontendDetectionConfig {
+	return FrontendDetectionConfig{}
 }
 
 const (

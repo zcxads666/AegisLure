@@ -41,8 +41,9 @@ type Session struct {
 }
 
 type sub2APIAccessToken struct {
-	UserID    string
-	ExpiresAt time.Time
+	UserID          string
+	ExpiresAt       time.Time
+	PairFingerprint string
 }
 
 type Observation struct {
@@ -72,36 +73,41 @@ type Observation struct {
 }
 
 type App struct {
-	cfg                 *config.Config
-	store               *store.Store
-	profiles            map[string]profiles.Profile
-	log                 *log.Logger
-	mu                  sync.Mutex
-	sessions            map[string]Session
-	anonymous           map[string]string
-	newAPIRawKeys       map[string]string
-	sub2APIAccessTokens map[string]sub2APIAccessToken
-	adminSessions       map[string]AdminSession
-	setupMu             sync.Mutex
-	newAPIRootMu        sync.Mutex
-	rateMu              sync.Mutex
-	rateBuckets         map[string]rateBucket
-	publicSem           chan struct{}
-	personaMu           sync.Mutex
-	personaRuntime      map[string]*personaRuntimeState
-	ruleEngine          *detect.RuleEngine
-	oauthBroker         *oauth.Broker
-	serverMu            sync.RWMutex
-	profileLifecycleMu  sync.Mutex
-	profileServers      map[string]*http.Server
-	profilePorts        map[string]net.Listener
-	adminServer         *http.Server
-	exportMu            sync.Mutex
-	exports             map[string]localExportJob
-	ipInfo              *ipInfoClient
+	cfg                  *config.Config
+	store                *store.Store
+	profiles             map[string]profiles.Profile
+	log                  *log.Logger
+	mu                   sync.Mutex
+	sessions             map[string]Session
+	anonymous            map[string]string
+	newAPIRawKeys        map[string]string
+	sub2APIAccessTokens  map[string]sub2APIAccessToken
+	sub2APIRefreshTokens map[string]sub2APIAccessToken
+	adminSessions        map[string]AdminSession
+	setupMu              sync.Mutex
+	newAPIRootMu         sync.Mutex
+	rateMu               sync.Mutex
+	rateBuckets          map[string]rateBucket
+	publicSem            chan struct{}
+	personaMu            sync.Mutex
+	personaRuntime       map[string]*personaRuntimeState
+	ruleEngine           *detect.RuleEngine
+	oauthBroker          *oauth.Broker
+	serverMu             sync.RWMutex
+	profileLifecycleMu   sync.Mutex
+	profileServers       map[string]*http.Server
+	profilePorts         map[string]net.Listener
+	adminServer          *http.Server
+	exportMu             sync.Mutex
+	exports              map[string]localExportJob
+	ipInfo               *ipInfoClient
 }
 
-const modelCallRiskBonus = 20
+const (
+	modelCallRiskBonus = 20
+	publicSessionTTL   = 30 * time.Minute
+	maxPublicSessions  = 4096
+)
 
 type rateBucket struct {
 	StartedAt time.Time
@@ -381,8 +387,18 @@ func (a *App) Shutdown(ctx context.Context) error {
 	return first
 }
 
-func (a *App) publicHandler(profile profiles.Profile) http.Handler {
+func (a *App) publicHandler(baseProfile profiles.Profile) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Each request starts from the immutable listener configuration. Runtime
+		// packs must never overwrite the profile captured by this shared handler.
+		profile := baseProfile
+		select {
+		case a.publicSem <- struct{}{}:
+			defer func() { <-a.publicSem }()
+		default:
+			a.writePublicBoundaryError(w, profile.Product, http.StatusServiceUnavailable, "Service Unavailable")
+			return
+		}
 		if profile.Product == model.ProductNewAPI {
 			if err := a.ensureNewAPIRootAccount(); err != nil {
 				a.log.Printf("New API root account maintenance failed: %v", err)
@@ -391,13 +407,6 @@ func (a *App) publicHandler(profile profiles.Profile) http.Handler {
 		session := a.sessionFor(r, profile.Product)
 		profile = a.applyRuntimePacksForSession(profile, session)
 		setPublicPersonaHeaders(w, profile.Product)
-		select {
-		case a.publicSem <- struct{}{}:
-			defer func() { <-a.publicSem }()
-		default:
-			a.writePublicBoundaryError(w, profile.Product, http.StatusServiceUnavailable, "Service Unavailable")
-			return
-		}
 		start := time.Now()
 		body, tooLarge := readBoundedBody(r, 1<<20)
 		cw := &captureWriter{ResponseWriter: w, personaProduct: profile.Product}
@@ -456,16 +465,22 @@ func (a *App) sessionFor(r *http.Request, product string) Session {
 	if product == model.ProductSub2API {
 		accessUserID = a.sub2APIAccessTokenUserIDLocked(r)
 	}
-	anonymousKey := security.Fingerprint(a.cfg.InstanceKey, sourceIP+"\x00"+product+"\x00"+r.UserAgent())
+	keyMaterial := sourceIP + "\x00" + product + "\x00" + r.UserAgent()
+	if product == model.ProductSub2API {
+		// An observation fingerprint is not an authentication credential. Keep
+		// distinct authenticated accounts separate even behind the same NAT.
+		keyMaterial += "\x00" + accessUserID
+	}
+	anonymousKey := security.Fingerprint(a.cfg.InstanceKey, keyMaterial)
 	if existingID := a.anonymous[anonymousKey]; existingID != "" {
-		if existing, ok := a.sessions[existingID]; ok && time.Since(existing.LastSeen) <= 30*time.Minute {
+		if existing, ok := a.sessions[existingID]; ok && time.Since(existing.LastSeen) <= publicSessionTTL {
 			if existing.CatalogRevisions == nil {
 				existing.CatalogRevisions = make(map[string]string)
 			}
 			if _, pinned := existing.CatalogRevisions[product]; !pinned {
 				existing.CatalogRevisions[product] = a.currentCatalogRevision(product)
 			}
-			if accessUserID != "" {
+			if product == model.ProductSub2API {
 				existing.UserID = accessUserID
 			}
 			existing.LastSeen = time.Now().UTC()
@@ -473,7 +488,9 @@ func (a *App) sessionFor(r *http.Request, product string) Session {
 			return existing
 		}
 		delete(a.anonymous, anonymousKey)
+		delete(a.sessions, existingID)
 	}
+	a.prunePublicSessionsLocked(time.Now().UTC())
 	id, err := security.RandomToken(18)
 	if err != nil {
 		id = fmt.Sprintf("session-%d", time.Now().UnixNano())
@@ -482,20 +499,40 @@ func (a *App) sessionFor(r *http.Request, product string) Session {
 	session := Session{ID: id, Product: product, UserID: accessUserID, SourceIP: sourceIP, UserAgent: r.UserAgent(), CatalogRevisions: map[string]string{product: a.currentCatalogRevision(product)}, CreatedAt: now, LastSeen: now}
 	a.sessions[id] = session
 	a.anonymous[anonymousKey] = id
-	if len(a.anonymous) > 4096 {
-		for key, sessionID := range a.anonymous {
-			if value, ok := a.sessions[sessionID]; !ok || time.Since(value.LastSeen) > 30*time.Minute {
-				delete(a.anonymous, key)
-			}
+	return session
+}
+
+// Called before allocating a session, while mu is held. Both indexes are
+// bounded, including when all clients are active and rotate their User-Agent.
+func (a *App) prunePublicSessionsLocked(now time.Time) {
+	oldestID := ""
+	var oldest time.Time
+	for id, session := range a.sessions {
+		if now.Sub(session.LastSeen) > publicSessionTTL {
+			delete(a.sessions, id)
+			continue
+		}
+		if oldestID == "" || session.LastSeen.Before(oldest) {
+			oldestID, oldest = id, session.LastSeen
 		}
 	}
-	return session
+	if len(a.sessions) >= maxPublicSessions {
+		delete(a.sessions, oldestID)
+	}
+	for key, id := range a.anonymous {
+		if _, ok := a.sessions[id]; !ok {
+			delete(a.anonymous, key)
+		}
+	}
 }
 
 func (a *App) setSessionUser(sessionID, userID string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	session := a.sessions[sessionID]
+	session, ok := a.sessions[sessionID]
+	if !ok {
+		return // An in-flight request must not recreate an evicted session.
+	}
 	session.UserID = userID
 	session.LastSeen = time.Now().UTC()
 	a.sessions[sessionID] = session
@@ -543,8 +580,13 @@ func (a *App) currentSession(id string) (Session, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	session, ok := a.sessions[id]
-	if ok && time.Since(session.LastSeen) > 24*time.Hour {
+	if ok && time.Since(session.LastSeen) > publicSessionTTL {
 		delete(a.sessions, id)
+		for key, sessionID := range a.anonymous {
+			if sessionID == id {
+				delete(a.anonymous, key)
+			}
+		}
 		return Session{}, false
 	}
 	return session, ok
@@ -684,7 +726,7 @@ func captureRawRequest(r *http.Request, body []byte, truncationReason string) *m
 
 func requiredMethod(route string) string {
 	switch route {
-	case "newapi.user.register", "newapi.user.login", "newapi.user.logout", "newapi.auth.refresh", "newapi.oauth.simulation", "newapi.token.create", "newapi.token.key", "newapi.token.batch", "newapi.token.batch-keys", "newapi.payment.webhook", "openai.chat.completions", "openai.completions", "openai.responses", "openai.embeddings", "anthropic.messages", "gemini.generate", "gemini.stream", "ollama.show", "ollama.generate", "ollama.chat", "ollama.embeddings", "ollama.pull", "ollama.push", "ollama.create", "ollama.copy", "vllm.invocations", "vllm.tokenize", "vllm.detokenize", "sglang.generate", "sglang.dumper", "sglang.lora.load", "sglang.weights.update", "sglang.cache.flush", "sglang.weights.get", "localai.models.apply", "localai.models.delete", "localai.audio.transcriptions", "localai.audio.speech", "localai.images.generations", "sub2api.auth.register", "sub2api.auth.login", "sub2api.auth.login.2fa", "sub2api.auth.refresh", "sub2api.auth.logout", "sub2api.auth.revoke_sessions", "sub2api.auth.bind_token", "sub2api.auth.auxiliary", "sub2api.key.create", "sub2api.redeem", "sub2api.event.logging", "sub2api.gateway.messages", "sub2api.gateway.count_tokens", "sub2api.gateway.chat", "sub2api.gateway.responses", "sub2api.gateway.embeddings", "sub2api.gateway.completions", "sub2api.gateway.alpha_search":
+	case "newapi.user.register", "newapi.user.login", "newapi.user.logout", "newapi.auth.refresh", "newapi.oauth.simulation", "newapi.token.create", "newapi.token.key", "newapi.token.batch", "newapi.token.batch-keys", "newapi.payment.webhook", "openai.chat.completions", "openai.completions", "openai.responses", "openai.embeddings", "anthropic.messages", "gemini.generate", "gemini.stream", "ollama.show", "ollama.generate", "ollama.chat", "ollama.embeddings", "ollama.pull", "ollama.push", "ollama.create", "ollama.copy", "vllm.invocations", "vllm.tokenize", "vllm.detokenize", "sglang.generate", "sglang.dumper", "sglang.lora.load", "sglang.weights.update", "sglang.cache.flush", "sglang.weights.get", "localai.models.apply", "localai.models.delete", "localai.audio.transcriptions", "localai.audio.speech", "localai.images.generations", "sub2api.auth.register", "sub2api.auth.login", "sub2api.auth.login.2fa", "sub2api.auth.refresh", "sub2api.auth.logout", "sub2api.auth.revoke_sessions", "sub2api.auth.bind_token", "sub2api.auth.auxiliary", "sub2api.key.create", "sub2api.redeem", "sub2api.event.logging", "sub2api.gateway.messages", "sub2api.gateway.count_tokens", "sub2api.gateway.chat", "sub2api.gateway.responses", "sub2api.gateway.embeddings", "sub2api.gateway.completions", "sub2api.gateway.alpha_search", "newapi.frontend.detection.report", "sub2api.frontend.detection.report":
 		return http.MethodPost
 	case "ollama.delete", "sub2api.key.delete":
 		return http.MethodDelete
@@ -708,7 +750,7 @@ func allowedMethods(route string) string {
 	switch route {
 	case "sub2api.gateway.codex.models":
 		return http.MethodGet
-	case "newapi.spa", "newapi.asset", "newapi.logo", "newapi.status", "newapi.oauth.start", "newapi.oauth.callback", "newapi.token.list", "newapi.token.get", "newapi.token.auto-groups", "newapi.user.list", "newapi.user.status", "newapi.user.models", "newapi.user.groups", "newapi.usage.logs", "newapi.home-content", "newapi.about-content", "newapi.pricing-data", "newapi.perf-summary", "newapi.perf-metrics", "newapi.rankings-data", "newapi.setup", "newapi.notice", "newapi.dashboard-data", "newapi.verification", "ollama.home", "ollama.version", "ollama.tags", "ollama.ps", "openai.models", "openai.model", "gemini.models", "vllm.root", "vllm.health", "vllm.version", "vllm.metrics", "vllm.docs", "vllm.openapi", "sglang.health", "sglang.metrics", "sglang.docs", "sglang.openapi", "sglang.redoc", "sglang.server_info", "localai.home", "localai.health", "localai.metrics", "localai.models.available", "localai.models.installed", "localai.models.task", "sub2api.spa", "sub2api.asset", "sub2api.logo", "sub2api.health", "sub2api.setup.status", "sub2api.settings.public", "sub2api.auth.me", "sub2api.user.profile", "sub2api.groups.available", "sub2api.channels.available", "sub2api.model.plaza", "sub2api.usage.list", "sub2api.usage.stats", "sub2api.usage.dashboard.stats", "sub2api.usage.dashboard.trend", "sub2api.usage.dashboard.models", "sub2api.usage.dashboard.snapshot", "sub2api.usage.detail", "sub2api.redeem.history", "sub2api.subscriptions", "sub2api.models", "sub2api.gateway.models", "sub2api.gateway.model", "sub2api.gateway.billing", "sub2api.gateway.usage", "sub2api.gateway.live":
+	case "newapi.spa", "newapi.asset", "newapi.logo", "newapi.status", "newapi.oauth.start", "newapi.oauth.callback", "newapi.token.list", "newapi.token.get", "newapi.token.auto-groups", "newapi.user.list", "newapi.user.status", "newapi.user.models", "newapi.user.groups", "newapi.usage.logs", "newapi.home-content", "newapi.about-content", "newapi.pricing-data", "newapi.perf-summary", "newapi.perf-metrics", "newapi.rankings-data", "newapi.setup", "newapi.notice", "newapi.dashboard-data", "newapi.verification", "ollama.home", "ollama.version", "ollama.tags", "ollama.ps", "openai.models", "openai.model", "gemini.models", "vllm.root", "vllm.health", "vllm.version", "vllm.metrics", "vllm.docs", "vllm.openapi", "sglang.health", "sglang.metrics", "sglang.docs", "sglang.openapi", "sglang.redoc", "sglang.server_info", "localai.home", "localai.health", "localai.metrics", "localai.models.available", "localai.models.installed", "localai.models.task", "sub2api.spa", "sub2api.asset", "sub2api.logo", "sub2api.health", "sub2api.setup.status", "sub2api.settings.public", "sub2api.auth.me", "sub2api.user.profile", "sub2api.groups.available", "sub2api.channels.available", "sub2api.model.plaza", "sub2api.usage.list", "sub2api.usage.stats", "sub2api.usage.dashboard.stats", "sub2api.usage.dashboard.trend", "sub2api.usage.dashboard.models", "sub2api.usage.dashboard.snapshot", "sub2api.usage.detail", "sub2api.redeem.history", "sub2api.subscriptions", "sub2api.models", "sub2api.gateway.models", "sub2api.gateway.model", "sub2api.gateway.billing", "sub2api.gateway.usage", "sub2api.gateway.live", "newapi.frontend.detection.script", "sub2api.frontend.detection.script":
 		return http.MethodGet
 	case "newapi.user.forgot", "newapi.checkin":
 		return http.MethodGet + ", " + http.MethodPost

@@ -377,6 +377,8 @@ func (a *App) handleAdminAPI(w http.ResponseWriter, r *http.Request, path string
 		a.adminDashboard(w, r)
 	case (path == "ipinfo-lite" || path == "geoip") && (r.Method == http.MethodGet || r.Method == http.MethodPut):
 		a.adminIPInfoSettings(w, r)
+	case path == "frontend-detection" && (r.Method == http.MethodGet || r.Method == http.MethodPut || r.Method == http.MethodPatch):
+		a.adminFrontendDetection(w, r)
 	case path == "import-sources" || strings.HasPrefix(path, "import-sources/"):
 		a.adminImportSourceRoute(w, r, path)
 	case path == "exports" && r.Method == http.MethodPost:
@@ -405,6 +407,12 @@ func (a *App) handleAdminAPI(w http.ResponseWriter, r *http.Request, path string
 		a.adminDeleteInteractionChain(w, r, strings.TrimPrefix(path, "interaction-chains/"))
 	case strings.HasPrefix(path, "interaction-chains/") && r.Method == http.MethodGet:
 		a.adminInteractionChainDetail(w, r, strings.TrimPrefix(path, "interaction-chains/"))
+	case path == "insights":
+		a.adminInsights(w, r)
+	case strings.HasPrefix(path, "insights/") && r.Method == http.MethodDelete:
+		a.adminDeleteInsight(w, r, strings.TrimPrefix(path, "insights/"))
+	case strings.HasPrefix(path, "insights/") && r.Method == http.MethodGet:
+		a.adminInsightDetail(w, r, strings.TrimPrefix(path, "insights/"))
 	case path == "chain-config":
 		a.adminInteractionChainConfig(w, r)
 	case strings.HasPrefix(path, "actors/") && r.Method == http.MethodGet:

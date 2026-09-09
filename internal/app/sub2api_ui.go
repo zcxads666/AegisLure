@@ -37,6 +37,7 @@ func (a *App) writeSub2APIIndex(w *captureWriter, _ *http.Request, _ profiles.Pr
 		return
 	}
 	setSecurityHeaders(w)
+	index = injectFrontendDetectionScript(index)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Security-Policy", strings.Join([]string{

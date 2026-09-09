@@ -414,7 +414,7 @@ func OpenWithOptions(dir, key string, options Options) (*Store, error) {
 	dataSource := options.DatabaseURL
 	if driver == DriverSQLite {
 		dbPath = filepath.Join(dir, "aegislure.sqlite")
-		dataSource = dbPath
+		dataSource = (&url.URL{Scheme: "file", Path: dbPath, RawQuery: "_txlock=immediate"}).String()
 		driverName = DriverSQLite
 	} else {
 		dbTarget = safeDatabaseTarget(options.DatabaseURL)
@@ -460,6 +460,7 @@ func OpenWithOptions(dir, key string, options Options) (*Store, error) {
 		Packs:                      make(map[string]model.ConfigPack),
 		PackBindings:               make(map[string]string),
 		InteractionChain:           model.DefaultInteractionChainConfig(),
+		FrontendDetection:          model.DefaultFrontendDetectionConfig(),
 		ImportSources:              make(map[string]model.ImportSource),
 		IndicatorDecisions:         make(map[string]model.IndicatorDecision),
 		IdentityIndicatorDecisions: make(map[string]model.IdentityIndicatorDecision),
@@ -1571,11 +1572,28 @@ func (s *Store) saveLocked() error {
 	if s.driver == DriverPostgres {
 		return nil
 	}
-	tmp := filepath.Join(s.dir, "state.json.tmp")
-	if err := os.WriteFile(tmp, append(b, '\n'), 0600); err != nil {
+	return s.writeStateMirrorLocked(b)
+}
+
+func (s *Store) writeStateMirrorLocked(b []byte) error {
+	tmp, err := os.CreateTemp(s.dir, ".state.json-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, filepath.Join(s.dir, "state.json"))
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(append(b, '\n')); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, filepath.Join(s.dir, "state.json"))
 }
 
 func (s *Store) Update(fn func(*model.State) error) error {
@@ -1584,11 +1602,47 @@ func (s *Store) Update(fn func(*model.State) error) error {
 	if s.driver == DriverPostgres {
 		return s.updatePostgresLocked(fn)
 	}
-	s.ensureMaps()
-	if err := fn(&s.state); err != nil {
+	return s.updateSQLiteLocked(fn)
+}
+
+// SQLite transactions use _txlock=immediate so separate service and hpctl
+// processes serialize before reading state_json. Every callback therefore
+// applies to the latest committed state rather than a stale in-memory copy.
+func (s *Store) updateSQLiteLocked(fn func(*model.State) error) error {
+	if s.db == nil {
+		return errors.New("store is closed")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin sqlite state update: %w", err)
+	}
+	defer tx.Rollback()
+	working := s.state
+	var raw string
+	err = tx.QueryRow(`SELECT value FROM metadata WHERE key = 'state_json'`).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		ensureStateMaps(&working)
+	} else if err != nil {
+		return fmt.Errorf("read sqlite state for update: %w", err)
+	} else if err := json.Unmarshal([]byte(raw), &working); err != nil {
+		return fmt.Errorf("decode sqlite state for update: %w", err)
+	}
+	ensureStateMaps(&working)
+	if err := fn(&working); err != nil {
 		return err
 	}
-	return s.saveLocked()
+	encoded, err := json.MarshalIndent(working, "", "  ")
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO metadata(key,value) VALUES('state_json',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, string(encoded)); err != nil {
+		return fmt.Errorf("write sqlite state: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit sqlite state: %w", err)
+	}
+	s.state = working
+	return s.writeStateMirrorLocked(encoded)
 }
 
 // updatePostgresLocked refreshes the state row while holding its database row
@@ -1656,6 +1710,19 @@ func (s *Store) InteractionChainConfig() model.InteractionChainConfig {
 func (s *Store) SetInteractionChainConfig(config model.InteractionChainConfig) error {
 	return s.Update(func(state *model.State) error {
 		state.InteractionChain = config
+		return nil
+	})
+}
+
+func (s *Store) FrontendDetectionConfig() model.FrontendDetectionConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state.FrontendDetection
+}
+
+func (s *Store) SetFrontendDetectionConfig(config model.FrontendDetectionConfig) error {
+	return s.Update(func(state *model.State) error {
+		state.FrontendDetection = config
 		return nil
 	})
 }
@@ -2378,8 +2445,23 @@ func (s *Store) AppendImportedEvent(event model.Event, sourceID, sourceFileID st
 		return false, err
 	}
 	event.Sequence = sequence
-	if event.EventID == "" {
-		event.EventID = fmt.Sprintf("import_%s_%d", sourceHash[:minInt(len(sourceHash), 16)], sourceOffset)
+	eventIDTaken := false
+	if event.EventID != "" {
+		var exists int
+		err := tx.QueryRow(s.bind(`SELECT 1 FROM events WHERE event_id=?`), event.EventID).Scan(&exists)
+		eventIDTaken = err == nil
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return false, fmt.Errorf("check imported event id: %w", err)
+		}
+	}
+	if event.EventID == "" || eventIDTaken {
+		if eventIDTaken {
+			if event.Metadata == nil {
+				event.Metadata = make(map[string]string)
+			}
+			event.Metadata["source_event_id"] = event.EventID
+		}
+		event.EventID = generatedImportedEventID(sourceID, sourceFileID, sourceOffset, sourceHash)
 	}
 	encoded, err := json.Marshal(event)
 	if err != nil {
@@ -2435,6 +2517,11 @@ func (s *Store) AppendImportedEvent(event model.Event, sourceID, sourceFileID st
 		return false, err
 	}
 	return true, nil
+}
+
+func generatedImportedEventID(sourceID, sourceFileID string, sourceOffset int64, sourceHash string) string {
+	identity := sha256.Sum256([]byte(sourceID + "\x00" + sourceFileID + "\x00" + fmt.Sprintf("%d", sourceOffset) + "\x00" + sourceHash))
+	return fmt.Sprintf("import_%x", identity[:16])
 }
 
 func (s *Store) pruneEventsLocked(now time.Time) (bool, error) {

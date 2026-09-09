@@ -229,6 +229,10 @@ func Route(product, method, path string) string {
 
 func newAPIRoute(method, path string) string {
 	switch {
+	case path == "/__aegislure/frontend-detection.js":
+		return "newapi.frontend.detection.script"
+	case path == "/__aegislure/frontend-detection/report":
+		return "newapi.frontend.detection.report"
 	case path == "/" || path == "/login" || path == "/register" || path == "/sign-in" || path == "/sign-up" || path == "/forgot-password" || path == "/forgot-password/" || path == "/forget-password" || path == "/forget-password/" || path == "/pricing" || path == "/pricing/" || path == "/about" || path == "/about/" || path == "/rankings" || path == "/rankings/" || path == "/docs" || path == "/docs/" || path == "/privacy-policy" || path == "/user-agreement":
 		return "newapi.spa"
 	case strings.HasPrefix(path, "/pricing/") && strings.TrimPrefix(path, "/pricing/") != "":
@@ -391,6 +395,10 @@ func newAPIRoute(method, path string) string {
 
 func sub2APIRoute(method, path string) string {
 	switch {
+	case path == "/__aegislure/frontend-detection.js":
+		return "sub2api.frontend.detection.script"
+	case path == "/__aegislure/frontend-detection/report":
+		return "sub2api.frontend.detection.report"
 	case sub2APIWebPath(path):
 		return "sub2api.spa"
 	case strings.HasPrefix(path, "/assets/") || strings.HasPrefix(path, "/static/"):

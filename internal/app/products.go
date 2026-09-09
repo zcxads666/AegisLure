@@ -40,6 +40,10 @@ func (a *App) handleProduct(w *captureWriter, r *http.Request, profile profiles.
 
 func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.Profile, session Session, body []byte, obs *Observation) {
 	switch obs.RouteTemplate {
+	case "newapi.frontend.detection.script":
+		a.writeFrontendDetectionScript(w, model.ProductNewAPI)
+	case "newapi.frontend.detection.report":
+		a.handleFrontendDetectionReport(w, r, session, body, obs, model.ProductNewAPI)
 	case "newapi.spa":
 		a.writeNewAPIIndex(w, http.StatusOK)
 	case "newapi.asset":
@@ -186,6 +190,7 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 			// returns to sign-in and does not get an authenticated session here.
 			a.setSessionUser(session.ID, user.ID)
 		}
+		obs.Metadata["honey_user_id"] = user.ID
 		obs.ExtraScore += 25
 		obs.ExtraReasons = append(obs.ExtraReasons, "newapi_batch_registration_or_account_creation")
 		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": map[string]any{"id": user.ID, "username": username, "quota": user.VirtualQuota}})
@@ -222,6 +227,7 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 			obs.AuthOutcome = "session_authenticated"
 		}
 		a.setSessionUser(session.ID, user.ID)
+		obs.Metadata["honey_user_id"] = user.ID
 		session.UserID = user.ID
 		session.LastSeen = time.Now().UTC()
 		a.writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "login successful", "data": newAPIAuthBundle(user, session)})
@@ -381,6 +387,11 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 			return
 		}
 		a.rememberNewAPIRawKey(token.ID, raw)
+		obs.CredentialFingerprint = token.Hash
+		obs.Metadata["honey_user_id"] = user.ID
+		obs.Metadata["api_key_id"] = strconv.FormatInt(newAPIPublicID(token.ID), 10)
+		obs.Metadata["key_fingerprint"] = token.Hash
+		obs.Metadata["key_raw_retained"] = "false"
 		obs.ExtraScore += 20
 		obs.ExtraReasons = append(obs.ExtraReasons, "newapi_honey_token_created")
 		if a.isNewAPIRootUser(user) {
@@ -966,6 +977,8 @@ func (a *App) newAPIInvoke(w *captureWriter, r *http.Request, body []byte, sessi
 	}
 	if auth == "valid_honey_key" || leakedUserListKey {
 		obs.CredentialFingerprint = token.Hash
+		obs.Metadata["honey_user_id"] = token.HoneyUserID
+		obs.Metadata["api_key_id"] = strconv.FormatInt(newAPIPublicID(token.ID), 10)
 	}
 	if auth != "valid_honey_key" && !leakedUserListKey {
 		a.startInvocation(obs, auth, false, map[string]string{"missing": "missing_authentication", "invalid": "invalid_authentication"}[auth])

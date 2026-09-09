@@ -41,6 +41,10 @@ func (a *App) handleSub2API(w *captureWriter, r *http.Request, profile profiles.
 	obs.RawRequest = redactSub2APIRawRequest(obs.RawRequest, body)
 
 	switch obs.RouteTemplate {
+	case "sub2api.frontend.detection.script":
+		a.writeFrontendDetectionScript(w, model.ProductSub2API)
+	case "sub2api.frontend.detection.report":
+		a.handleFrontendDetectionReport(w, r, session, body, obs, model.ProductSub2API)
 	case "sub2api.spa":
 		a.writeSub2APIIndex(w, r, profile)
 	case "sub2api.asset":
@@ -159,16 +163,27 @@ func (a *App) handleSub2APIAuth(w *captureWriter, r *http.Request, _ profiles.Pr
 			sub2APISuccess(a, w, http.StatusOK, a.sub2APIAuthBundle(user, session))
 		}
 	case "sub2api.auth.refresh":
-		if user, ok := a.sub2APIRequireUser(w, session, obs); ok {
+		userID := a.consumeSub2APIRefreshToken(values["refresh_token"])
+		if user, ok := a.store.GetHoneyUser(userID); userID != "" && ok {
 			obs.EventType = "sub2api.user.login.refresh"
-			sub2APISuccess(a, w, http.StatusOK, a.sub2APIAuthBundle(user, session))
+			obs.AuthOutcome = "session_authenticated"
+			obs.Metadata["honey_user_id"] = user.ID
+			bundle := a.sub2APIAuthBundle(user, session)
+			a.setSub2APIAccessCookie(w, r, bundle["access_token"].(string))
+			sub2APISuccess(a, w, http.StatusOK, bundle)
+		} else {
+			obs.AuthOutcome = "invalid"
+			sub2APIError(w, http.StatusUnauthorized, "invalid refresh token")
 		}
 	case "sub2api.auth.logout":
 		obs.EventType = "sub2api.user.logout"
-		a.clearSessionUser(session.ID)
+		a.revokeSub2APIToken(sub2APIBearerToken(r), false)
+		a.revokeSub2APIToken(values["refresh_token"], true)
+		http.SetCookie(w, &http.Cookie{Name: "sub2api_access", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil, MaxAge: -1})
 		sub2APISuccess(a, w, http.StatusOK, map[string]any{"logged_out": true})
 	case "sub2api.auth.revoke_sessions":
 		if user, ok := a.sub2APIRequireUser(w, session, obs); ok {
+			a.revokeSub2APIUserTokens(user.ID)
 			a.clearAllSessionUsers(user.ID)
 			obs.EventType = "sub2api.user.sessions.revoked"
 			sub2APISuccess(a, w, http.StatusOK, map[string]any{"revoked": true})
@@ -239,10 +254,12 @@ func (a *App) sub2APIRegister(w *captureWriter, r *http.Request, session Session
 		sub2APIError(w, http.StatusBadRequest, "invalid registration request")
 		return
 	}
-	a.setSessionUser(session.ID, user.ID)
+	obs.Metadata["honey_user_id"] = user.ID
 	obs.EventType = "sub2api.user.register.success"
 	obs.AuthOutcome = "session_authenticated"
-	sub2APISuccess(a, w, http.StatusOK, a.sub2APIAuthBundle(user, session))
+	bundle := a.sub2APIAuthBundle(user, session)
+	a.setSub2APIAccessCookie(w, r, bundle["access_token"].(string))
+	sub2APISuccess(a, w, http.StatusOK, bundle)
 }
 
 func (a *App) sub2APILogin(w *captureWriter, r *http.Request, session Session, values map[string]string, obs *Observation) {
@@ -265,11 +282,17 @@ func (a *App) sub2APILogin(w *captureWriter, r *http.Request, session Session, v
 		return
 	}
 	_ = a.store.TouchHoneyUser(user.ID, func(current *model.HoneyUser) { current.LastSeen = time.Now().UTC() })
-	a.setSessionUser(session.ID, user.ID)
+	obs.Metadata["honey_user_id"] = user.ID
 	user, _ = a.store.GetHoneyUser(user.ID)
 	obs.EventType = "sub2api.user.login.success"
 	obs.AuthOutcome = "session_authenticated"
-	sub2APISuccess(a, w, http.StatusOK, a.sub2APIAuthBundle(user, session))
+	bundle := a.sub2APIAuthBundle(user, session)
+	a.setSub2APIAccessCookie(w, r, bundle["access_token"].(string))
+	sub2APISuccess(a, w, http.StatusOK, bundle)
+}
+
+func (a *App) setSub2APIAccessCookie(w http.ResponseWriter, r *http.Request, token string) {
+	http.SetCookie(w, &http.Cookie{Name: "sub2api_access", Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: r != nil && r.TLS != nil, MaxAge: 3600})
 }
 
 func setSub2APICredentialMetadata(obs *Observation, key, email, password string) {
@@ -282,19 +305,22 @@ func setSub2APICredentialMetadata(obs *Observation, key, email, password string)
 }
 
 func (a *App) sub2APIAuthBundle(user model.HoneyUser, session Session) map[string]any {
-	accessToken := a.issueSub2APIAccessToken(user.ID)
+	accessToken, refreshToken := a.issueSub2APITokens(user.ID)
 	return map[string]any{
-		"access_token": accessToken, "refresh_token": security.MustRandomToken(32), "expires_in": 3600, "token_type": "Bearer",
+		"access_token": accessToken, "refresh_token": refreshToken, "expires_in": 3600, "token_type": "Bearer",
 		"user": a.sub2APIUserView(user), "session": map[string]any{"id": session.ID, "expires_in": 1800},
 	}
 }
 
-func (a *App) issueSub2APIAccessToken(userID string) string {
-	token := security.MustRandomToken(32)
+func (a *App) issueSub2APITokens(userID string) (string, string) {
+	accessToken, refreshToken := security.MustRandomToken(32), security.MustRandomToken(32)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.sub2APIAccessTokens == nil {
 		a.sub2APIAccessTokens = make(map[string]sub2APIAccessToken)
+	}
+	if a.sub2APIRefreshTokens == nil {
+		a.sub2APIRefreshTokens = make(map[string]sub2APIAccessToken)
 	}
 	now := time.Now().UTC()
 	for fingerprint, issued := range a.sub2APIAccessTokens {
@@ -302,24 +328,39 @@ func (a *App) issueSub2APIAccessToken(userID string) string {
 			delete(a.sub2APIAccessTokens, fingerprint)
 		}
 	}
-	if len(a.sub2APIAccessTokens) >= 4096 {
-		for fingerprint := range a.sub2APIAccessTokens {
-			delete(a.sub2APIAccessTokens, fingerprint)
-			if len(a.sub2APIAccessTokens) < 3072 {
-				break
-			}
+	for fingerprint, issued := range a.sub2APIRefreshTokens {
+		if !issued.ExpiresAt.After(now) {
+			delete(a.sub2APIRefreshTokens, fingerprint)
+			delete(a.sub2APIAccessTokens, issued.PairFingerprint)
 		}
 	}
-	a.sub2APIAccessTokens[security.Fingerprint(a.cfg.InstanceKey, token)] = sub2APIAccessToken{UserID: userID, ExpiresAt: now.Add(time.Hour)}
-	return token
+	for len(a.sub2APIRefreshTokens) >= maxPublicSessions {
+		for fingerprint, issued := range a.sub2APIRefreshTokens {
+			delete(a.sub2APIRefreshTokens, fingerprint)
+			delete(a.sub2APIAccessTokens, issued.PairFingerprint)
+			break
+		}
+	}
+	accessFP := security.Fingerprint(a.cfg.InstanceKey, accessToken)
+	refreshFP := security.Fingerprint(a.cfg.InstanceKey, refreshToken)
+	a.sub2APIAccessTokens[accessFP] = sub2APIAccessToken{UserID: userID, ExpiresAt: now.Add(time.Hour), PairFingerprint: refreshFP}
+	a.sub2APIRefreshTokens[refreshFP] = sub2APIAccessToken{UserID: userID, ExpiresAt: now.Add(24 * time.Hour), PairFingerprint: accessFP}
+	return accessToken, refreshToken
+}
+
+func sub2APIBearerToken(r *http.Request) string {
+	value := strings.TrimSpace(r.Header.Get("Authorization"))
+	if len(value) < 7 || !strings.EqualFold(value[:7], "bearer ") {
+		if cookie, err := r.Cookie("sub2api_access"); err == nil {
+			return strings.TrimSpace(cookie.Value)
+		}
+		return ""
+	}
+	return strings.TrimSpace(value[7:])
 }
 
 func (a *App) sub2APIAccessTokenUserIDLocked(r *http.Request) string {
-	value := strings.TrimSpace(r.Header.Get("Authorization"))
-	if len(value) < 7 || !strings.EqualFold(value[:7], "bearer ") {
-		return ""
-	}
-	fingerprint := security.Fingerprint(a.cfg.InstanceKey, strings.TrimSpace(value[7:]))
+	fingerprint := security.Fingerprint(a.cfg.InstanceKey, sub2APIBearerToken(r))
 	issued, ok := a.sub2APIAccessTokens[fingerprint]
 	if !ok {
 		return ""
@@ -329,6 +370,50 @@ func (a *App) sub2APIAccessTokenUserIDLocked(r *http.Request) string {
 		return ""
 	}
 	return issued.UserID
+}
+
+// Refresh tokens are single-use and only usable at the refresh boundary.
+// Consuming one also retires its old access token before a new pair is issued.
+func (a *App) consumeSub2APIRefreshToken(token string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	fingerprint := security.Fingerprint(a.cfg.InstanceKey, strings.TrimSpace(token))
+	issued, ok := a.sub2APIRefreshTokens[fingerprint]
+	if !ok {
+		return ""
+	}
+	delete(a.sub2APIRefreshTokens, fingerprint)
+	delete(a.sub2APIAccessTokens, issued.PairFingerprint)
+	if !issued.ExpiresAt.After(time.Now().UTC()) {
+		return ""
+	}
+	return issued.UserID
+}
+
+func (a *App) revokeSub2APIToken(token string, refresh bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	fingerprint := security.Fingerprint(a.cfg.InstanceKey, strings.TrimSpace(token))
+	primary, paired := a.sub2APIAccessTokens, a.sub2APIRefreshTokens
+	if refresh {
+		primary, paired = paired, primary
+	}
+	if issued, ok := primary[fingerprint]; ok {
+		delete(primary, fingerprint)
+		delete(paired, issued.PairFingerprint)
+	}
+}
+
+func (a *App) revokeSub2APIUserTokens(userID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, tokens := range []map[string]sub2APIAccessToken{a.sub2APIAccessTokens, a.sub2APIRefreshTokens} {
+		for fingerprint, issued := range tokens {
+			if issued.UserID == userID {
+				delete(tokens, fingerprint)
+			}
+		}
+	}
 }
 
 func (a *App) sub2APIUserView(user model.HoneyUser) map[string]any {
@@ -904,6 +989,9 @@ func (a *App) handleSub2APIKeys(w *captureWriter, r *http.Request, body []byte, 
 		obs.EventType = "sub2api.key.created"
 		obs.Metadata["key_fingerprint"] = token.Hash
 		obs.Metadata["key_raw_retained"] = "false"
+		obs.CredentialFingerprint = token.Hash
+		obs.Metadata["honey_user_id"] = user.ID
+		obs.Metadata["api_key_id"] = strconv.FormatInt(newAPIPublicID(token.ID), 10)
 		sub2APISuccess(a, w, http.StatusOK, a.sub2APIKeyView(token, raw))
 		return
 	}
