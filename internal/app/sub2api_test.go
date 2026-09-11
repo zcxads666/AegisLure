@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -55,6 +56,54 @@ func TestSub2APIRegistrationUsesOfficialPasswordMinimum(t *testing.T) {
 	}, nil)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("short registration password = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+func TestSub2APIAuthenticationDoesNotUseObservationFingerprint(t *testing.T) {
+	a, cfg, st := newTestApp(t, true)
+	defer st.Close()
+	profile := sub2APIProfileForTest(a, cfg)
+	handler := a.publicHandler(profile)
+	register := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", strings.NewReader(`{"email":"isolated@example.com","password":"abc123"}`))
+	register.RemoteAddr = "192.0.2.10:1000"
+	register.Header.Set("User-Agent", "shared-browser")
+	register.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(httptest.NewRecorder(), register)
+
+	unauthenticated := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	unauthenticated.RemoteAddr = "192.0.2.10:2000"
+	unauthenticated.Header.Set("User-Agent", "shared-browser")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, unauthenticated)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("client without a credential inherited authentication: %d", response.Code)
+	}
+}
+
+func TestSub2APITokensRefreshAndRevoke(t *testing.T) {
+	a, cfg, st := newTestApp(t, true)
+	defer st.Close()
+	client := &inProcessClient{handler: a.publicHandler(sub2APIProfileForTest(a, cfg)), cookies: map[string]string{}}
+	response, body := doRawJSON(t, client, http.MethodPost, "/api/v1/auth/register", map[string]any{"email": "tokens@example.com", "password": "abc123"}, nil)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("register = %d %s", response.StatusCode, body)
+	}
+	bundle := decodeSub2APIJSON(t, body)["data"].(map[string]any)
+	refreshToken := bundle["refresh_token"].(string)
+	if response, _ = doRawJSON(t, client, http.MethodGet, "/api/v1/auth/me", nil, nil); response.StatusCode != http.StatusOK {
+		t.Fatalf("access cookie was not accepted: %d", response.StatusCode)
+	}
+	if response, _ = doRawJSON(t, client, http.MethodPost, "/api/v1/auth/refresh", map[string]any{"refresh_token": refreshToken}, nil); response.StatusCode != http.StatusOK {
+		t.Fatalf("refresh token was not accepted: %d", response.StatusCode)
+	}
+	if response, _ = doRawJSON(t, client, http.MethodPost, "/api/v1/auth/refresh", map[string]any{"refresh_token": refreshToken}, nil); response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("refresh token replay = %d, want %d", response.StatusCode, http.StatusUnauthorized)
+	}
+	if response, _ = doRawJSON(t, client, http.MethodPost, "/api/v1/auth/logout", nil, nil); response.StatusCode != http.StatusOK {
+		t.Fatalf("logout = %d", response.StatusCode)
+	}
+	if response, _ = doRawJSON(t, client, http.MethodGet, "/api/v1/auth/me", nil, nil); response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("revoked access credential remained valid: %d", response.StatusCode)
 	}
 }
 

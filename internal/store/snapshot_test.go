@@ -25,11 +25,14 @@ func TestLogicalSnapshotRoundTripPreservesStateEventsAndAudit(t *testing.T) {
 	if err := source.AppendAudit(model.AuditEntry{Actor: "owner", Action: "snapshot.test", Target: "store", Result: "success"}); err != nil {
 		t.Fatal(err)
 	}
+	if deleted, err := source.SoftDeleteEventIDs([]string{"snapshot-event"}); err != nil || deleted != 1 {
+		t.Fatalf("delete snapshot event = %d, %v", deleted, err)
+	}
 	snapshot, err := source.ExportSnapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Backend != DriverSQLite || len(snapshot.Events) != 1 || len(snapshot.Audit) != 1 {
+	if snapshot.Backend != DriverSQLite || len(snapshot.Events) != 1 || len(snapshot.EventTombstones) != 1 || len(snapshot.Audit) != 1 {
 		t.Fatalf("unexpected snapshot: %#v", snapshot)
 	}
 
@@ -45,8 +48,14 @@ func TestLogicalSnapshotRoundTripPreservesStateEventsAndAudit(t *testing.T) {
 		t.Fatalf("restored user = %#v, exists=%v", user, ok)
 	}
 	events, err := target.Events(-1, "", "")
-	if err != nil || len(events) != 1 || events[0].EventID != "snapshot-event" {
+	if err != nil || len(events) != 0 {
 		t.Fatalf("restored events = %#v, err=%v", events, err)
+	}
+	if restored, err := target.RestoreEventIDs([]string{"snapshot-event"}); err != nil || restored != 1 {
+		t.Fatalf("restored tombstone is unusable: restored=%d err=%v", restored, err)
+	}
+	if events, err := target.Events(-1, "", ""); err != nil || len(events) != 1 || events[0].EventID != "snapshot-event" {
+		t.Fatalf("event did not reappear after restoring its tombstone: %#v, %v", events, err)
 	}
 	if err := target.VerifyAuditChain(); err != nil {
 		t.Fatalf("restored audit chain did not verify: %v", err)

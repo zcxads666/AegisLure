@@ -25,6 +25,7 @@ type Snapshot struct {
 	Events            []model.Event        `json:"events"`
 	Audit             []SnapshotAuditEntry `json:"audit"`
 	ExternalEventRefs []ExternalEventRef   `json:"external_event_refs"`
+	EventTombstones   []EventTombstone     `json:"event_tombstones"`
 }
 
 type SnapshotAuditEntry struct {
@@ -38,6 +39,13 @@ type ExternalEventRef struct {
 	SourceOffset    int64  `json:"source_offset"`
 	SourceEventHash string `json:"source_event_hash"`
 	EventSequence   int64  `json:"event_sequence"`
+}
+
+type EventTombstone struct {
+	EventID   string    `json:"event_id"`
+	DeletedAt time.Time `json:"deleted_at"`
+	Actor     string    `json:"actor,omitempty"`
+	Reason    string    `json:"reason"`
 }
 
 func (s *Store) ExportSnapshot() (Snapshot, error) {
@@ -75,6 +83,7 @@ func (s *Store) ExportSnapshot() (Snapshot, error) {
 		Events:            make([]model.Event, 0),
 		Audit:             make([]SnapshotAuditEntry, 0),
 		ExternalEventRefs: make([]ExternalEventRef, 0),
+		EventTombstones:   make([]EventTombstone, 0),
 	}
 
 	eventRows, err := tx.Query(s.bind(`SELECT event_json FROM events ORDER BY sequence ASC`))
@@ -136,6 +145,29 @@ func (s *Store) ExportSnapshot() (Snapshot, error) {
 		return Snapshot{}, fmt.Errorf("export %s import provenance: %w", s.driver, err)
 	}
 	_ = refRows.Close()
+
+	tombstoneRows, err := tx.Query(s.bind(`SELECT event_id,deleted_at,COALESCE(actor,''),reason FROM event_tombstones ORDER BY event_id`))
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("export %s event tombstones: %w", s.driver, err)
+	}
+	for tombstoneRows.Next() {
+		var tombstone EventTombstone
+		var deletedAt string
+		if err := tombstoneRows.Scan(&tombstone.EventID, &deletedAt, &tombstone.Actor, &tombstone.Reason); err != nil {
+			_ = tombstoneRows.Close()
+			return Snapshot{}, fmt.Errorf("read snapshot event tombstone: %w", err)
+		}
+		if tombstone.DeletedAt, err = time.Parse(time.RFC3339Nano, deletedAt); err != nil {
+			_ = tombstoneRows.Close()
+			return Snapshot{}, fmt.Errorf("decode snapshot event tombstone time: %w", err)
+		}
+		snapshot.EventTombstones = append(snapshot.EventTombstones, tombstone)
+	}
+	if err := tombstoneRows.Err(); err != nil {
+		_ = tombstoneRows.Close()
+		return Snapshot{}, fmt.Errorf("export %s event tombstones: %w", s.driver, err)
+	}
+	_ = tombstoneRows.Close()
 	if err := tx.Commit(); err != nil {
 		return Snapshot{}, fmt.Errorf("commit %s snapshot export: %w", s.driver, err)
 	}
@@ -206,12 +238,13 @@ func (s *Store) RestoreSnapshot(snapshot Snapshot) error {
 		if _, err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtext('aegislure:audit-chain'))`); err != nil {
 			return fmt.Errorf("lock %s audit restore: %w", s.driver, err)
 		}
-		if _, err := tx.Exec(`TRUNCATE TABLE external_event_refs, events, audit_log RESTART IDENTITY`); err != nil {
+		if _, err := tx.Exec(`TRUNCATE TABLE external_event_refs, event_tombstones, events, audit_log RESTART IDENTITY`); err != nil {
 			return fmt.Errorf("clear %s snapshot tables: %w", s.driver, err)
 		}
 	} else {
 		for _, statement := range []string{
 			`DELETE FROM external_event_refs`,
+			`DELETE FROM event_tombstones`,
 			`DELETE FROM events`,
 			`DELETE FROM audit_log`,
 			`DELETE FROM sqlite_sequence WHERE name = 'audit_log'`,
@@ -243,6 +276,11 @@ func (s *Store) RestoreSnapshot(snapshot Snapshot) error {
 	for _, ref := range snapshot.ExternalEventRefs {
 		if _, err := tx.Exec(s.bind(`INSERT INTO external_event_refs(source_id,source_file_id,source_offset,source_event_hash,event_sequence) VALUES(?,?,?,?,?)`), ref.SourceID, ref.SourceFileID, ref.SourceOffset, ref.SourceEventHash, ref.EventSequence); err != nil {
 			return fmt.Errorf("restore %s import provenance: %w", s.driver, err)
+		}
+	}
+	for _, tombstone := range snapshot.EventTombstones {
+		if _, err := tx.Exec(s.bind(`INSERT INTO event_tombstones(event_id,deleted_at,actor,reason) VALUES(?,?,?,?)`), tombstone.EventID, tombstone.DeletedAt.UTC().Format(time.RFC3339Nano), tombstone.Actor, tombstone.Reason); err != nil {
+			return fmt.Errorf("restore %s event tombstone: %w", s.driver, err)
 		}
 	}
 	for _, audit := range snapshot.Audit {
@@ -325,6 +363,13 @@ func validateSnapshot(snapshot Snapshot) error {
 			return errors.New("snapshot contains incomplete import provenance")
 		}
 		seenReferences[key] = true
+	}
+	seenTombstones := make(map[string]bool, len(snapshot.EventTombstones))
+	for _, tombstone := range snapshot.EventTombstones {
+		if tombstone.EventID == "" || tombstone.DeletedAt.IsZero() || tombstone.Reason == "" || !seenEventIDs[tombstone.EventID] || seenTombstones[tombstone.EventID] {
+			return errors.New("snapshot contains an incomplete or duplicate event tombstone")
+		}
+		seenTombstones[tombstone.EventID] = true
 	}
 	return nil
 }

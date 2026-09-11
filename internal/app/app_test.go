@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -63,6 +64,68 @@ func newTestApp(t *testing.T, initialized bool) (*App, *config.Config, *store.St
 		t.Fatal(err)
 	}
 	return New(cfg, st), cfg, st
+}
+
+func TestPublicHandlerKeepsRuntimeProfileRequestLocal(t *testing.T) {
+	a, _, st := newTestApp(t, false)
+	defer st.Close()
+	handler := a.publicHandler(a.profiles[model.ProductOllama])
+	var requests sync.WaitGroup
+	for index := 0; index < 16; index++ {
+		requests.Add(1)
+		go func(index int) {
+			defer requests.Done()
+			request := httptest.NewRequest(http.MethodGet, "/api/tags", nil)
+			request.RemoteAddr = fmt.Sprintf("192.0.2.%d:1234", index+1)
+			handler.ServeHTTP(httptest.NewRecorder(), request)
+		}(index)
+	}
+	requests.Wait()
+}
+
+func TestExpiredPublicSessionsAreReclaimedFromBothIndexes(t *testing.T) {
+	a, _, st := newTestApp(t, false)
+	defer st.Close()
+	for index := 0; index < maxPublicSessions+100; index++ {
+		request := httptest.NewRequest(http.MethodGet, "/", nil)
+		request.Header.Set("User-Agent", fmt.Sprintf("client-%d", index))
+		a.sessionFor(request, model.ProductOllama)
+	}
+	if len(a.sessions) > maxPublicSessions || len(a.anonymous) > maxPublicSessions {
+		t.Fatalf("public session bound exceeded: sessions=%d anonymous=%d", len(a.sessions), len(a.anonymous))
+	}
+	for id, session := range a.sessions {
+		session.LastSeen = time.Now().Add(-2 * publicSessionTTL)
+		a.sessions[id] = session
+	}
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("User-Agent", "fresh-client")
+	a.sessionFor(request, model.ProductOllama)
+	if len(a.sessions) != 1 || len(a.anonymous) != 1 {
+		t.Fatalf("expired sessions were not reclaimed: sessions=%d anonymous=%d", len(a.sessions), len(a.anonymous))
+	}
+}
+
+func TestRunningServiceReadsNewSQLiteRescueCode(t *testing.T) {
+	a, cfg, st := newTestApp(t, true)
+	defer st.Close()
+	cliStore, err := store.Open(cfg.DataDir, cfg.InstanceKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cliStore.Close()
+	code := "new-cli-rescue-code"
+	if err := cliStore.Update(func(state *model.State) error {
+		state.Admin.RescueCodes = append(state.Admin.RescueCodes, model.AdminRecoveryCode{Hash: security.Fingerprint(cfg.InstanceKey, code), IssuedAt: time.Now().UTC(), ExpiresAt: time.Now().Add(10 * time.Minute)})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	client := &inProcessClient{handler: a.adminHandler(), cookies: map[string]string{}}
+	response, _ := doRawJSON(t, client, http.MethodPost, cfg.AdminPath+"admin/api/v1/auth/recovery-code/reset", map[string]any{"username": "owner", "recovery_code": code, "new_password": "new-password-123"}, nil)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("new CLI rescue code rejected by running service: %d", response.StatusCode)
+	}
 }
 
 func testFreePort(t *testing.T) int {

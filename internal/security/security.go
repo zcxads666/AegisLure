@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -16,8 +17,39 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
-var secretPattern = regexp.MustCompile(`(?i)("?(?:password|passwd|token|authorization|api[_-]?key|secret|code|client_secret)"?\s*[:=]\s*)("?)[^,}&\s"]+`)
-var identityPattern = regexp.MustCompile(`(?i)("?(?:username|user_name|email)"?\s*[:=]\s*)("?)[^,}&\s"]+`)
+// The fallback handles form fields, header-like text and incomplete JSON.
+// Quoted values include spaces and escaped quotes; unquoted values extend to
+// a field/line delimiter so an authorization scheme cannot hide its secret.
+var sensitivePattern = regexp.MustCompile(`(?i)((?:"|')?(?:password|passwd|token|access_token|refresh_token|id_token|authorization|api[_-]?key|secret|code|client_secret|username|user_name|email)(?:"|')?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"?|'(?:\\.|[^'\\])*'?|[^,}&\r\n]+)`)
+
+func sensitiveField(name string) bool {
+	switch strings.ToLower(name) {
+	case "password", "passwd", "token", "access_token", "refresh_token", "id_token", "authorization", "api_key", "api-key", "apikey", "secret", "code", "client_secret", "username", "user_name", "email":
+		return true
+	default:
+		return false
+	}
+}
+
+func redactJSONFields(value any) any {
+	switch value := value.(type) {
+	case map[string]any:
+		for key, child := range value {
+			if sensitiveField(key) {
+				value[key] = "[REDACTED]"
+			} else {
+				value[key] = redactJSONFields(child)
+			}
+		}
+	case []any:
+		for index, child := range value {
+			value[index] = redactJSONFields(child)
+		}
+	case string:
+		return sensitivePattern.ReplaceAllString(value, `${1}[REDACTED]`)
+	}
+	return value
+}
 
 func RandomBytes(size int) ([]byte, error) {
 	b := make([]byte, size)
@@ -102,8 +134,19 @@ func RedactPreview(value string, limit int) string {
 	if !utf8.ValidString(value) {
 		value = strings.ToValidUTF8(value, "�")
 	}
-	value = secretPattern.ReplaceAllString(value, `${1}${2}[REDACTED]`)
-	value = identityPattern.ReplaceAllString(value, `${1}${2}[REDACTED]`)
+	// Parse full JSON before using the text fallback, including escaped field
+	// names. UseNumber preserves large numeric literals in non-sensitive data.
+	var document any
+	decoder := json.NewDecoder(strings.NewReader(value))
+	decoder.UseNumber()
+	if json.Valid([]byte(value)) && decoder.Decode(&document) == nil {
+		document = redactJSONFields(document)
+		if encoded, err := json.Marshal(document); err == nil {
+			value = string(encoded)
+		}
+	} else {
+		value = sensitivePattern.ReplaceAllString(value, `${1}[REDACTED]`)
+	}
 	value = strings.Map(func(r rune) rune {
 		if r == '\n' || r == '\r' || r == '\t' || r >= 0x20 {
 			return r

@@ -21,3 +21,17 @@ func TestRedactPreview(t *testing.T) {
 		t.Fatalf("secret was not redacted: %s", got)
 	}
 }
+
+func TestRedactPreviewRemovesCompleteSensitiveValues(t *testing.T) {
+	inputs := []string{
+		`{"authorization":"Bearer sk-sensitive-token","nested":{"password":"two words"}}`,
+		`Authorization: Bearer sk-sensitive-token`,
+		`password=two words&safe=value`,
+	}
+	for _, input := range inputs {
+		got := RedactPreview(input, 2048)
+		if strings.Contains(got, "sk-sensitive-token") || strings.Contains(got, "two words") {
+			t.Fatalf("sensitive value was not fully redacted: %q", got)
+		}
+	}
+}

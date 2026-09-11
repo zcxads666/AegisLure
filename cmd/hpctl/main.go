@@ -444,7 +444,7 @@ func adminResetIssue(args []string) {
 	if err := st.Update(func(state *model.State) error {
 		now := time.Now().UTC()
 		state.Admin.RescueCodes = append(state.Admin.RescueCodes, model.AdminRecoveryCode{
-			Hash:      config.KeyedHash(cfg.InstanceKey, code),
+			Hash:      security.Fingerprint(cfg.InstanceKey, code),
 			IssuedAt:  now,
 			ExpiresAt: now.Add(10 * time.Minute),
 		})
@@ -510,7 +510,7 @@ func backupCommand(args []string) {
 			"config.json":   manifestForBytes(configBytes),
 			"snapshot.json": manifestForBytes(snapshotBytes),
 		},
-		Counts: map[string]int{"events": len(snapshot.Events), "audit": len(snapshot.Audit), "external_event_refs": len(snapshot.ExternalEventRefs)},
+		Counts: map[string]int{"events": len(snapshot.Events), "event_tombstones": len(snapshot.EventTombstones), "audit": len(snapshot.Audit), "external_event_refs": len(snapshot.ExternalEventRefs)},
 	}
 	manifestBytes, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
@@ -742,7 +742,7 @@ func restoreLogicalSnapshot(stage, configPath, dataDir string) {
 	if err := json.Unmarshal(snapshotBytes, &snapshot); err != nil {
 		fatal(fmt.Errorf("invalid logical backup snapshot: %w", err))
 	}
-	if snapshot.Backend != manifest.Backend || len(snapshot.Events) != manifest.Counts["events"] || len(snapshot.Audit) != manifest.Counts["audit"] || len(snapshot.ExternalEventRefs) != manifest.Counts["external_event_refs"] {
+	if snapshot.Backend != manifest.Backend || len(snapshot.Events) != manifest.Counts["events"] || len(snapshot.EventTombstones) != manifest.Counts["event_tombstones"] || len(snapshot.Audit) != manifest.Counts["audit"] || len(snapshot.ExternalEventRefs) != manifest.Counts["external_event_refs"] {
 		fatal(errors.New("logical backup manifest does not match snapshot"))
 	}
 	var backupCfg config.Config

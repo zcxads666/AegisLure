@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -71,6 +72,47 @@ func TestEventsSequenceSurvivesReopenAndQuotaIsAtomic(t *testing.T) {
 	stateUser, ok := reopened.GetHoneyUser("user-1")
 	if !ok || stateUser.VirtualQuota != 75 {
 		t.Fatalf("quota was not persisted atomically: %+v", stateUser)
+	}
+}
+
+func TestSQLiteStoresSerializeStateUpdates(t *testing.T) {
+	dir := t.TempDir()
+	first, err := Open(dir, "shared-state-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	if err := first.CreateHoneyUser(model.HoneyUser{ID: "shared-user", UsernameFP: "shared-user-fp", VirtualQuota: 100}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := Open(dir, "shared-state-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	var updates sync.WaitGroup
+	for index := 0; index < 20; index++ {
+		updates.Add(1)
+		go func(index int) {
+			defer updates.Done()
+			current := first
+			if index%2 == 1 {
+				current = second
+			}
+			if _, err := current.AddQuota("shared-user", 1); err != nil {
+				t.Errorf("concurrent SQLite quota update: %v", err)
+			}
+		}(index)
+	}
+	updates.Wait()
+	verification, err := Open(dir, "shared-state-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer verification.Close()
+	user, ok := verification.GetHoneyUser("shared-user")
+	if !ok || user.VirtualQuota != 120 {
+		t.Fatalf("concurrent SQLite updates lost data: %#v exists=%v", user, ok)
 	}
 }
 
@@ -225,6 +267,30 @@ func TestImportedEventsAreIdempotent(t *testing.T) {
 	events, err := st.Events(-1, "", "")
 	if err != nil || len(events) != 1 || events[0].EventOrigin != "third_party" || events[0].SourceOffset != 42 {
 		t.Fatalf("unexpected imported events = %#v, %v", events, err)
+	}
+}
+
+func TestGeneratedImportedEventIDsAreScopedToProvenance(t *testing.T) {
+	st, err := Open(t.TempDir(), "import-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	for _, sourceID := range []string{"source-a", "source-b"} {
+		imported, err := st.AppendImportedEvent(model.Event{ObservedAt: time.Now().UTC()}, sourceID, "same-file", 0, "same-content-hash")
+		if err != nil || !imported {
+			t.Fatalf("import %s = %v, %v", sourceID, imported, err)
+		}
+	}
+	events, err := st.Events(-1, "", "")
+	if err != nil || len(events) != 2 || events[0].EventID == events[1].EventID {
+		t.Fatalf("generated imported ids are not unique: %#v, %v", events, err)
+	}
+	for _, sourceID := range []string{"source-c", "source-d"} {
+		imported, err := st.AppendImportedEvent(model.Event{EventID: "shared-upstream-id", ObservedAt: time.Now().UTC()}, sourceID, "same-file", 1, "same-content-hash")
+		if err != nil || !imported {
+			t.Fatalf("import duplicate upstream id from %s = %v, %v", sourceID, imported, err)
+		}
 	}
 }
 
