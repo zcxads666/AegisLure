@@ -13,13 +13,13 @@ const BASE = ADMIN_BASE.endsWith('/') ? ADMIN_BASE : `${ADMIN_BASE}/`
 const jsonHeaders = { 'Content-Type': 'application/json', Accept: 'application/json' }
 
 const NAV_ITEMS = [
-  { id: 'dashboard', label: '总览', caption: 'Dashboard', icon: 'grid' },
-  { id: 'observations', label: '观测记录', caption: 'Observations', icon: 'activity' },
-  { id: 'invocations', label: '调用分析', caption: 'Invocations', icon: 'spark' },
-  { id: 'chains', label: '信息洞察', caption: 'Insights', icon: 'route' },
-  { id: 'indicators', label: 'IP 情报', caption: 'Indicators', icon: 'shield' },
-  { id: 'instances', label: '蜜罐实例', caption: 'Instances', icon: 'server' },
-  { id: 'packs', label: '规则与策略', caption: 'Packs', icon: 'layers' },
+  { id: 'dashboard', label: '总览', icon: 'grid' },
+  { id: 'observations', label: '观测记录', icon: 'activity' },
+  { id: 'invocations', label: '调用分析', icon: 'spark' },
+  { id: 'chains', label: '信息洞察', icon: 'route' },
+  { id: 'indicators', label: 'IP 情报', icon: 'shield' },
+  { id: 'instances', label: '蜜罐实例', icon: 'server' },
+  { id: 'packs', label: '规则与策略', icon: 'layers' },
 ]
 
 const PROFILE_LABELS = {
@@ -205,19 +205,19 @@ function Badge({ children, tone = 'neutral' }) {
   return html`<span class=${cn('badge', `badge-${tone}`)}>${children}</span>`
 }
 
-function Panel({ title, eyebrow, action, className, children, flush = false }) {
+function Panel({ title, action, className, children, flush = false }) {
   return html`<section class=${cn('panel', flush && 'panel-flush', className)}>
-    ${(title || eyebrow || action) ? html`<header class="panel-header"><div>${eyebrow ? html`<p class="eyebrow">${eyebrow}</p>` : null}${title ? html`<h2>${title}</h2>` : null}</div>${action || null}</header>` : null}
+    ${(title || action) ? html`<header class="panel-header"><div>${title ? html`<h2>${title}</h2>` : null}</div>${action || null}</header>` : null}
     ${children}
   </section>`
 }
 
-function PageHeader({ eyebrow = 'Control plane', title, description, actions }) {
-  return html`<header class="page-header"><div><p class="eyebrow">${eyebrow}</p><h1>${title}</h1>${description ? html`<p class="page-description">${description}</p>` : null}</div>${actions ? html`<div class="page-actions">${actions}</div>` : null}</header>`
+function PageHeader({ title, description, actions }) {
+  return html`<header class="page-header"><div><h1>${title}</h1>${description ? html`<p class="page-description">${description}</p>` : null}</div>${actions ? html`<div class="page-actions">${actions}</div>` : null}</header>`
 }
 
-function MetricCard({ label, value, detail, icon: iconName }) {
-  return html`<article class="metric-card"><div class="metric-top"><span>${label}</span>${iconName ? html`<span class="metric-icon">${icon(iconName, 17)}</span>` : null}</div><strong>${value}</strong>${detail ? html`<small>${detail}</small>` : null}</article>`
+function MetricCard({ label, value, detail }) {
+  return html`<article class="metric-card"><strong class="metric-value">${value}</strong><span class="metric-label">${label}</span>${detail ? html`<small class="metric-detail">${detail}</small>` : null}</article>`
 }
 
 function EmptyState({ icon: iconName = 'activity', title = '暂无数据', description = '新的观测出现后会显示在这里。' }) {
@@ -238,13 +238,13 @@ function StatusBadge({ state }) {
   return html`<${Badge} tone=${running ? 'success' : 'neutral'}>${running ? '运行中' : '已停止'}<//>`
 }
 
-function Modal({ title, eyebrow, onClose, children, wide = false }) {
+function Modal({ title, onClose, children, wide = false }) {
   useEffect(() => {
     const onKey = (event) => event.key === 'Escape' && onClose()
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [onClose])
-  return html`<div class="modal-backdrop" onClick=${(event) => event.target === event.currentTarget && onClose()}><section class=${cn('modal', wide && 'modal-wide')} role="dialog" aria-modal="true" aria-label=${title}><header class="modal-header">${eyebrow ? html`<p class="eyebrow">${eyebrow}</p>` : null}<h2>${title}</h2><button class="icon-button" type="button" onClick=${onClose} aria-label="关闭">${icon('close', 19)}</button></header><div class="modal-body">${children}</div></section></div>`
+  return html`<div class="modal-backdrop" onClick=${(event) => event.target === event.currentTarget && onClose()}><section class=${cn('modal', wide && 'modal-wide')} role="dialog" aria-modal="true" aria-label=${title}><header class="modal-header"><h2>${title}</h2><button class="icon-button" type="button" onClick=${onClose} aria-label="关闭">${icon('close', 19)}</button></header><div class="modal-body">${children}</div></section></div>`
 }
 
 function DataTable({ columns, rows, onRowClick, emptyTitle, emptyDescription, loading = false, loadingLabel = '读取中…' }) {
@@ -378,7 +378,7 @@ function RiskActivityChart({ series = {} }) {
   const areaPath = points.length ? `M ${x(0)} ${baseline} L ${points.map((point, index) => `${x(index)} ${y(point.count)}`).join(' L ')} L ${x(points.length - 1)} ${baseline} Z` : ''
   const labelStep = Math.max(1, Math.ceil(points.length / 6))
   const dashboardTimezone = selected.timezone || 'Asia/Shanghai'
-  return html`<div class="risk-activity"><div class="chart-switcher" role="tablist" aria-label="趋势时间范围">${periods.map((item) => html`<button key=${item.key} type="button" class=${cn(period === item.key && 'is-active')} onClick=${() => { setPeriod(item.key); setHovered(null) }} role="tab" aria-selected=${period === item.key}><b>${item.label}</b><small>${item.detail}</small></button>`)}</div>${points.length ? html`<div class="risk-chart-canvas"><svg viewBox=${`0 0 ${width} ${height}`} role="img" aria-label=${`${periods.find((item) => item.key === period)?.label || ''}风险触发趋势`}><defs><linearGradient id="risk-area-gradient" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#6edfeb" stop-opacity=".28"></stop><stop offset="100%" stop-color="#6edfeb" stop-opacity="0"></stop></linearGradient></defs>${[0, .25, .5, .75, 1].map((ratio) => html`<line key=${ratio} class="chart-grid-line" x1=${padding.left} x2=${width - padding.right} y1=${y(ratio * max)} y2=${y(ratio * max)}></line>`)}<path class="chart-area" d=${areaPath}></path><path class="chart-line chart-line-total" d=${totalPath}></path><path class="chart-line chart-line-risk" d=${riskPath}></path>${points.map((point, index) => html`<g key=${point.key || point.start_at || `${point.label}-${index}`} onMouseEnter=${() => setHovered({ point, index })} onMouseLeave=${() => setHovered(null)}><circle class="chart-hit-area" cx=${x(index)} cy=${y(point.count)} r="14"></circle><circle class="chart-dot chart-dot-total" cx=${x(index)} cy=${y(point.count)} r="3.5"><title>${point.label} · 总事件 ${formatNumber(point.count)} · 风险 ${formatNumber(point.risk_count)}</title></circle><circle class="chart-dot chart-dot-risk" cx=${x(index)} cy=${y(point.risk_count)} r="3"><title>${point.label} · 风险触发 ${formatNumber(point.risk_count)}</title></circle>${(index === 0 || index === points.length - 1 || index % labelStep === 0) ? html`<text class="chart-label" x=${x(index)} y=${height - 8} text-anchor="middle">${point.label}</text>` : null}</g>`)}</svg>${hovered ? html`<div class="chart-tooltip" style=${{ left: `${Math.min(91, Math.max(9, (hovered.index / Math.max(1, points.length - 1)) * 100))}%` }}><strong>${hovered.point.label}</strong><span>总事件 ${formatNumber(hovered.point.count)}</span><span>风险触发 ${formatNumber(hovered.point.risk_count)}</span><span>峰值 ${formatNumber(hovered.point.peak_score)} 分</span></div>` : null}</div>` : html`<${EmptyState} title="暂无趋势数据" description="新的观测事件出现后，这里会显示风险波动。" />`}<div class="chart-summary"><span><i class="chart-key key-total"></i><b>${formatNumber(selected.total)}</b> 总事件</span><span><i class="chart-key key-risk"></i><b>${formatNumber(selected.risk_total)}</b> 风险触发</span><span class="chart-threshold">阈值 ≥ ${selected.risk_threshold || 30}</span><span class="chart-window">${selected.bucket === 'hour' ? '按小时滚动' : '按日滚动'} · ${dashboardTimezone} · 下次刷新 ${selected.next_refresh_at ? formatTime(selected.next_refresh_at, false, dashboardTimezone) : '自动'}</span></div></div>`
+  return html`<div class="risk-activity"><div class="chart-switcher" role="tablist" aria-label="趋势时间范围">${periods.map((item) => html`<button key=${item.key} type="button" class=${cn(period === item.key && 'is-active')} onClick=${() => { setPeriod(item.key); setHovered(null) }} role="tab" aria-selected=${period === item.key}><b>${item.label}</b><small>${item.detail}</small></button>`)}</div>${points.length ? html`<div class="risk-chart-canvas"><svg viewBox=${`0 0 ${width} ${height}`} role="img" aria-label=${`${periods.find((item) => item.key === period)?.label || ''}风险触发趋势`}>${[0, .25, .5, .75, 1].map((ratio) => html`<line key=${ratio} class="chart-grid-line" x1=${padding.left} x2=${width - padding.right} y1=${y(ratio * max)} y2=${y(ratio * max)}></line>`)}<path class="chart-area" d=${areaPath}></path><path class="chart-line chart-line-total" d=${totalPath}></path><path class="chart-line chart-line-risk" d=${riskPath}></path>${points.map((point, index) => html`<g key=${point.key || point.start_at || `${point.label}-${index}`} onMouseEnter=${() => setHovered({ point, index })} onMouseLeave=${() => setHovered(null)}><circle class="chart-hit-area" cx=${x(index)} cy=${y(point.count)} r="14"></circle><circle class="chart-dot chart-dot-total" cx=${x(index)} cy=${y(point.count)} r="3.5"><title>${point.label} · 总事件 ${formatNumber(point.count)} · 风险 ${formatNumber(point.risk_count)}</title></circle><circle class="chart-dot chart-dot-risk" cx=${x(index)} cy=${y(point.risk_count)} r="3"><title>${point.label} · 风险触发 ${formatNumber(point.risk_count)}</title></circle>${(index === 0 || index === points.length - 1 || index % labelStep === 0) ? html`<text class="chart-label" x=${x(index)} y=${height - 8} text-anchor="middle">${point.label}</text>` : null}</g>`)}</svg>${hovered ? html`<div class="chart-tooltip" style=${{ left: `${Math.min(91, Math.max(9, (hovered.index / Math.max(1, points.length - 1)) * 100))}%` }}><strong>${hovered.point.label}</strong><span>总事件 ${formatNumber(hovered.point.count)}</span><span>风险触发 ${formatNumber(hovered.point.risk_count)}</span><span>峰值 ${formatNumber(hovered.point.peak_score)} 分</span></div>` : null}</div>` : html`<${EmptyState} title="暂无趋势数据" description="新的观测事件出现后，这里会显示风险波动。" />`}<div class="chart-summary"><span><i class="chart-key key-total"></i><b>${formatNumber(selected.total)}</b> 总事件</span><span><i class="chart-key key-risk"></i><b>${formatNumber(selected.risk_total)}</b> 风险触发</span><span class="chart-threshold">阈值 ≥ ${selected.risk_threshold || 30}</span><span class="chart-window">${selected.bucket === 'hour' ? '按小时滚动' : '按日滚动'} · ${dashboardTimezone} · 下次刷新 ${selected.next_refresh_at ? formatTime(selected.next_refresh_at, false, dashboardTimezone) : '自动'}</span></div></div>`
 }
 
 function donutArcPath(startPercent, endPercent, outerRadius = 46, innerRadius = 29) {
@@ -444,10 +444,49 @@ function EventDetails({ event }) {
   return html`<${Modal} title="观测详情" eyebrow=${event.event_type || 'event'} onClose=${event.onClose} wide=${true}><div class="detail-grid">${fields.filter((item) => item[1] !== undefined && item[1] !== '').map((item) => html`<div class="detail-item"><span>${item[0]}</span><strong>${String(item[1])}</strong></div>`)}</div>${event.reason_codes?.length ? html`<div class="detail-section"><h3>命中原因</h3><div class="chip-list">${event.reason_codes.map((reason) => html`<${Badge} tone="warning">${reason}<//>`)}</div></div>` : null}<div class="detail-section"><h3>完整原始请求</h3>${raw ? html`<div class="raw-request-grid"><div class="detail-item"><span>原始 URL / 请求目标</span><code>${raw.url || '—'}</code></div><div class="detail-item"><span>完整路径</span><code>${raw.route || '—'}</code></div><div class="detail-item"><span>Host</span><code>${raw.host || '—'}</code></div></div><h4>全部请求头（重复值保留）</h4><pre class="json-view">${JSON.stringify(raw.headers || {}, null, 2)}</pre><h4>原始请求体 Base64</h4><pre class="json-view raw-body-view">${raw.body_base64 || ''}</pre>${raw.truncated ? html`<div class="notice notice-warning">原始请求已截断：${raw.truncation_reason || '超过采集限制'}；以上为已保存前缀。</div>` : null}` : html`<div class="notice notice-warning">历史事件未记录原始请求，无法恢复原始 URL、请求头或请求体。</div>`}</div><div class="detail-section"><h3>事件记录</h3><pre class="json-view">${JSON.stringify({ ...event, onClose: undefined }, null, 2)}</pre></div><//>`
 }
 
+
 function LoginPage({ onLogin, onRecovery, onForgot }) {
-  const [username, setUsername] = useState(''); const [password, setPassword] = useState(''); const [busy, setBusy] = useState(false); const [message, setMessage] = useState(''); const [modal, setModal] = useState(null)
-  const submit = async (event) => { event.preventDefault(); setBusy(true); setMessage(''); try { await onLogin(username, password) } catch (error) { setMessage(error.message || '登录失败，请检查账号和密码。') } finally { setBusy(false) } }
-  return html`<div class="auth-layout"><div class="auth-art"><div class="auth-orbit orbit-one"></div><div class="auth-orbit orbit-two"></div><div class="auth-glow"></div><div class="auth-brand"><span class="brand-mark">A</span><div><strong>AegisLure</strong><small>AI security sensor</small></div></div><div class="auth-copy"><p class="eyebrow">Private control plane</p><h1>看见每一次<br /><em>可疑调用。</em></h1><p>把模型服务蜜罐里的发现、调用与风险证据，收拢成一条清晰的操作链路。</p><div class="auth-facts"><span>${icon('shield', 16)}本地存储</span><span>${icon('lock', 16)}同源会话</span><span>${icon('spark', 16)}合成响应</span></div></div><div class="auth-art-foot">AegisLure / Standalone node</div></div><main class="auth-main"><div class="auth-card"><div class="mobile-brand"><span class="brand-mark">A</span><strong>AegisLure</strong></div><p class="eyebrow">Control plane</p><h2>欢迎回来</h2><p class="auth-subtitle">登录以继续查看传感器状态和观测证据。</p><form onSubmit=${submit} class="auth-form"><${TextInput} label="管理员账号" placeholder="输入账号" value=${username} onInput=${setUsername} autoComplete="username" maxLength="128" required=${true} /><${TextInput} label="密码" placeholder="输入密码" type="password" value=${password} onInput=${setPassword} autoComplete="current-password" required=${true} /><button class="button button-primary button-lg auth-submit" type="submit" disabled=${busy}>${busy ? html`<span class="spinner spinner-dark"></span>登录中…` : html`登录控制台 ${icon('arrow', 17)}`}</button></form>${message ? html`<div class="form-message error">${message}</div>` : null}<button class="link-button" type="button" onClick=${() => setModal('forgot')}>忘记密码？使用恢复码</button><div class="auth-note">${icon('shield', 15)}管理端建议仅通过可信网络或 VPN 访问。</div></div><p class="auth-footer">Synthetic-only telemetry · no real model or URL access</p></main></div>${modal === 'forgot' ? html`<${RecoveryModal} mode="forgot" onClose=${() => setModal(null)} onForgot=${onForgot} onRecovery=${onRecovery} />` : null}`
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('')
+  const [modal, setModal] = useState(null)
+  const submit = async (event) => {
+    event.preventDefault()
+    setBusy(true)
+    setMessage('')
+    try { await onLogin(username, password) } catch (error) { setMessage(error.message || '登录失败，请检查账号和密码。') } finally { setBusy(false) }
+  }
+  return html`
+    <div class="auth-layout">
+      <section class="auth-art" aria-label="AegisLure 安全观测控制台">
+        <div class="auth-brand"><span class="brand-mark">A</span><strong>AegisLure</strong></div>
+        <div class="auth-copy">
+          <h1>看见每一次<br /><em>可疑调用。</em></h1>
+          <p>把模型服务蜜罐里的发现、调用与风险证据，收拢成一条清晰的操作链路。</p>
+          <div class="auth-facts"><span>${icon('shield', 16)}本地存储</span><span>${icon('lock', 16)}同源会话</span><span>${icon('spark', 16)}合成响应</span></div>
+        </div>
+        <div class="auth-art-foot">安全观测控制台</div>
+      </section>
+      <main class="auth-main">
+        <div class="auth-card">
+          <div class="mobile-brand"><span class="brand-mark">A</span><strong>AegisLure</strong></div>
+          <h2>欢迎回来</h2>
+          <p class="auth-subtitle">登录以继续查看传感器状态和观测证据。</p>
+          <form onSubmit=${submit} class="auth-form">
+            <${TextInput} label="管理员账号" placeholder="输入账号" value=${username} onInput=${setUsername} autoComplete="username" maxLength="128" required=${true} />
+            <${TextInput} label="密码" placeholder="输入密码" type="password" value=${password} onInput=${setPassword} autoComplete="current-password" required=${true} />
+            <button class="button button-primary button-lg auth-submit" type="submit" disabled=${busy}>${busy ? html`<span class="spinner spinner-dark"></span>登录中…` : html`登录控制台 ${icon('arrow', 17)}`}</button>
+          </form>
+          ${message ? html`<div class="form-message error" role="alert">${message}</div>` : null}
+          <button class="link-button" type="button" onClick=${() => setModal('forgot')}>忘记密码？使用恢复码</button>
+          <div class="auth-note">${icon('shield', 15)}管理端建议仅通过可信网络或 VPN 访问。</div>
+        </div>
+        <p class="auth-footer">仅生成合成遥测 · 不访问真实模型或网址</p>
+      </main>
+    </div>
+    ${modal === 'forgot' ? html`<${RecoveryModal} onClose=${() => setModal(null)} onForgot=${onForgot} onRecovery=${onRecovery} />` : null}
+  `
 }
 
 function RecoveryModal({ onClose, onForgot, onRecovery }) {
@@ -457,65 +496,137 @@ function RecoveryModal({ onClose, onForgot, onRecovery }) {
   return html`<${Modal} title="恢复管理员访问" eyebrow="Account recovery" onClose=${onClose}>${!sent ? html`<form class="stack-form" onSubmit=${submitForgot}><p class="modal-copy">如果部署配置了恢复流程，系统会向对应渠道发送说明。账号是否存在不会通过响应泄露。</p><${TextInput} label="管理员账号" placeholder="输入账号" value=${username} onInput=${setUsername} autoComplete="username" required=${true} /><button class="button button-primary button-full" type="submit" disabled=${busy}>${busy ? '提交中…' : '发送恢复说明'}</button></form>` : html`<form class="stack-form" onSubmit=${submitReset}><div class="notice notice-info">请输入一次性恢复码。恢复码成功使用后会立即失效。</div><${TextInput} label="管理员账号" placeholder="输入账号" value=${username} onInput=${setUsername} autoComplete="username" required=${true} /><${TextInput} label="恢复码" placeholder="输入离线保存的恢复码" value=${code} onInput=${setCode} autoComplete="one-time-code" required=${true} /><${TextInput} label="新密码" placeholder="至少 8 个字符" type="password" value=${password} onInput=${setPassword} minLength="8" maxLength="128" required=${true} /><${TextInput} label="确认新密码" placeholder="再次输入新密码" type="password" value=${confirm} onInput=${setConfirm} minLength="8" maxLength="128" required=${true} /><button class="button button-primary button-full" type="submit" disabled=${busy}>${busy ? '重置中…' : '重置密码'}</button></form>`}${message ? html`<div class="form-message error">${message}</div>` : null}<//>`
 }
 
+
 function SetupPage({ onSetup }) {
-  const [username, setUsername] = useState(''); const [password, setPassword] = useState(''); const [confirm, setConfirm] = useState(''); const [codes, setCodes] = useState([]); const [busy, setBusy] = useState(false); const [message, setMessage] = useState(''); const [copied, setCopied] = useState(false)
-  const submit = async (event) => { event.preventDefault(); if (password !== confirm) { setMessage('两次输入的密码不一致。'); return } setBusy(true); setMessage(''); try { const result = await onSetup(username, password); setCodes(result.recovery_codes || []) } catch (error) { setMessage(error.message) } finally { setBusy(false) } }
-  const copyCodes = async () => { try { await navigator.clipboard.writeText(codes.join('\n')); setCopied(true); setTimeout(() => setCopied(false), 1800) } catch (_) { setMessage('浏览器不允许自动复制，请手动保存恢复码。') } }
-  return html`<div class="auth-layout setup-layout"><div class="auth-art"><div class="auth-orbit orbit-one"></div><div class="auth-orbit orbit-two"></div><div class="auth-glow"></div><div class="auth-brand"><span class="brand-mark">A</span><div><strong>AegisLure</strong><small>AI security sensor</small></div></div><div class="auth-copy"><p class="eyebrow">First-time setup</p><h1>建立你的<br /><em>观测中枢。</em></h1><p>初始化本地 owner 后，你就可以查看事件、控制蜜罐实例并管理风险证据。</p><div class="auth-facts"><span>${icon('lock', 16)}Argon2id 密码</span><span>${icon('key', 16)}一次性恢复码</span><span>${icon('shield', 16)}本地管理</span></div></div><div class="auth-art-foot">AegisLure / Standalone node</div></div><main class="auth-main"><div class="auth-card">${codes.length === 0 ? html`<p class="eyebrow">Initialize owner</p><h2>创建管理员</h2><p class="auth-subtitle">设置本地控制台的唯一 owner 账号。</p><form class="auth-form" onSubmit=${submit}><${TextInput} label="管理员账号" placeholder="例如 owner" value=${username} onInput=${setUsername} autoComplete="username" maxLength="128" required=${true} /><${TextInput} label="密码" placeholder="至少 8 个字符" type="password" value=${password} onInput=${setPassword} minLength="8" maxLength="128" required=${true} /><${TextInput} label="确认密码" placeholder="再次输入密码" type="password" value=${confirm} onInput=${setConfirm} minLength="8" maxLength="128" required=${true} /><button class="button button-primary button-lg button-full" type="submit" disabled=${busy}>${busy ? '创建中…' : '创建 owner 账号'} ${icon('arrow', 17)}</button></form>${message ? html`<div class="form-message error">${message}</div>` : null}<div class="auth-note">${icon('warning', 15)}恢复码只显示一次，请离线保存。</div>` : html`<p class="eyebrow">Owner ready</p><h2>保存恢复码</h2><p class="auth-subtitle">账号已经创建。请在继续登录前，把以下恢复码保存到安全位置。</p><div class="recovery-codes">${codes.map((code) => html`<code>${code}</code>`)}</div><div class="code-actions"><button class="button button-secondary button-full" type="button" onClick=${copyCodes}>${icon('copy', 16)}${copied ? '已复制' : '复制全部恢复码'}</button><button class="button button-primary button-full" type="button" onClick=${() => onSetup('continue')}>前往登录 ${icon('arrow', 16)}</button></div><div class="notice notice-warning">恢复码只会在本次初始化响应中返回。不要把它提交到仓库或聊天记录。</div>`}</div><p class="auth-footer">Synthetic-only telemetry · no real model or URL access</p></main></div>`
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [codes, setCodes] = useState([])
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('')
+  const [copied, setCopied] = useState(false)
+  const submit = async (event) => {
+    event.preventDefault()
+    if (password !== confirm) { setMessage('两次输入的密码不一致。'); return }
+    setBusy(true)
+    setMessage('')
+    try { const result = await onSetup(username, password); setCodes(result.recovery_codes || []) } catch (error) { setMessage(error.message) } finally { setBusy(false) }
+  }
+  const copyCodes = async () => {
+    try { await navigator.clipboard.writeText(codes.join('\n')); setCopied(true); setTimeout(() => setCopied(false), 1800) } catch (_) { setMessage('浏览器不允许自动复制，请手动保存恢复码。') }
+  }
+  return html`
+    <div class="auth-layout setup-layout">
+      <section class="auth-art" aria-label="AegisLure 初始化">
+        <div class="auth-brand"><span class="brand-mark">A</span><strong>AegisLure</strong></div>
+        <div class="auth-copy">
+          <h1>建立你的<br /><em>观测中枢。</em></h1>
+          <p>初始化本地管理员后，你就可以查看事件、控制蜜罐实例并管理风险证据。</p>
+          <div class="auth-facts"><span>${icon('lock', 16)}Argon2id 密码</span><span>${icon('key', 16)}一次性恢复码</span><span>${icon('shield', 16)}本地管理</span></div>
+        </div>
+        <div class="auth-art-foot">安全观测控制台</div>
+      </section>
+      <main class="auth-main">
+        <div class="auth-card">
+          ${codes.length === 0 ? html`
+            <h2>创建管理员</h2>
+            <p class="auth-subtitle">设置本地控制台的唯一管理员账号。</p>
+            <form class="auth-form" onSubmit=${submit}>
+              <${TextInput} label="管理员账号" placeholder="例如 admin" value=${username} onInput=${setUsername} autoComplete="username" maxLength="128" required=${true} />
+              <${TextInput} label="密码" placeholder="至少 8 个字符" type="password" value=${password} onInput=${setPassword} minLength="8" maxLength="128" required=${true} />
+              <${TextInput} label="确认密码" placeholder="再次输入密码" type="password" value=${confirm} onInput=${setConfirm} minLength="8" maxLength="128" required=${true} />
+              <button class="button button-primary button-lg button-full" type="submit" disabled=${busy}>${busy ? '创建中…' : '创建管理员'} ${icon('arrow', 17)}</button>
+            </form>
+            ${message ? html`<div class="form-message error" role="alert">${message}</div>` : null}
+            <div class="auth-note">${icon('warning', 15)}恢复码只显示一次，请离线保存。</div>
+          ` : html`
+            <h2>保存恢复码</h2>
+            <p class="auth-subtitle">账号已经创建。请在继续登录前，把以下恢复码保存到安全位置。</p>
+            <div class="recovery-codes">${codes.map((code) => html`<code>${code}</code>`)}</div>
+            <div class="code-actions"><button class="button button-secondary button-full" type="button" onClick=${copyCodes}>${icon('copy', 16)}${copied ? '已复制' : '复制全部恢复码'}</button><button class="button button-primary button-full" type="button" onClick=${() => onSetup('continue')}>前往登录 ${icon('arrow', 16)}</button></div>
+            <div class="notice notice-warning">恢复码只会在本次初始化响应中返回。不要把它提交到仓库或聊天记录。</div>
+          `}
+        </div>
+        <p class="auth-footer">仅生成合成遥测 · 不访问真实模型或网址</p>
+      </main>
+    </div>
+  `
 }
+
 
 function AppShell({ route, onNavigate, onLogout, username, lastUpdated, children }) {
-  const [mobileOpen, setMobileOpen] = useState(false); const current = NAV_ITEMS.some((item) => item.id === route) ? route : 'dashboard'
-  const nav = html`<nav class="sidebar-nav"><p class="nav-heading">Workspace</p>${NAV_ITEMS.map((item) => html`<button class=${cn('nav-item', current === item.id && 'is-active')} type="button" onClick=${() => onNavigate(item.id)}>${icon(item.icon, 18)}<span><b>${item.label}</b><small>${item.caption}</small></span></button>`)}</nav>`
-  return html`<div class="app-shell"><aside class=${cn('sidebar', mobileOpen && 'is-open')}><div class="sidebar-brand"><span class="brand-mark">A</span><div><strong>AegisLure</strong><small>Control plane</small></div><button class="sidebar-close icon-button" type="button" onClick=${() => setMobileOpen(false)} aria-label="关闭菜单">${icon('close', 18)}</button></div>${nav}</aside>${mobileOpen ? html`<div class="sidebar-scrim" onClick=${() => setMobileOpen(false)}></div>` : null}<main class="app-main"><header class="topbar"><div class="topbar-left"><button class="mobile-menu icon-button" type="button" onClick=${() => setMobileOpen(true)} aria-label="打开菜单">${icon('menu', 20)}</button><div class="breadcrumb"><span>AegisLure</span><i>/</i><b>${NAV_ITEMS.find((item) => item.id === current)?.label || '总览'}</b></div></div><div class="topbar-right">${lastUpdated ? html`<span class="last-updated">更新于 ${formatTime(lastUpdated)}</span>` : null}<button class="topbar-icon icon-button" type="button" onClick=${() => onNavigate('settings')} aria-label="设置">${icon('user', 18)}</button><div class="user-chip"><span>${String(username || 'owner').slice(0, 1).toUpperCase()}</span><b>${username || 'owner'}</b></div><button class="topbar-icon icon-button" type="button" onClick=${onLogout} aria-label="退出登录">${icon('logout', 18)}</button></div></header><div class="content-wrap">${children}</div></main></div>`
+  const [mobileOpen, setMobileOpen] = useState(false)
+  const current = NAV_ITEMS.some((item) => item.id === route) ? route : 'dashboard'
+  const closeAndNavigate = (next) => { setMobileOpen(false); onNavigate(next) }
+  const nav = html`<nav class="sidebar-nav" aria-label="主导航">${NAV_ITEMS.map((item) => html`<button class=${cn('nav-item', current === item.id && 'is-active')} type="button" onClick=${() => closeAndNavigate(item.id)}>${icon(item.icon, 17)}<span>${item.label}</span></button>`)}</nav>`
+  return html`
+    <div class="app-shell">
+      <aside class=${cn('sidebar', mobileOpen && 'is-open')}>
+        <div class="sidebar-brand"><span class="brand-mark">A</span><strong>AegisLure</strong><button class="sidebar-close icon-button" type="button" onClick=${() => setMobileOpen(false)} aria-label="关闭菜单">${icon('close', 18)}</button></div>
+        ${nav}
+      </aside>
+      ${mobileOpen ? html`<div class="sidebar-scrim" onClick=${() => setMobileOpen(false)}></div>` : null}
+      <main class="app-main">
+        <header class="topbar">
+          <div class="topbar-left"><button class="mobile-menu icon-button" type="button" onClick=${() => setMobileOpen(true)} aria-label="打开菜单">${icon('menu', 20)}</button><div class="breadcrumb"><span>AegisLure</span><i>/</i><b>${NAV_ITEMS.find((item) => item.id === current)?.label || '总览'}</b></div></div>
+          <div class="topbar-right">${lastUpdated ? html`<span class="last-updated">更新于 ${formatTime(lastUpdated)}</span>` : null}<button class="topbar-icon icon-button" type="button" onClick=${() => onNavigate('settings')} aria-label="设置">${icon('user', 18)}</button><div class="user-chip"><span>${String(username || 'admin').slice(0, 1).toUpperCase()}</span><b>${username || 'admin'}</b></div><button class="topbar-icon icon-button" type="button" onClick=${onLogout} aria-label="退出登录">${icon('logout', 18)}</button></div>
+        </header>
+        <div class="content-wrap">${children}</div>
+      </main>
+    </div>
+  `
 }
 
-function LegacyDashboardPage({ dashboard, instances, onNavigate, onRefresh, onOpenEvent }) {
-  if (!dashboard) return html`<${LoadingState} label="加载控制台数据…" />`
-  const counts = dashboard.counts || {}; const activity = dashboard.activity || []; const recent = dashboard.recent_events || []; const running = (instances || []).filter((item) => item.state === 'running').length
-  return html`<div class="page-stack"><${PageHeader} eyebrow="Live overview / ${dashboard.service || 'AegisLure'}" title="观测总览" description="追踪蜜罐流量、合成调用和每一条风险信号。" actions=${html`<${Button} icon="refresh" onClick=${onRefresh}>刷新数据<//>`} /><section class="metrics-grid"><${MetricCard} label="观测事件" value=${formatNumber(counts.events)} detail="append-only 事件流" icon="activity" tone="cyan" /><${MetricCard} label="唯一 IP" value=${formatNumber(counts.unique_ips)} detail="聚合后的来源指标" icon="shield" tone="blue" /><${MetricCard} label="高风险指标" value=${formatNumber(counts.high_risk)} detail="风险分 ≥ 60" icon="warning" tone="pink" /><${MetricCard} label="虚拟调用" value=${formatNumber(counts.invocations)} detail="不会执行真实模型" icon="spark" tone="violet" /><${MetricCard} label="运行实例" value=${`${running}/${(instances || []).length || 0}`} detail="不会执行真实模型" icon="spark" tone="violet" /><${MetricCard} label="运行实例" value=${`${running}/${(instances || []).length || 0}`} detail="可从实例页控制" icon="server" tone="amber" /></section><div class="dashboard-grid"><${Panel} className="span-7" eyebrow="Traffic pulse" title="近 24 小时活动" action=${html`<span class="panel-meta">每 2 小时</span>`}><${ActivityChart} items=${activity} /><div class="chart-footer"><span><i class="legend-dot dot-cyan"></i>事件量</span><span>接受 ${formatNumber(counts.accepted)} · 拒绝 ${formatNumber(counts.rejected)}</span></div><//><${Panel} className="span-5" eyebrow="Risk posture" title="IP 风险分布"><${RiskDonut} distribution=${dashboard.risk_distribution} /><div class="panel-footnote">风险分只表示观测证据，不等同于真实身份。</div><//><${Panel} className="span-7" eyebrow="Latest evidence" title="最近观测" action=${html`<button class="text-button" type="button" onClick=${() => onNavigate('observations')}>查看全部 ${icon('arrow', 14)}</button>`} flush=${true}>${recent.length ? html`<div class="event-feed">${recent.map((event) => html`<button class="event-feed-row" type="button" onClick=${() => onOpenEvent(event)}><span class="feed-marker"></span><span class="feed-main"><b>${displayRouteCell(event)}</b><small>${profileLabel(event.product)} · ${event.source_ip || 'unknown'} · ${formatTime(event.observed_at)}</small></span><${RiskBadge} score=${event.score} /><${Badge} tone=${event.status >= 400 ? 'danger' : 'success'}>${event.status || '—'}<//></button>`)}</div>` : html`<${EmptyState} title="还没有观测" description="访问任一公开蜜罐端点后，事件会出现在这里。" />`}<//><${Panel} className="span-5" eyebrow="Honeypot fleet" title="实例状态" action=${html`<button class="text-button" type="button" onClick=${() => onNavigate('instances')}>管理实例 ${icon('arrow', 14)}</button>`}>${instances?.length ? html`<div class="fleet-list">${instances.slice(0, 5).map((instance) => html`<div class="fleet-row"><span class="fleet-mark">${profileLabel(instance.product).slice(0, 1)}</span><div><b>${profileLabel(instance.product)}</b><small>${instance.port ? `:${instance.port}` : '未配置端口'} · ${instance.scenario || 'default'}</small></div><${StatusBadge} state=${instance.state} /></div>`)}</div>` : html`<${EmptyState} title="实例数据不可用" />`}<//></div></div>`
-}
 
-function DashboardPage({ dashboard, instances, onNavigate, onRefresh, onOpenEvent }) {
+function DashboardControlPage({ dashboard, instances, onNavigate, onRefresh, onOpenEvent }) {
   if (!dashboard) return html`<${LoadingState} label="加载控制台数据…" />`
-  const counts = dashboard.counts || {}; const summary = dashboard.risk_summary || {}; const recent = dashboard.recent_events || []; const running = (instances || []).filter((item) => item.state === 'running').length
-  const riskEvents = summary.event_count ?? counts.risk_events ?? 0; const riskRate = summary.event_rate ?? counts.risk_rate ?? 0
+  const counts = dashboard.counts || {}
+  const summary = dashboard.risk_summary || {}
+  const recent = dashboard.recent_events || []
+  const running = (instances || []).filter((item) => item.state === 'running').length
+  const riskEvents = summary.event_count ?? counts.risk_events ?? 0
+  const riskRate = summary.event_rate ?? counts.risk_rate ?? 0
   const geoProvider = geoSourceLabel((dashboard.source_countries || []).map((item) => item.geo_source).find(Boolean))
-  return html`<div class="page-stack"><${PageHeader} eyebrow="Live overview / ${dashboard.service || 'AegisLure'}" title="观测总览" description="追踪蜜罐流量、风险触发与每一条可回溯的动作证据。" actions=${html`<${Button} icon="refresh" onClick=${onRefresh}>刷新数据<//>`} /><section class="metrics-grid"><${MetricCard} label="观测事件" value=${formatNumber(counts.events)} detail="append-only 事件流" icon="activity" tone="cyan" /><${MetricCard} label="风险触发" value=${formatNumber(riskEvents)} detail=${`中/高风险 · ${riskRate}%`} icon="warning" tone="pink" /><${MetricCard} label="唯一 IP" value=${formatNumber(counts.unique_ips)} detail="聚合后的来源指标" icon="shield" tone="blue" /><${MetricCard} label="高风险指标" value=${formatNumber(counts.high_risk)} detail="风险分 ≥ 60" icon="warning" tone="violet" /><${MetricCard} label="虚拟调用" value=${formatNumber(counts.invocations)} detail="不会执行真实模型" icon="spark" tone="amber" /><${MetricCard} label="运行实例" value=${`${running}/${(instances || []).length || 0}`} detail="可从实例页控制" icon="server" tone="cyan" /></section><div class="dashboard-hero-grid"><${Panel} className="dashboard-trend-panel" eyebrow="Risk pulse" title="风险触发趋势" action=${html`<span class="panel-meta">按小时/日历日滚动</span>`}><${RiskActivityChart} series=${dashboard.risk_activity || {}} /><//><${Panel} className="dashboard-country-panel" eyebrow="Source intelligence" title="风险 IP 来源区域" action=${html`<${Badge} tone="blue">${geoProvider}<//>`}><${CountryDistribution} items=${dashboard.source_countries || []} /><//></div><div class="dashboard-analytics-grid"><${Panel} eyebrow="Surface mix" title="蜜罐触发占比"><${HoneypotDistribution} items=${dashboard.honeypot_distribution || []} /><//><${Panel} eyebrow="Risk mix" title="触发风险占比"><${DistributionDonut} items=${dashboard.risk_trigger_distribution || []} centerLabel="风险事件" /><div class="panel-footnote">按事件风险分分档；中风险起算阈值为 ≥ ${dashboard.risk_threshold || 30}。</div><//><${Panel} eyebrow="Indicator posture" title="IP 风险分布"><${RiskDonut} distribution=${dashboard.risk_distribution || {}} /><div class="panel-footnote">IP 维度聚合；风险分只表示观测证据，不等同于真实身份。</div><//></div><div class="dashboard-grid"><${Panel} className="span-7" eyebrow="Latest evidence" title="最近观测" action=${html`<button class="text-button" type="button" onClick=${() => onNavigate('observations')}>查看全部 ${icon('arrow', 14)}</button>`} flush=${true}>${recent.length ? html`<div class="event-feed">${recent.map((event) => html`<button class="event-feed-row" key=${event.event_id} type="button" onClick=${() => onOpenEvent(event)}><span className="feed-marker"></span><span className="feed-main"><b>${rawRoute(event)}</b><small>${profileLabel(event.product)} · ${event.source_ip || 'unknown'} · ${formatTime(event.observed_at)}</small></span><${RiskBadge} score=${event.score} /><${Badge} tone=${event.status >= 400 ? 'danger' : 'success'}>${event.status || '—'}<//></button>`)}</div>` : html`<${EmptyState} title="还没有观测" description="访问任一公开蜜罐端点后，事件会出现在这里。" />`}<//><${Panel} className="span-5" eyebrow="Honeypot fleet" title="实例状态" action=${html`<button class="text-button" type="button" onClick=${() => onNavigate('instances')}>管理实例 ${icon('arrow', 14)}</button>`}>${instances?.length ? html`<div class="fleet-list">${instances.slice(0, 5).map((instance) => html`<div class="fleet-row" key=${instance.product}><span class="fleet-mark">${profileLabel(instance.product).slice(0, 1)}</span><div><b>${profileLabel(instance.product)}</b><small>${instance.port ? `:${instance.port}` : '未配置端口'} · ${instance.scenario || 'default'}</small></div><${StatusBadge} state=${instance.state} /></div>`)}</div>` : html`<${EmptyState} title="实例数据不可用" />`}<//></div></div>`
+  return html`
+    <div class="page-stack">
+      <${PageHeader}
+        title="观测总览"
+        description="追踪蜜罐流量、风险触发与每一条可回溯的动作证据。"
+        actions=${html`<${Button} icon="refresh" onClick=${onRefresh}>刷新数据<//>`}
+      />
+      <section class="metrics-panel" aria-label="关键指标">
+        <div class="metrics-grid">
+          <${MetricCard} label="总观测" value=${formatNumber(counts.events)} detail=${`风险触发 ${formatNumber(riskEvents)} · ${riskRate}%`} />
+          <${MetricCard} label="调用尝试" value=${formatNumber(counts.invocations)} detail="全部响应均为合成" />
+          <${MetricCard} label="高风险" value=${formatNumber(counts.high_risk)} detail=${`唯一 IP ${formatNumber(counts.unique_ips)}`} />
+          <${MetricCard} label="活跃实例" value=${`${running}/${(instances || []).length || 0}`} detail="可从实例页控制" />
+        </div>
+      </section>
+      <div class="dashboard-hero-grid">
+        <${Panel} className="dashboard-trend-panel" title="风险触发趋势" action=${html`<span class="panel-meta">按小时 / 日滚动</span>`}>
+          <${RiskActivityChart} series=${dashboard.risk_activity || {}} />
+        <//>
+        <${Panel} className="dashboard-country-panel" title="风险 IP 来源区域" action=${html`<${Badge} tone="blue">${geoProvider}<//>`}>
+          <${CountryDistribution} items=${dashboard.source_countries || []} />
+        <//>
+      </div>
+      <div class="dashboard-analytics-grid">
+        <${Panel} title="蜜罐触发占比"><${HoneypotDistribution} items=${dashboard.honeypot_distribution || []} /><//>
+        <${Panel} title="触发风险占比"><${DistributionDonut} items=${dashboard.risk_trigger_distribution || []} centerLabel="风险事件" /><div class="panel-footnote">按事件风险分分档；中风险起算阈值为 ≥ ${dashboard.risk_threshold || 30}。</div><//>
+        <${Panel} title="IP 风险分布"><${RiskDonut} distribution=${dashboard.risk_distribution || {}} /><div class="panel-footnote">IP 维度聚合；风险分只表示观测证据，不等同于真实身份。</div><//>
+      </div>
+      <div class="dashboard-grid">
+        <${Panel} className="span-7" title="最近观测" action=${html`<button class="text-button" type="button" onClick=${() => onNavigate('observations')}>查看全部 ${icon('arrow', 14)}</button>`} flush=${true}>
+          ${recent.length ? html`<div class="event-feed">${recent.map((event) => html`<button class="event-feed-row" key=${event.event_id} type="button" onClick=${() => onOpenEvent(event)}><span class="feed-marker" aria-hidden="true"></span><span class="feed-main"><b>${rawRoute(event)}</b><small>${profileLabel(event.product)} · ${event.source_ip || 'unknown'} · ${formatTime(event.observed_at)}</small></span><${RiskBadge} score=${event.score} /><${Badge} tone=${event.status >= 400 ? 'danger' : 'success'}>${event.status || '—'}<//></button>`)}</div>` : html`<${EmptyState} title="还没有观测" description="访问任一公开蜜罐端点后，事件会出现在这里。" />`}
+        <//>
+        <${Panel} className="span-5" title="实例状态" action=${html`<button class="text-button" type="button" onClick=${() => onNavigate('instances')}>管理实例 ${icon('arrow', 14)}</button>`}>
+          ${instances?.length ? html`<div class="fleet-list">${instances.slice(0, 5).map((instance) => html`<div class="fleet-row" key=${instance.product}><span class="fleet-mark">${profileLabel(instance.product).slice(0, 1)}</span><div><b>${profileLabel(instance.product)}</b><small>${instance.port ? `:${instance.port}` : '未配置端口'} · ${instance.scenario || 'default'}</small></div><${StatusBadge} state=${instance.state} /></div>`)}</div>` : html`<${EmptyState} title="实例数据不可用" />`}
+        <//>
+      </div>
+    </div>
+  `
 }
 
-function LegacyObservationsPage({ events, onRefresh, onOpenEvent }) {
-  const [product, setProduct] = useState(''); const [query, setQuery] = useState(''); const [minScore, setMinScore] = useState('')
-  const filtered = useMemo(() => (events || []).filter((event) => { const matchesProduct = !product || event.product === product; const text = `${event.source_ip || ''} ${event.route_template || ''} ${event.event_type || ''} ${event.intent_class || ''}`.toLowerCase(); const matchesQuery = !query || text.includes(query.toLowerCase()); const matchesScore = !minScore || Number(event.score || 0) >= Number(minScore); return matchesProduct && matchesQuery && matchesScore }), [events, product, query, minScore])
-  const columns = [{ label: '观测时间', render: (row) => html`<span class="table-time">${formatTime(row.observed_at)}</span>` }, { label: '来源 IP', render: (row) => html`<code class="mono">${row.source_ip || '—'}</code>` }, { label: '产品', render: (row) => html`<${Badge} tone="neutral">${profileLabel(row.product)}<//>` }, { label: '展示路由', render: (row) => displayRouteCell(row) }, { label: '状态', render: (row) => html`<${Badge} tone=${row.status >= 400 ? 'danger' : 'success'}>${row.status || '—'}<//>` }, { label: '调用等级', render: (row) => html`<span class="level-text">${levelLabel(row.invocation_level)}</span>` }, { label: '风险', className: 'align-right', render: (row) => html`<${RiskBadge} score=${row.score} />` }]
-  return html`<div class="page-stack"><${PageHeader} eyebrow="Evidence stream" title="观测记录" description="检索每一条请求的脱敏遥测、调用阶段与风险证据。" actions=${html`<${Button} icon="refresh" onClick=${onRefresh}>刷新记录<//>`} /><${Panel} className="table-panel" title="事件流" action=${html`<span class="panel-meta">显示 ${formatNumber(filtered.length)} / ${formatNumber(events?.length || 0)}</span>`}><${FilterBar} onReset=${() => { setProduct(''); setQuery(''); setMinScore('') }}><label class="search-field">${icon('search', 17)}<input value=${query} onInput=${(event) => setQuery(event.target.value)} placeholder="搜索 IP、路由或事件类型" /></label><${Select} value=${product} onChange=${setProduct} options=${[{ value: '', label: '全部产品' }, ...Object.entries(PROFILE_LABELS).map(([value, label]) => ({ value, label }))]} /><label class="score-filter"><span>最低风险</span><input type="number" min="0" max="100" value=${minScore} onInput=${(event) => setMinScore(event.target.value)} placeholder="0" /></label></${FilterBar}><${DataTable} columns=${columns} rows=${filtered} onRowClick=${onOpenEvent} emptyTitle="没有匹配的观测" emptyDescription="尝试清除筛选条件，或等待新的蜜罐请求。" /><//><p class="page-note">事件正文仅保留受限预览并自动脱敏；底层事件流为 append-only。</p></div>`
-}
-
-function LegacyInvocationsPage({ invocations, onRefresh, onOpenEvent }) {
-  const [level, setLevel] = useState(''); const [auth, setAuth] = useState(''); const [execution, setExecution] = useState('')
-  const filtered = useMemo(() => (invocations || []).filter((item) => (!level || item.invocation_level === level) && (!auth || item.auth_outcome === auth) && (!execution || item.execution_outcome === execution)), [invocations, level, auth, execution])
-  const columns = [{ label: '时间', render: (row) => html`<span class="table-time">${formatTime(row.observed_at)}</span>` }, { label: '调用 ID', render: (row) => html`<code class="mono">${shortValue(row.invocation_id, 22)}</code>` }, { label: '模型', render: (row) => html`<span class="route-cell">${row.model_id || '未解析'}</span>` }, { label: '产品', render: (row) => html`<${Badge} tone="neutral">${profileLabel(row.product)}<//>` }, { label: '鉴权', render: (row) => html`<span class="outcome-text">${row.auth_outcome || '—'}</span>` }, { label: '执行', render: (row) => html`<span class=${cn('outcome-text', row.execution_outcome === 'rejected_before_dispatch' && 'text-danger')}>${row.execution_outcome || '—'}</span>` }, { label: '阶段', render: (row) => html`<${Badge} tone=${row.invocation_level?.startsWith('L4') ? 'success' : row.invocation_level?.startsWith('L1') ? 'danger' : 'blue'}>${levelLabel(row.invocation_level)}<//>` }, { label: '风险', className: 'align-right', render: (row) => html`<${RiskBadge} score=${row.score} />` }]
-  return html`<div class="page-stack"><${PageHeader} eyebrow="Synthetic execution trail" title="调用分析" description="查看模型调用尝试、鉴权结果与合成执行阶段。" actions=${html`<${Button} icon="refresh" onClick=${onRefresh}>刷新调用<//>`} /><div class="callout callout-blue">${icon('spark', 18)}<div><b>合成执行边界</b><p>所有“已接受”调用只返回确定性的兼容响应，不会加载模型、执行 prompt 工具或连接供应商。</p></div></div><${Panel} className="table-panel" title="调用事件" action=${html`<span class="panel-meta">${formatNumber(filtered.length)} 条结果</span>`}><${FilterBar} onReset=${() => { setLevel(''); setAuth(''); setExecution('') }}><${Select} value=${level} onChange=${setLevel} options=${[{ value: '', label: '全部阶段' }, ...Object.entries(LEVEL_LABELS).map(([value, label]) => ({ value, label }))]} /><${Select} value=${auth} onChange=${setAuth} options=${[{ value: '', label: '全部鉴权' }, { value: 'valid_honey_key', label: '有效 honey key' }, { value: 'bypass_simulated', label: '模拟绕过' }, { value: 'missing', label: '缺失' }, { value: 'invalid', label: '无效' }]} /><${Select} value=${execution} onChange=${setExecution} options=${[{ value: '', label: '全部执行结果' }, { value: 'synthetic_accepted', label: '合成已接受' }, { value: 'synthetic_stream_completed', label: '合成流完成' }, { value: 'rejected_before_dispatch', label: '派发前拒绝' }]} /></${FilterBar}><${DataTable} columns=${columns} rows=${filtered} onRowClick=${onOpenEvent} emptyTitle="还没有调用事件" emptyDescription="蜜罐记录到调用请求后，分析结果会显示在这里。" /><//></div>`
-}
-
-function LegacyChainsPage({ chains, onRefresh, onOpenEvent }) {
-  const [expanded, setExpanded] = useState(null)
-  return html`<div class="page-stack"><${PageHeader} eyebrow="Session intelligence" title="交互链路" description="按最新观测时间展示链路；同一会话中的发现、调用和效果验证会按后端配置聚合。" actions=${html`<${Button} icon="refresh" onClick=${onRefresh}>刷新链路<//>`} />${chains?.length ? html`<div class="chain-grid">${chains.map((chain) => html`<article class="chain-card"><header class="chain-card-header"><div class="chain-id"><span class="chain-mark">${icon('route', 17)}</span><div><b>${shortValue(chain.id, 24)}</b><small>${profileLabel(chain.product)} · ${shortValue(chain.session_id || chain.aggregation_key, 24)}</small></div></div><${RiskBadge} score=${chain.score} /></header><div class="chain-meta"><span>${icon('clock', 14)}${chain.event_count || 0} 个事件</span><span>${icon('clock', 14)}最新 ${formatTime(chain.latest_observed_at, true)}</span><span>${icon('spark', 14)}${levelLabel(chain.invocation_level)}</span><${Badge} tone="blue">${chain.aggregation_mode || 'session'}<//><${Badge} tone="blue">${chain.stage || 'discovery'}<//></div>${chain.matched_rule_ids?.length ? html`<div class="chip-list chain-rules">${chain.matched_rule_ids.map((rule) => html`<${Badge} tone="warning">${rule}<//>`)}</div>` : null}<div class="chain-line">${(chain.events || []).slice(-5).map((event, index, visible) => html`<button type="button" class="chain-event" onClick=${() => onOpenEvent(event)}><i class=${cn('chain-dot', event.score >= 60 && 'is-risk')}></i><span><b>${event.event_type || event.route_template || 'event'}</b><small>${formatTime(event.observed_at)} · ${event.status || '—'} · ${rawRoute(event)}</small></span>${index === visible.length - 1 ? html`<em>latest</em>` : null}</button>`)}</div><button class="chain-expand" type="button" onClick=${() => setExpanded(expanded === chain.id ? null : chain.id)}>${expanded === chain.id ? '收起详情' : '查看完整链路'} ${icon('chevron', 14)}</button>${expanded === chain.id ? html`<div class="chain-expanded"><pre class="json-view">${JSON.stringify(chain, null, 2)}</pre></div>` : null}</article>`)}</div>` : html`<${Panel}><${EmptyState} icon="route" title="还没有交互链路" description="同一来源建立会话后，链路会自动聚合。" /><//>`}</div>`
-}
-
-function LegacyIndicatorsPage({ indicators, onRefresh }) {
-  const [minScore, setMinScore] = useState(0); const filtered = (indicators || []).filter((item) => Number(item.score || 0) >= Number(minScore || 0))
-  const exportIndicators = (format) => { const link = document.createElement('a'); link.href = `${apiPath('indicators')}?format=${format}&min_score=${encodeURIComponent(minScore)}`; link.download = `aegislure-indicators.${format}`; document.body.appendChild(link); link.click(); link.remove() }
-  const columns = [{ label: '来源 IP', render: (row) => html`<code class="mono ip-cell">${row.ip}</code>` }, { label: '风险分', render: (row) => html`<${RiskBadge} score=${row.score} />` }, { label: '置信度', render: (row) => html`<span class="confidence">${row.confidence || 'low'}</span>` }, { label: '证据', render: (row) => html`<span>${formatNumber(row.evidence_count)} 次 · ${formatNumber(row.sensor_count)} 个传感器</span>` }, { label: '产品', render: (row) => html`<div class="chip-list compact">${(row.products || []).map((product) => html`<${Badge} tone="neutral">${profileLabel(product)}<//>`)}</div>` }, { label: '建议动作', render: (row) => html`<span class=${cn('action-label', row.score >= 60 && 'action-risk')}>${row.recommended_action || 'observe'}</span>` }, { label: '最近出现', className: 'align-right', render: (row) => html`<span class="table-time">${formatTime(row.last_seen)}</span>` }]
-  return html`<div class="page-stack"><${PageHeader} eyebrow="Risk intelligence" title="IP 情报" description="聚合来源 IP 的风险证据、命中产品和建议处置动作。" actions=${html`<div class="button-group"><${Button} icon="download" size="sm" onClick=${() => exportIndicators('csv')}>导出 CSV<//><${Button} icon="refresh" size="sm" onClick=${onRefresh}>刷新<//></div>`} /><${Panel} className="table-panel" title="指标列表" action=${html`<span class="panel-meta">${formatNumber(filtered.length)} 个指标</span>`}><div class="indicator-tools"><label class="range-field"><span>最低风险分</span><input type="range" min="0" max="100" step="10" value=${minScore} onInput=${(event) => setMinScore(event.target.value)} /><b>${minScore}</b></label><div class="button-group"><button class="outline-button" type="button" onClick=${() => exportIndicators('plain')}>导出纯文本</button><button class="outline-button" type="button" onClick=${() => exportIndicators('csv')}>下载 CSV</button></div></div><${DataTable} columns=${columns} rows=${filtered} emptyTitle="还没有 IP 指标" emptyDescription="当观测到公开蜜罐端点请求后，风险聚合会出现在这里。" /><//><p class="page-note">推荐动作仅供人工审核参考；当前 Lite 存储不会自动封禁来源。</p></div>`
-}
-
-function LegacyIndicatorsPageV1({ indicators, onRefresh, onOpenIndicator }) {
-  const [minScore, setMinScore] = useState(0); const filtered = (indicators || []).filter((item) => Number(item.score || 0) >= Number(minScore || 0))
-  const exportIndicators = (format) => { const link = document.createElement('a'); link.href = `${apiPath('indicators')}?format=${format}&min_score=${encodeURIComponent(minScore)}`; link.download = `aegislure-indicators.${format}`; document.body.appendChild(link); link.click(); link.remove() }
-  const columns = [{ label: '来源 IP', render: (row) => html`<code class="mono ip-cell">${row.ip}</code>` }, { label: '国家/地区', render: (row) => html`<span class="geo-cell">${indicatorCountry(row)}</span>` }, { label: '城市 / 地区', render: (row) => html`<span class="geo-cell">${indicatorPlace(row)}</span>` }, { label: '网络 / ASN', render: (row) => html`<span class="geo-cell">${indicatorNetwork(row)}</span>` }, { label: '来源', render: (row) => html`<span class="geo-cell">${geoSourceLabel(row.geo_source)}</span>` }, { label: '风险分', render: (row) => html`<${RiskBadge} score=${row.score} />` }, { label: '置信度', render: (row) => html`<span class="confidence">${row.confidence || 'low'}</span>` }, { label: '证据', render: (row) => html`<span>${formatNumber(row.evidence_count)} 次 · ${formatNumber(row.sensor_count)} 个传感器</span>` }, { label: '产品', render: (row) => html`<div class="chip-list compact">${(row.products || []).map((product) => html`<${Badge} tone="neutral" key=${product}>${profileLabel(product)}<//>`)}</div>` }, { label: '建议动作', render: (row) => html`<span class=${cn('action-label', row.score >= 60 && 'action-risk')}>${row.recommended_action || 'observe'}</span>` }, { label: '最近出现', className: 'align-right', render: (row) => html`<span class="table-time">${formatTime(row.last_seen)}</span>` }]
-  return html`<div class="page-stack"><${PageHeader} eyebrow="Risk intelligence" title="IP 情报" description="国家/地区、城市和网络归属直接展示；点击任意指标可查看该 IP 的全部动作。" actions=${html`<div class="button-group"><${Button} icon="download" size="sm" onClick=${() => exportIndicators('csv')}>导出 CSV<//><${Button} icon="refresh" size="sm" onClick=${onRefresh}>刷新<//></div>`} /><${Panel} className="table-panel" title="指标列表" action=${html`<span class="panel-meta">${formatNumber(filtered.length)} 个指标 · 地理信息直接展示</span>`}><div class="indicator-tools"><label class="range-field"><span>最低风险分</span><input type="range" min="0" max="100" step="10" value=${minScore} onInput=${(event) => setMinScore(event.target.value)} /><b>${minScore}</b></label><div class="button-group"><button class="outline-button" type="button" onClick=${() => exportIndicators('plain')}>导出纯文本</button><button class="outline-button" type="button" onClick=${() => exportIndicators('csv')}>下载 CSV</button></div></div><${DataTable} columns=${columns} rows=${filtered} onRowClick=${onOpenIndicator} emptyTitle="还没有 IP 指标" emptyDescription="当观测到公开蜜罐端点请求后，风险聚合会出现在这里。" /><//><p class="page-note">国家/地区信息由当前 GeoIP provider 查询；暂时不可用时显示“未知”，下一次刷新或缓存过期后会自动重试。推荐动作仅供人工审核参考。</p></div>`
-}
 
 function chainModeLabel(value) {
   if (value === 'source_ip_day') return '同一 IP · Asia/Shanghai 日'
@@ -619,9 +730,17 @@ function InstanceCard({ instance, busy, onAction }) {
   return html`<article class=${cn('instance-card', running && 'is-running')}><div class="instance-card-head"><div class="instance-logo">${profileLabel(instance.product).slice(0, 1)}</div><div class="instance-title"><div><h3>${profileLabel(instance.product)}</h3><${StatusBadge} state=${instance.state} /></div><p>${instance.profile_id || 'profile'} · ${instance.version || 'version unknown'}</p></div><${Toggle} checked=${running} label=${`${profileLabel(instance.product)} 开关`} onChange=${(next) => onAction(instance, next ? 'start' : 'stop')} /></div><div class="instance-details"><div><span>监听端口</span><b>${instance.port || '—'}</b></div><div><span>场景</span><b>${instance.scenario || 'default'}</b></div><div><span>端点</span><code>${instance.endpoint || '—'}</code></div></div><div class="instance-card-foot"><span>${instance.synthetic_only ? html`<span class="instance-boundary">安全合成边界</span>` : '—'}</span><div class="button-group"><${Button} size="sm" variant="ghost" icon="refresh" onClick=${() => onAction(instance, 'restart')} disabled=${busy}>重启<//>${running ? html`<${Button} size="sm" variant="danger-ghost" icon="pause" onClick=${() => onAction(instance, 'stop')} disabled=${busy}>停止<//>` : html`<${Button} size="sm" variant="primary-soft" icon="play" onClick=${() => onAction(instance, 'start')} disabled=${busy}>启动<//>`}</div></div></article>`
 }
 
+
 function InstancesPage({ instances, onRefresh, onAction, busy }) {
   const running = (instances || []).filter((item) => item.state === 'running').length
-  return html`<div class="page-stack"><${PageHeader} eyebrow="Honeypot fleet" title="蜜罐实例" description="按协议启停公开端点，所有实例都保持在安全的合成响应边界内。" actions=${html`<div class="button-group"><${Button} variant="secondary" icon="play" onClick=${() => onAction({ product: '__all__' }, 'start-all')} disabled=${busy}>启动全部<//><${Button} icon="refresh" onClick=${onRefresh}>刷新状态<//></div>`} /><div class="fleet-summary"><div><span class="summary-icon">${icon('server', 18)}</span><div><b>${running} / ${(instances || []).length}</b><small>当前运行实例</small></div></div><div><span class="summary-icon summary-blue">${icon('activity', 18)}</span><div><b>HTTP</b><small>公开协议表面</small></div></div><div><span class="summary-icon summary-pink">${icon('shield', 18)}</span><div><b>隔离</b><small>无真实上游出站</small></div></div></div><div class="instance-grid">${instances?.map((instance) => html`<${InstanceCard} instance=${instance} busy=${busy} onAction=${onAction} />`)}</div><p class="page-note">停止实例会关闭对应公开监听器并更新运行配置；管理端与公开监听器彼此独立。</p></div>`
+  return html`
+    <div class="page-stack">
+      <${PageHeader} title="蜜罐实例" description="按协议启停公开端点，所有实例都保持在安全的合成响应边界内。" actions=${html`<div class="button-group"><${Button} variant="secondary" icon="play" onClick=${() => onAction({ product: '__all__' }, 'start-all')} disabled=${busy}>启动全部<//><${Button} icon="refresh" onClick=${onRefresh}>刷新状态<//></div>`} />
+      <section class="fleet-summary" aria-label="实例摘要"><div class="fleet-summary-item"><span>运行实例</span><strong>${running} / ${(instances || []).length}</strong></div><div class="fleet-summary-item"><span>协议</span><strong>HTTP</strong></div><div class="fleet-summary-item"><span>上游访问</span><strong>已隔离</strong></div></section>
+      <div class="instance-grid">${instances?.map((instance) => html`<${InstanceCard} instance=${instance} busy=${busy} onAction=${onAction} />`)}</div>
+      <p class="page-note">停止实例会关闭对应公开监听器并更新运行配置；管理端与公开监听器彼此独立。</p>
+    </div>
+  `
 }
 
 function conditionValue(value) {
@@ -1032,7 +1151,7 @@ function App() {
   if (auth === 'checking') return html`<${AuthLoading} />`
   if (auth === 'setup') return html`<${SetupPage} onSetup=${setup} />`
   if (auth === 'login') return html`<${LoginPage} onLogin=${login} onForgot=${forgotPassword} onRecovery=${recoveryReset} />`
-  const page = route === 'observations' ? html`<${ObservationsPage} events=${data.events} pagination=${data.pagination.observations} onRefresh=${() => loadRoute('observations')} onSearch=${(changes) => loadList('observations', changes)} onPageChange=${(page) => loadList('observations', { page })} onDelete=${(id) => deleteListItem('observations', id)} onOpenEvent=${openEvent} loading=${listLoading?.target === 'observations' && (listLoading.query || data.events.length === 0)} />` : route === 'invocations' ? html`<${InvocationsPage} invocations=${data.invocations} pagination=${data.pagination.invocations} onRefresh=${() => loadRoute('invocations')} onSearch=${(changes) => loadList('invocations', changes)} onPageChange=${(page) => loadList('invocations', { page })} onDelete=${(id) => deleteListItem('invocations', id)} onOpenEvent=${openEvent} loading=${listLoading?.target === 'invocations' && (listLoading.query || data.invocations.length === 0)} />` : route === 'chains' ? html`<${ChainsPage} chains=${data.chains} pagination=${data.pagination.chains} onRefresh=${() => loadRoute('chains')} onSearch=${(changes) => loadList('chains', changes)} onPageChange=${(page) => loadList('chains', { page })} onDelete=${(id) => deleteListItem('chains', id)} onOpenEvent=${openEvent} loading=${listLoading?.target === 'chains' && (listLoading.query || data.chains.length === 0)} />` : route === 'indicators' ? html`<${IndicatorsPage} indicators=${data.indicators} pagination=${data.pagination.indicators} onRefresh=${() => loadRoute('indicators')} onSearch=${(changes) => loadList('indicators', changes)} onPageChange=${(page) => loadList('indicators', { page })} onDelete=${(id) => deleteListItem('indicators', id)} onOpenIndicator=${openActor} loading=${listLoading?.target === 'indicators' && (listLoading.query || data.indicators.length === 0)} />` : route === 'instances' ? html`<${InstancesPage} instances=${data.instances} onRefresh=${() => loadRoute('instances')} onAction=${instanceAction} busy=${busy} />` : route === 'packs' ? html`<${PacksPage} packs=${data.packs} policies=${data.policies} onRefresh=${() => loadRoute('packs')} />` : route === 'settings' ? html`<${SettingsPage} username=${username} ipinfo=${data.ipinfo} frontendDetection=${data.frontendDetection} onRotateEntry=${rotateEntry} onSaveIPInfo=${saveIPInfo} onSaveFrontendDetection=${saveFrontendDetection} />` : html`<${DashboardPage} dashboard=${data.dashboard} instances=${data.instances} onNavigate=${onNavigate} onRefresh=${() => loadRoute('dashboard')} onOpenEvent=${openEvent} />`
+  const page = route === 'observations' ? html`<${ObservationsPage} events=${data.events} pagination=${data.pagination.observations} onRefresh=${() => loadRoute('observations')} onSearch=${(changes) => loadList('observations', changes)} onPageChange=${(page) => loadList('observations', { page })} onDelete=${(id) => deleteListItem('observations', id)} onOpenEvent=${openEvent} loading=${listLoading?.target === 'observations' && (listLoading.query || data.events.length === 0)} />` : route === 'invocations' ? html`<${InvocationsPage} invocations=${data.invocations} pagination=${data.pagination.invocations} onRefresh=${() => loadRoute('invocations')} onSearch=${(changes) => loadList('invocations', changes)} onPageChange=${(page) => loadList('invocations', { page })} onDelete=${(id) => deleteListItem('invocations', id)} onOpenEvent=${openEvent} loading=${listLoading?.target === 'invocations' && (listLoading.query || data.invocations.length === 0)} />` : route === 'chains' ? html`<${ChainsPage} chains=${data.chains} pagination=${data.pagination.chains} onRefresh=${() => loadRoute('chains')} onSearch=${(changes) => loadList('chains', changes)} onPageChange=${(page) => loadList('chains', { page })} onDelete=${(id) => deleteListItem('chains', id)} onOpenEvent=${openEvent} loading=${listLoading?.target === 'chains' && (listLoading.query || data.chains.length === 0)} />` : route === 'indicators' ? html`<${IndicatorsPage} indicators=${data.indicators} pagination=${data.pagination.indicators} onRefresh=${() => loadRoute('indicators')} onSearch=${(changes) => loadList('indicators', changes)} onPageChange=${(page) => loadList('indicators', { page })} onDelete=${(id) => deleteListItem('indicators', id)} onOpenIndicator=${openActor} loading=${listLoading?.target === 'indicators' && (listLoading.query || data.indicators.length === 0)} />` : route === 'instances' ? html`<${InstancesPage} instances=${data.instances} onRefresh=${() => loadRoute('instances')} onAction=${instanceAction} busy=${busy} />` : route === 'packs' ? html`<${PacksPage} packs=${data.packs} policies=${data.policies} onRefresh=${() => loadRoute('packs')} />` : route === 'settings' ? html`<${SettingsPage} username=${username} ipinfo=${data.ipinfo} frontendDetection=${data.frontendDetection} onRotateEntry=${rotateEntry} onSaveIPInfo=${saveIPInfo} onSaveFrontendDetection=${saveFrontendDetection} />` : html`<${DashboardControlPage} dashboard=${data.dashboard} instances=${data.instances} onNavigate=${onNavigate} onRefresh=${() => loadRoute('dashboard')} onOpenEvent=${openEvent} />`
   return html`<${AppShell} route=${route} onNavigate=${onNavigate} onLogout=${logout} username=${username} lastUpdated=${lastUpdated}><div class=${cn(loadError && 'has-page-error')}>${loadError ? html`<div class="page-error">${icon('warning', 17)}<span>${loadError}</span><button class="text-button" type="button" onClick=${() => loadRoute(route)}>重试</button></div>` : null}${page}</div><//>${selectedActor ? html`<${ActorDetailModal} actor=${selectedActor} onClose=${closeDetail} onOpenEvent=${openEvent} />` : null}${selectedEvent ? html`<${EventDetails} event=${{ ...selectedEvent, onClose: closeDetail }} />` : null}<${Toast} toast=${toast} onClose=${() => setToast(null)} />`
 }
 
