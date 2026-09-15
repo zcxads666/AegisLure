@@ -222,6 +222,40 @@ pre,
   }
 }
 
+@keyframes chart-line-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes donut-segment-in {
+  from {
+    opacity: 0;
+    transform: scale(.08);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes bar-grow {
+  from {
+    width: var(--bar-start-width);
+    height: var(--bar-start-height);
+  }
+
+  to {
+    width: var(--bar-end-width);
+    height: var(--bar-end-height);
+  }
+}
+
 /* Authentication */
 
 .auth-layout {
@@ -1124,6 +1158,12 @@ pre,
   stroke-width: 1.8;
 }
 
+.risk-chart-canvas.is-dashboard-entry .chart-line {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: chart-line-draw var(--motion-data) var(--ease-out) both;
+}
+
 .chart-dot {
   stroke: #0a1727;
   stroke-width: 2;
@@ -1257,6 +1297,12 @@ pre,
   stroke-width: 1.2;
 }
 
+.risk-donut.is-dashboard-entry .donut-segment {
+  transform-box: view-box;
+  transform-origin: 50% 50%;
+  animation: donut-segment-in var(--motion-enter) var(--ease-out) both;
+}
+
 .donut-center {
   position: absolute;
   inset: 0;
@@ -1388,6 +1434,13 @@ pre,
   border-radius: inherit;
   background: var(--accent);
   transition: width var(--motion-data) var(--ease-out);
+}
+
+.share-progress.is-dashboard-entry > i,
+.activity-bar.is-dashboard-entry {
+  min-width: 0;
+  min-height: 0;
+  animation: bar-grow var(--motion-data) var(--ease-out) both;
 }
 
 .honeypot-rank {

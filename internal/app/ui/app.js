@@ -93,6 +93,58 @@ function formatNumber(value) {
   return new Intl.NumberFormat('zh-CN').format(Number(value || 0))
 }
 
+function useCountUp(target, animationKey, duration = 720) {
+  const numericTarget = Number.isFinite(Number(target)) ? Number(target) : 0
+  const targetRef = useRef(numericTarget)
+  const mountedRef = useRef(false)
+  const animatingRef = useRef(false)
+  const [displayValue, setDisplayValue] = useState(() => animationKey ? 0 : numericTarget)
+  targetRef.current = numericTarget
+
+  useEffect(() => {
+    if (!mountedRef.current) {
+      mountedRef.current = true
+      return
+    }
+    if (!animatingRef.current) setDisplayValue(numericTarget)
+  }, [numericTarget])
+
+  useEffect(() => {
+    if (!animationKey) {
+      animatingRef.current = false
+      setDisplayValue(targetRef.current)
+      return undefined
+    }
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      animatingRef.current = false
+      setDisplayValue(targetRef.current)
+      return undefined
+    }
+    animatingRef.current = true
+    setDisplayValue(0)
+    let frame = 0
+    let startedAt = 0
+    const tick = (timestamp) => {
+      if (!startedAt) startedAt = timestamp
+      const progress = Math.min(1, (timestamp - startedAt) / duration)
+      const eased = 1 - Math.pow(1 - progress, 3)
+      setDisplayValue(Math.round(targetRef.current * eased))
+      if (progress < 1) frame = window.requestAnimationFrame(tick)
+      else {
+        animatingRef.current = false
+        setDisplayValue(targetRef.current)
+      }
+    }
+    frame = window.requestAnimationFrame(tick)
+    return () => {
+      window.cancelAnimationFrame(frame)
+      animatingRef.current = false
+    }
+  }, [animationKey, duration])
+
+  return displayValue
+}
+
 function formatTime(value, withSeconds = false, timeZone = '') {
   if (!value) return '—'
   const date = new Date(value)
@@ -216,8 +268,11 @@ function PageHeader({ title, description, actions }) {
   return html`<header class="page-header"><div><h1>${title}</h1>${description ? html`<p class="page-description">${description}</p>` : null}</div>${actions ? html`<div class="page-actions">${actions}</div>` : null}</header>`
 }
 
-function MetricCard({ label, value, detail }) {
-  return html`<article class="metric-card"><strong class="metric-value">${value}</strong><span class="metric-label">${label}</span>${detail ? html`<small class="metric-detail">${detail}</small>` : null}</article>`
+function MetricCard({ label, value, suffix = '', detail, animationKey = 0 }) {
+  const numericValue = typeof value === 'number' ? value : null
+  const animatedValue = useCountUp(numericValue ?? 0, numericValue === null ? 0 : animationKey)
+  const displayValue = numericValue === null ? value : formatNumber(animatedValue)
+  return html`<article class="metric-card"><strong class="metric-value">${displayValue}${suffix}</strong><span class="metric-label">${label}</span>${detail ? html`<small class="metric-detail">${detail}</small>` : null}</article>`
 }
 
 function EmptyState({ icon: iconName = 'activity', title = '暂无数据', description = '新的观测出现后会显示在这里。' }) {
@@ -338,21 +393,24 @@ function Toggle({ checked, onChange, label, disabled = false }) {
   return html`<button type="button" class=${cn('toggle', checked && 'is-on')} onClick=${() => onChange(!checked)} disabled=${disabled} role="switch" aria-checked=${checked} aria-label=${label || '切换状态'}><span></span></button>`
 }
 
-function ActivityChart({ items = [] }) {
+function ActivityChart({ items = [], animationKey = 0 }) {
   const max = Math.max(1, ...items.map((item) => Number(item.count || 0)))
-  return html`<div class="activity-chart" aria-label="近 24 小时事件量">${items.map((item, index) => html`<div class="activity-bar-wrap" key=${item.label || index}><div class="activity-value">${item.count || ''}</div><div class="activity-bar" style=${{ height: `${Math.max(5, (Number(item.count || 0) / max) * 100)}%` }}></div><small>${item.label}</small></div>`)}</div>`
+  return html`<div class="activity-chart" aria-label="近 24 小时事件量">${items.map((item, index) => {
+    const targetHeight = `${Math.max(5, (Number(item.count || 0) / max) * 100)}%`
+    return html`<div class="activity-bar-wrap" key=${item.label || index}><div class="activity-value">${item.count || ''}</div><div class=${cn('activity-bar', animationKey && 'is-dashboard-entry')} style=${`height:${targetHeight};--bar-start-width:100%;--bar-start-height:0%;--bar-end-width:100%;--bar-end-height:${targetHeight};`}></div><small>${item.label}</small></div>`
+  })}</div>`
 }
 
-function RiskDonut({ distribution = {} }) {
+function RiskDonut({ distribution = {}, animationKey = 0 }) {
   const items = [
     { key: 'high', name: '高风险', count: Number(distribution.high || 0) },
     { key: 'medium', name: '中风险', count: Number(distribution.medium || 0) },
     { key: 'low', name: '低风险', count: Number(distribution.low || 0) },
   ]
-  return html`<${DistributionDonut} items=${items} centerLabel="IP 指标" />`
+  return html`<${DistributionDonut} items=${items} centerLabel="IP 指标" animationKey=${animationKey} />`
 }
 
-function RiskActivityChart({ series = {} }) {
+function RiskActivityChart({ series = {}, animationKey = 0 }) {
   const [period, setPeriod] = useState('hour')
   const periods = [{ key: 'hour', label: '近24小时', detail: '每小时滚动' }, { key: 'week', label: '近7天', detail: '每日滚动' }, { key: 'month', label: '近30天', detail: '每日滚动' }]
   const selected = series[period] || (period === 'hour' ? series.day : {}) || {}
@@ -368,7 +426,7 @@ function RiskActivityChart({ series = {} }) {
   const areaPath = points.length ? `M ${x(0)} ${baseline} L ${points.map((point, index) => `${x(index)} ${y(point.count)}`).join(' L ')} L ${x(points.length - 1)} ${baseline} Z` : ''
   const labelStep = Math.max(1, Math.ceil(points.length / 6))
   const dashboardTimezone = selected.timezone || 'Asia/Shanghai'
-  return html`<div class="risk-activity"><div class="chart-switcher" role="tablist" aria-label="趋势时间范围">${periods.map((item) => html`<button key=${item.key} type="button" class=${cn(period === item.key && 'is-active')} onClick=${() => setPeriod(item.key)} role="tab" aria-selected=${period === item.key}><b>${item.label}</b><small>${item.detail}</small></button>`)}</div>${points.length ? html`<div class="risk-chart-canvas" key=${period}><svg viewBox=${`0 0 ${width} ${height}`} role="img" aria-label=${`${periods.find((item) => item.key === period)?.label || ''}风险触发趋势`}>${[0, .25, .5, .75, 1].map((ratio) => html`<line key=${ratio} class="chart-grid-line" x1=${padding.left} x2=${width - padding.right} y1=${y(ratio * max)} y2=${y(ratio * max)}></line>`)}<path class="chart-area" d=${areaPath}></path><path class="chart-line chart-line-total" d=${totalPath}></path><path class="chart-line chart-line-risk" d=${riskPath}></path>${points.map((point, index) => html`<g key=${point.key || point.start_at || `${point.label}-${index}`}><circle class="chart-dot chart-dot-total" cx=${x(index)} cy=${y(point.count)} r="3.5"></circle><circle class="chart-dot chart-dot-risk" cx=${x(index)} cy=${y(point.risk_count)} r="3"></circle>${(index === 0 || index === points.length - 1 || index % labelStep === 0) ? html`<text class="chart-label" x=${x(index)} y=${height - 8} text-anchor="middle">${point.label}</text>` : null}</g>`)}</svg></div>` : html`<${EmptyState} title="暂无趋势数据" description="新的观测事件出现后，这里会显示风险波动。" />`}<div class="chart-summary"><span><i class="chart-key key-total"></i><b>${formatNumber(selected.total)}</b> 总事件</span><span><i class="chart-key key-risk"></i><b>${formatNumber(selected.risk_total)}</b> 风险触发</span><span class="chart-threshold">阈值 ≥ ${selected.risk_threshold || 30}</span><span class="chart-window">${selected.bucket === 'hour' ? '按小时滚动' : '按日滚动'} · ${dashboardTimezone} · 下次刷新 ${selected.next_refresh_at ? formatTime(selected.next_refresh_at, false, dashboardTimezone) : '自动'}</span></div></div>`
+  return html`<div class="risk-activity"><div class="chart-switcher" role="tablist" aria-label="趋势时间范围">${periods.map((item) => html`<button key=${item.key} type="button" class=${cn(period === item.key && 'is-active')} onClick=${() => setPeriod(item.key)} role="tab" aria-selected=${period === item.key}><b>${item.label}</b><small>${item.detail}</small></button>`)}</div>${points.length ? html`<div class=${cn('risk-chart-canvas', animationKey && 'is-dashboard-entry')} key=${period}><svg viewBox=${`0 0 ${width} ${height}`} role="img" aria-label=${`${periods.find((item) => item.key === period)?.label || ''}风险触发趋势`}>${[0, .25, .5, .75, 1].map((ratio) => html`<line key=${ratio} class="chart-grid-line" x1=${padding.left} x2=${width - padding.right} y1=${y(ratio * max)} y2=${y(ratio * max)}></line>`)}<path class="chart-area" d=${areaPath}></path><path pathLength="1" class="chart-line chart-line-total" d=${totalPath}></path><path pathLength="1" class="chart-line chart-line-risk" d=${riskPath}></path>${points.map((point, index) => html`<g key=${point.key || point.start_at || `${point.label}-${index}`}><circle class="chart-dot chart-dot-total" cx=${x(index)} cy=${y(point.count)} r="3.5"></circle><circle class="chart-dot chart-dot-risk" cx=${x(index)} cy=${y(point.risk_count)} r="3"></circle>${(index === 0 || index === points.length - 1 || index % labelStep === 0) ? html`<text class="chart-label" x=${x(index)} y=${height - 8} text-anchor="middle">${point.label}</text>` : null}</g>`)}</svg></div>` : html`<${EmptyState} title="暂无趋势数据" description="新的观测事件出现后，这里会显示风险波动。" />`}<div class="chart-summary"><span><i class="chart-key key-total"></i><b>${formatNumber(selected.total)}</b> 总事件</span><span><i class="chart-key key-risk"></i><b>${formatNumber(selected.risk_total)}</b> 风险触发</span><span class="chart-threshold">阈值 ≥ ${selected.risk_threshold || 30}</span><span class="chart-window">${selected.bucket === 'hour' ? '按小时滚动' : '按日滚动'} · ${dashboardTimezone} · 下次刷新 ${selected.next_refresh_at ? formatTime(selected.next_refresh_at, false, dashboardTimezone) : '自动'}</span></div></div>`
 }
 
 function donutArcPath(startPercent, endPercent, outerRadius = 46, innerRadius = 29) {
@@ -384,7 +442,7 @@ function donutArcPath(startPercent, endPercent, outerRadius = 46, innerRadius = 
   return `M ${outerStartX} ${outerStartY} A ${outerRadius} ${outerRadius} 0 ${largeArc} 1 ${outerEndX} ${outerEndY} L ${innerEndX} ${innerEndY} A ${innerRadius} ${innerRadius} 0 ${largeArc} 0 ${innerStartX} ${innerStartY} Z`
 }
 
-function DistributionDonut({ items = [], centerLabel = '事件总量' }) {
+function DistributionDonut({ items = [], centerLabel = '事件总量', animationKey = 0 }) {
   const colors = { high: '#ef7185', medium: '#edb968', low: '#56d6bd' }
   const palette = ['#6edfeb', '#9c8cf4', '#ef9b73', '#76a7ff']
   const normalized = items.map((item) => ({ ...item, count: Number(item.count || 0) }))
@@ -395,7 +453,7 @@ function DistributionDonut({ items = [], centerLabel = '事件总量' }) {
     cursor += total ? (item.count / total) * 100 : 0
     return { ...item, start, end: cursor, color: colors[item.key] || palette[index % palette.length], percentage: item.percentage || (total ? Math.round((item.count / total) * 100) : 0) }
   }).filter((item) => item.count > 0)
-  return html`<div class="risk-donut-wrap"><div class="risk-donut" aria-label=${`${centerLabel}分布图`}><svg class="donut-svg" viewBox="0 0 120 120" role="img" aria-hidden="true">${total ? segments.map((item, index) => html`<path key=${item.key || index} class="donut-segment" d=${donutArcPath(item.start, item.end)} fill=${item.color}></path>`) : html`<circle class="donut-track" cx="60" cy="60" r="38"></circle>`}</svg><div class="donut-center"><div><strong>${formatNumber(total)}</strong><small>${centerLabel}</small></div></div></div><div class="donut-legend-stack"><div class="legend-list">${normalized.map((item, index) => { const percentage = item.percentage || (total ? Math.round((item.count / total) * 100) : 0); return html`<div key=${item.key || index}><i class="legend-dot" style=${{ background: colors[item.key] || palette[index % palette.length] }}></i><span>${item.name || item.key}</span><b>${formatNumber(item.count)} <small>${percentage}%</small></b></div>` })}</div></div></div>`
+  return html`<div class="risk-donut-wrap"><div class=${cn('risk-donut', animationKey && 'is-dashboard-entry')} aria-label=${`${centerLabel}分布图`}><svg class="donut-svg" viewBox="0 0 120 120" role="img" aria-hidden="true">${total ? segments.map((item, index) => html`<path key=${item.key || index} class="donut-segment" d=${donutArcPath(item.start, item.end)} fill=${item.color}></path>`) : html`<circle class="donut-track" cx="60" cy="60" r="38"></circle>`}</svg><div class="donut-center"><div><strong>${formatNumber(total)}</strong><small>${centerLabel}</small></div></div></div><div class="donut-legend-stack"><div class="legend-list">${normalized.map((item, index) => { const percentage = item.percentage || (total ? Math.round((item.count / total) * 100) : 0); return html`<div key=${item.key || index}><i class="legend-dot" style=${{ background: colors[item.key] || palette[index % palette.length] }}></i><span>${item.name || item.key}</span><b>${formatNumber(item.count)} <small>${percentage}%</small></b></div>` })}</div></div></div>`
 }
 
 function CountryDistribution({ items = [] }) {
@@ -404,10 +462,13 @@ function CountryDistribution({ items = [] }) {
   return html`<div class="country-list">${visible.map((item) => html`<div class="country-row" key=${item.key || item.name}><div class="country-row-head"><span><i class="country-bullet"></i>${item.name || '未知'}</span><b>${formatNumber(item.count)} <small>${item.percentage || 0}%</small></b></div><div class="share-progress"><i style=${{ width: `${Math.max(3, (Number(item.count || 0) / max) * 100)}%` }}></i></div></div>`)}</div><div class="panel-footnote">本地数据库不可用或查询失败时回退到本地/保留、文档地址或“未知”；切换到 IPinfo 后，公网查询成功会显示对应的 MMDB 或 API 结果。</div>`
 }
 
-function HoneypotDistribution({ items = [] }) {
+function HoneypotDistribution({ items = [], animationKey = 0 }) {
   const visible = items.slice(0, 7); const max = Math.max(1, ...visible.map((item) => Number(item.count || 0)))
   if (!visible.length) return html`<${EmptyState} icon="layers" title="暂无蜜罐触发" description="访问公开端点后会按协议统计触发占比。" />`
-  return html`<div class="honeypot-list">${visible.map((item, index) => html`<div class="honeypot-row" key=${item.key || item.name}><div class="honeypot-row-head"><span class="honeypot-rank">${String(index + 1).padStart(2, '0')}</span><div><b>${profileLabel(item.name)}</b><small>${formatNumber(item.count)} 次 · 风险 ${formatNumber(item.risk_count)} 次</small></div><strong>${item.percentage || 0}%</strong></div><div class="share-progress"><i style=${{ width: `${Math.max(3, (Number(item.count || 0) / max) * 100)}%` }}></i></div></div>`)}</div><div class="panel-footnote">占比按事件次数计算；“风险”表示该类型中风险分 ≥ 30 的事件。</div>`
+  return html`<div class="honeypot-list">${visible.map((item, index) => {
+    const targetWidth = `${Math.max(3, (Number(item.count || 0) / max) * 100)}%`
+    return html`<div class="honeypot-row" key=${item.key || item.name}><div class="honeypot-row-head"><span class="honeypot-rank">${String(index + 1).padStart(2, '0')}</span><div><b>${profileLabel(item.name)}</b><small>${formatNumber(item.count)} 次 · 风险 ${formatNumber(item.risk_count)} 次</small></div><strong>${item.percentage || 0}%</strong></div><div class=${cn('share-progress', animationKey && 'is-dashboard-entry')}><i style=${`width:${targetWidth};--bar-start-width:0%;--bar-start-height:100%;--bar-end-width:${targetWidth};--bar-end-height:100%;`}></i></div></div>`
+  })}</div><div class="panel-footnote">占比按事件次数计算；“风险”表示该类型中风险分 ≥ 30 的事件。</div>`
 }
 
 function ActorDetailModal({ actor, onClose, onOpenEvent }) {
@@ -564,7 +625,7 @@ function AppShell({ route, onNavigate, onLogout, username, lastUpdated, children
 }
 
 
-function DashboardControlPage({ dashboard, instances, onNavigate, onRefresh, onOpenEvent }) {
+function DashboardControlPage({ dashboard, instances, onNavigate, onRefresh, onOpenEvent, animationKey = 0 }) {
   if (!dashboard) return html`<${LoadingState} label="加载控制台数据…" />`
   const counts = dashboard.counts || {}
   const summary = dashboard.risk_summary || {}
@@ -582,24 +643,24 @@ function DashboardControlPage({ dashboard, instances, onNavigate, onRefresh, onO
       />
       <section class="metrics-panel" aria-label="关键指标">
         <div class="metrics-grid">
-          <${MetricCard} label="总观测" value=${formatNumber(counts.events)} detail=${`风险触发 ${formatNumber(riskEvents)} · ${riskRate}%`} />
-          <${MetricCard} label="调用尝试" value=${formatNumber(counts.invocations)} detail="全部响应均为合成" />
-          <${MetricCard} label="高风险" value=${formatNumber(counts.high_risk)} detail=${`唯一 IP ${formatNumber(counts.unique_ips)}`} />
-          <${MetricCard} label="活跃实例" value=${`${running}/${(instances || []).length || 0}`} detail="可从实例页控制" />
+          <${MetricCard} label="总观测" value=${Number(counts.events || 0)} animationKey=${animationKey} detail=${`风险触发 ${formatNumber(riskEvents)} · ${riskRate}%`} />
+          <${MetricCard} label="调用尝试" value=${Number(counts.invocations || 0)} animationKey=${animationKey} detail="全部响应均为合成" />
+          <${MetricCard} label="高风险" value=${Number(counts.high_risk || 0)} animationKey=${animationKey} detail=${`唯一 IP ${formatNumber(counts.unique_ips)}`} />
+          <${MetricCard} label="活跃实例" value=${running} suffix=${`/${(instances || []).length || 0}`} animationKey=${animationKey} detail="可从实例页控制" />
         </div>
       </section>
       <div class="dashboard-hero-grid">
         <${Panel} className="dashboard-trend-panel" title="风险触发趋势" action=${html`<span class="panel-meta">按小时 / 日滚动</span>`}>
-          <${RiskActivityChart} series=${dashboard.risk_activity || {}} />
+          <${RiskActivityChart} key=${animationKey} series=${dashboard.risk_activity || {}} animationKey=${animationKey} />
         <//>
         <${Panel} className="dashboard-country-panel" title="风险 IP 来源区域" action=${html`<${Badge} tone="blue">${geoProvider}<//>`}>
           <${CountryDistribution} items=${dashboard.source_countries || []} />
         <//>
       </div>
       <div class="dashboard-analytics-grid">
-        <${Panel} title="蜜罐触发占比"><${HoneypotDistribution} items=${dashboard.honeypot_distribution || []} /><//>
-        <${Panel} title="触发风险占比"><${DistributionDonut} items=${dashboard.risk_trigger_distribution || []} centerLabel="风险事件" /><div class="panel-footnote">按事件风险分分档；中风险起算阈值为 ≥ ${dashboard.risk_threshold || 30}。</div><//>
-        <${Panel} title="IP 风险分布"><${RiskDonut} distribution=${dashboard.risk_distribution || {}} /><div class="panel-footnote">IP 维度聚合；风险分只表示观测证据，不等同于真实身份。</div><//>
+        <${Panel} title="蜜罐触发占比"><${HoneypotDistribution} key=${animationKey} items=${dashboard.honeypot_distribution || []} animationKey=${animationKey} /><//>
+        <${Panel} title="触发风险占比"><${DistributionDonut} key=${animationKey} items=${dashboard.risk_trigger_distribution || []} centerLabel="风险事件" animationKey=${animationKey} /><div class="panel-footnote">按事件风险分分档；中风险起算阈值为 ≥ ${dashboard.risk_threshold || 30}。</div><//>
+        <${Panel} title="IP 风险分布"><${RiskDonut} key=${animationKey} distribution=${dashboard.risk_distribution || {}} animationKey=${animationKey} /><div class="panel-footnote">IP 维度聚合；风险分只表示观测证据，不等同于真实身份。</div><//>
       </div>
       <div class="dashboard-grid">
         <${Panel} className="span-7" title="最近观测" action=${html`<button class="text-button" type="button" onClick=${() => onNavigate('observations')}>查看全部 ${icon('arrow', 14)}</button>`} flush=${true}>
@@ -965,6 +1026,7 @@ const IndicatorsPage = ServerIndicatorsPage
 
 function App() {
   const [route, setRoute] = useState(routeFromLocation()); const [auth, setAuth] = useState('checking'); const [username, setUsername] = useState(''); const [lastUpdated, setLastUpdated] = useState(null); const [busy, setBusy] = useState(false); const [loadError, setLoadError] = useState(''); const [toast, setToast] = useState(null); const [selectedEvent, setSelectedEvent] = useState(null); const [selectedActor, setSelectedActor] = useState(null); const [data, setData] = useState({ dashboard: null, instances: [], events: [], invocations: [], chains: [], indicators: [], packs: null, policies: null, ipinfo: null, frontendDetection: null, pagination: { observations: null, invocations: null, chains: null, indicators: null } })
+  const [dashboardAnimationKey, setDashboardAnimationKey] = useState(0)
   const [, setListParams] = useState(LIST_DEFAULTS)
   const listParamsRef = useRef(LIST_DEFAULTS)
   const routeRequestsRef = useRef(new Map())
@@ -1124,7 +1186,7 @@ function App() {
     setData((current) => ({ ...current, frontendDetection }))
     showToast('前端检测设置已更新')
   }, [showToast])
-  const login = async (name, password) => { const result = await request('auth/login', { method: 'POST', body: JSON.stringify({ username: name, password }) }); setUsername(result.username || name); setAuth('app'); navigateTo('dashboard', true); showToast('已安全登录控制平面') }
+  const login = async (name, password) => { const result = await request('auth/login', { method: 'POST', body: JSON.stringify({ username: name, password }) }); setDashboardAnimationKey((value) => value + 1); setUsername(result.username || name); setAuth('app'); navigateTo('dashboard', true); showToast('已安全登录控制平面') }
   const setup = async (name, password) => { if (name === 'continue') { setAuth('login'); navigateTo('login', true); return {} } const result = await request('setup/create-owner', { method: 'POST', body: JSON.stringify({ username: name, password }) }); setUsername(name); showToast('owner 已创建，请先保存恢复码'); return result }
   const forgotPassword = async (name) => request('auth/forgot-password', { method: 'POST', body: JSON.stringify({ username: name }) })
   const recoveryReset = async (name, code, password) => { await request('auth/recovery-code/reset', { method: 'POST', body: JSON.stringify({ username: name, recovery_code: code, new_password: password }) }); showToast('密码已重置，请使用新密码登录') }
@@ -1137,7 +1199,7 @@ function App() {
   if (auth === 'checking') return html`<${AuthLoading} />`
   if (auth === 'setup') return html`<${SetupPage} onSetup=${setup} />`
   if (auth === 'login') return html`<${LoginPage} onLogin=${login} onForgot=${forgotPassword} onRecovery=${recoveryReset} />`
-  const page = route === 'observations' ? html`<${ObservationsPage} events=${data.events} pagination=${data.pagination.observations} onRefresh=${() => loadRoute('observations')} onSearch=${(changes) => loadList('observations', changes)} onPageChange=${(page) => loadList('observations', { page })} onDelete=${(id) => deleteListItem('observations', id)} onOpenEvent=${openEvent} loading=${listLoading?.target === 'observations' && (listLoading.query || data.events.length === 0)} />` : route === 'invocations' ? html`<${InvocationsPage} invocations=${data.invocations} pagination=${data.pagination.invocations} onRefresh=${() => loadRoute('invocations')} onSearch=${(changes) => loadList('invocations', changes)} onPageChange=${(page) => loadList('invocations', { page })} onDelete=${(id) => deleteListItem('invocations', id)} onOpenEvent=${openEvent} loading=${listLoading?.target === 'invocations' && (listLoading.query || data.invocations.length === 0)} />` : route === 'chains' ? html`<${ChainsPage} chains=${data.chains} pagination=${data.pagination.chains} onRefresh=${() => loadRoute('chains')} onSearch=${(changes) => loadList('chains', changes)} onPageChange=${(page) => loadList('chains', { page })} onDelete=${(id) => deleteListItem('chains', id)} onOpenEvent=${openEvent} loading=${listLoading?.target === 'chains' && (listLoading.query || data.chains.length === 0)} />` : route === 'indicators' ? html`<${IndicatorsPage} indicators=${data.indicators} pagination=${data.pagination.indicators} onRefresh=${() => loadRoute('indicators')} onSearch=${(changes) => loadList('indicators', changes)} onPageChange=${(page) => loadList('indicators', { page })} onDelete=${(id) => deleteListItem('indicators', id)} onOpenIndicator=${openActor} loading=${listLoading?.target === 'indicators' && (listLoading.query || data.indicators.length === 0)} />` : route === 'instances' ? html`<${InstancesPage} instances=${data.instances} onRefresh=${() => loadRoute('instances')} onAction=${instanceAction} busy=${busy} />` : route === 'packs' ? html`<${PacksPage} packs=${data.packs} policies=${data.policies} onRefresh=${() => loadRoute('packs')} />` : route === 'settings' ? html`<${SettingsPage} username=${username} ipinfo=${data.ipinfo} frontendDetection=${data.frontendDetection} onRotateEntry=${rotateEntry} onSaveIPInfo=${saveIPInfo} onSaveFrontendDetection=${saveFrontendDetection} />` : html`<${DashboardControlPage} dashboard=${data.dashboard} instances=${data.instances} onNavigate=${onNavigate} onRefresh=${() => loadRoute('dashboard')} onOpenEvent=${openEvent} />`
+  const page = route === 'observations' ? html`<${ObservationsPage} events=${data.events} pagination=${data.pagination.observations} onRefresh=${() => loadRoute('observations')} onSearch=${(changes) => loadList('observations', changes)} onPageChange=${(page) => loadList('observations', { page })} onDelete=${(id) => deleteListItem('observations', id)} onOpenEvent=${openEvent} loading=${listLoading?.target === 'observations' && (listLoading.query || data.events.length === 0)} />` : route === 'invocations' ? html`<${InvocationsPage} invocations=${data.invocations} pagination=${data.pagination.invocations} onRefresh=${() => loadRoute('invocations')} onSearch=${(changes) => loadList('invocations', changes)} onPageChange=${(page) => loadList('invocations', { page })} onDelete=${(id) => deleteListItem('invocations', id)} onOpenEvent=${openEvent} loading=${listLoading?.target === 'invocations' && (listLoading.query || data.invocations.length === 0)} />` : route === 'chains' ? html`<${ChainsPage} chains=${data.chains} pagination=${data.pagination.chains} onRefresh=${() => loadRoute('chains')} onSearch=${(changes) => loadList('chains', changes)} onPageChange=${(page) => loadList('chains', { page })} onDelete=${(id) => deleteListItem('chains', id)} onOpenEvent=${openEvent} loading=${listLoading?.target === 'chains' && (listLoading.query || data.chains.length === 0)} />` : route === 'indicators' ? html`<${IndicatorsPage} indicators=${data.indicators} pagination=${data.pagination.indicators} onRefresh=${() => loadRoute('indicators')} onSearch=${(changes) => loadList('indicators', changes)} onPageChange=${(page) => loadList('indicators', { page })} onDelete=${(id) => deleteListItem('indicators', id)} onOpenIndicator=${openActor} loading=${listLoading?.target === 'indicators' && (listLoading.query || data.indicators.length === 0)} />` : route === 'instances' ? html`<${InstancesPage} instances=${data.instances} onRefresh=${() => loadRoute('instances')} onAction=${instanceAction} busy=${busy} />` : route === 'packs' ? html`<${PacksPage} packs=${data.packs} policies=${data.policies} onRefresh=${() => loadRoute('packs')} />` : route === 'settings' ? html`<${SettingsPage} username=${username} ipinfo=${data.ipinfo} frontendDetection=${data.frontendDetection} onRotateEntry=${rotateEntry} onSaveIPInfo=${saveIPInfo} onSaveFrontendDetection=${saveFrontendDetection} />` : html`<${DashboardControlPage} dashboard=${data.dashboard} instances=${data.instances} onNavigate=${onNavigate} onRefresh=${() => loadRoute('dashboard')} onOpenEvent=${openEvent} animationKey=${dashboardAnimationKey} />`
   return html`<${AppShell} route=${route} onNavigate=${onNavigate} onLogout=${logout} username=${username} lastUpdated=${lastUpdated}><div key=${route} class=${cn(loadError && 'has-page-error')}>${loadError ? html`<div class="page-error">${icon('warning', 17)}<span>${loadError}</span><button class="text-button" type="button" onClick=${() => loadRoute(route)}>重试</button></div>` : null}${page}</div><//>${selectedActor ? html`<${ActorDetailModal} actor=${selectedActor} onClose=${closeDetail} onOpenEvent=${openEvent} />` : null}${selectedEvent ? html`<${EventDetails} event=${{ ...selectedEvent, onClose: closeDetail }} />` : null}<${Toast} toast=${toast} onClose=${() => setToast(null)} />`
 }
 
