@@ -85,3 +85,241 @@
 .pagination-controls{display:flex;align-items:center;justify-content:space-between;gap:.8rem;margin-top:1rem;padding:.75rem .15rem .35rem;border-top:1px solid rgba(47,78,102,.45);color:#7894aa;font-size:.7rem}.pagination-controls .button-group{justify-content:flex-end}.danger-text{color:#ff9eac}.danger-text:hover{color:#ffd2d8}.raw-request-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.75rem}.raw-request-grid code{display:block;margin-top:.35rem;overflow-wrap:anywhere;color:#bfe9ef;font:.68rem/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}.raw-body-view{max-height:20rem;overflow-wrap:anywhere;word-break:break-all}.geo-cell{display:block}.geo-subcell{display:block;margin-top:.25rem;color:#7190a5;font:.64rem ui-monospace,SFMono-Regular,Menlo,monospace}.chain-card-actions{display:flex;align-items:center;justify-content:space-between;gap:.8rem}.chain-card-actions .danger-text{margin-left:auto}
 @media(max-width:720px){.pagination-controls{align-items:flex-start;flex-direction:column}.pagination-controls .button-group{width:100%}.pagination-controls .button-group>*{flex:1}.raw-request-grid{grid-template-columns:1fr}}
 .insight-card{border-color:#2c506b}.insight-ip-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.65rem;margin-top:.8rem}.insight-ip-grid>div{min-width:0;padding:.7rem;border:1px solid #203d57;border-radius:.5rem;background:#071321}.insight-ip-grid span{display:block;color:#7189a2;font-size:.68rem}.insight-ip-grid code{display:block;margin-top:.3rem;overflow-wrap:anywhere;color:#bfe9ef;font:.68rem/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}.insight-findings{display:grid;gap:.5rem;margin-top:.8rem}.insight-finding{display:grid;grid-template-columns:auto minmax(0,1fr);gap:.35rem .55rem;align-items:center;padding:.65rem .7rem;border:1px solid #5c4c36;border-radius:.5rem;background:rgba(123,89,35,.1)}.insight-finding span{overflow-wrap:anywhere;color:#d6e5ee;font-size:.72rem}.insight-finding small{grid-column:2;color:#8da3b5;font-size:.66rem}@media(max-width:720px){.insight-ip-grid{grid-template-columns:1fr}}
+
+/* Apple-inspired control plane refresh: quieter surfaces, generous spacing and a system font stack. */
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", "Noto Sans SC", Arial, sans-serif;
+  --shadow: 0 1.25rem 3rem rgba(0, 0, 0, .18);
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  background: var(--bg);
+}
+
+body:before {
+  display: none;
+}
+
+.app-shell {
+  grid-template-columns: 17rem minmax(0, 1fr);
+}
+
+.sidebar {
+  padding: 1.45rem 1rem;
+  border-right-color: rgba(32, 55, 80, .72);
+  background: rgba(5, 14, 25, .74);
+  backdrop-filter: blur(24px) saturate(135%);
+}
+
+.sidebar-brand {
+  padding: .2rem .55rem 2rem;
+}
+
+.sidebar-nav {
+  gap: .18rem;
+}
+
+.nav-item {
+  gap: .75rem;
+  padding: .72rem .8rem;
+  border-radius: .8rem;
+  transition: color .18s ease, background .18s ease;
+}
+
+.nav-item:hover {
+  background: rgba(20, 46, 74, .48);
+}
+
+.nav-item.is-active {
+  box-shadow: none;
+  background: rgba(20, 46, 74, .78);
+}
+
+.nav-active-line,
+.sidebar-footer,
+.online-indicator,
+.node-dot,
+.green-dot,
+.badge-dot {
+  display: none;
+}
+
+.topbar {
+  min-height: 4.5rem;
+  padding: 1rem clamp(1rem, 4vw, 3.7rem);
+  border-bottom-color: rgba(32, 55, 80, .62);
+  background: rgba(8, 17, 31, .64);
+  backdrop-filter: blur(24px) saturate(125%);
+}
+
+.topbar-right {
+  gap: .6rem;
+}
+
+.last-updated {
+  padding: .35rem .6rem;
+  border: 1px solid rgba(50, 78, 103, .72);
+  border-radius: 999px;
+  background: rgba(13, 32, 52, .42);
+}
+
+.user-chip {
+  gap: .5rem;
+  padding: .2rem .65rem .2rem .22rem;
+  border: 1px solid rgba(50, 78, 103, .72);
+  border-radius: 999px;
+  background: rgba(13, 32, 52, .42);
+}
+
+.user-chip b {
+  font-weight: 550;
+}
+
+.user-chip span {
+  width: 2rem;
+  height: 2rem;
+}
+
+.content-wrap {
+  width: min(100%, 1480px);
+  margin: 0 auto;
+  padding: clamp(2rem, 4vw, 3.5rem) clamp(1rem, 4vw, 3.7rem);
+}
+
+.page-stack {
+  gap: 1.35rem;
+}
+
+.page-header {
+  margin-bottom: 1rem;
+}
+
+.page-header h1 {
+  font-size: clamp(2rem, 4vw, 3.25rem);
+  font-weight: 650;
+  line-height: 1.08;
+  letter-spacing: -.055em;
+}
+
+.page-description {
+  max-width: 48rem;
+  margin-top: .75rem;
+  line-height: 1.65;
+}
+
+.panel,
+.metric-card,
+.fleet-summary > div,
+.pack-card,
+.instance-card {
+  border-color: rgba(50, 78, 103, .76);
+  border-radius: 1.1rem;
+  background: rgba(13, 28, 46, .78);
+  box-shadow: var(--shadow);
+}
+
+.panel {
+  padding: 1.4rem;
+}
+
+.panel-header {
+  margin-bottom: 1.3rem;
+}
+
+.panel-header h2 {
+  font-weight: 600;
+  letter-spacing: -.025em;
+}
+
+.metric-card {
+  min-height: 8.25rem;
+  padding: 1.2rem 1.25rem;
+  border-top-color: rgba(50, 78, 103, .76) !important;
+  border-left-color: rgba(50, 78, 103, .76) !important;
+  transition: border-color .18s ease, transform .18s ease;
+}
+
+.metric-card:hover {
+  border-color: rgba(117, 226, 244, .28) !important;
+  transform: translateY(-1px);
+}
+
+.metric-top {
+  color: #91aabe;
+  font-size: .72rem;
+  letter-spacing: .01em;
+}
+
+.metric-icon {
+  color: #8aa6bc !important;
+}
+
+.metric-card > strong {
+  margin: .9rem 0 .3rem;
+  font-size: clamp(2rem, 3vw, 2.5rem);
+  font-weight: 650;
+  letter-spacing: -.06em;
+}
+
+.metric-card > small {
+  color: #718ba2;
+}
+
+.instance-card.is-running,
+.insight-card {
+  border-color: rgba(50, 78, 103, .76) !important;
+}
+
+.fleet-summary > div {
+  background: rgba(13, 28, 46, .78);
+}
+
+.summary-icon,
+.summary-icon.summary-blue,
+.summary-icon.summary-pink {
+  color: #8aa6bc;
+  background: rgba(21, 60, 80, .62);
+}
+
+.button,
+.outline-button,
+.text-field input,
+.auth-form input,
+.select-field select,
+.search-field,
+.score-filter input {
+  border-radius: .7rem;
+}
+
+.button,
+.outline-button {
+  transition: border-color .18s ease, background .18s ease, transform .18s ease;
+}
+
+.button:active,
+.outline-button:active {
+  transform: scale(.985);
+}
+
+.badge {
+  padding: .3rem .6rem;
+}
+
+.instance-boundary {
+  color: #8aa6bc;
+}
+
+@media (max-width: 720px) {
+  .content-wrap {
+    padding: 1.5rem 1rem 2rem;
+  }
+
+  .topbar {
+    min-height: auto;
+  }
+}
