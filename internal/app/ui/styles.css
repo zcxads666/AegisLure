@@ -34,6 +34,16 @@
   --title-md: 20px;
   --title-lg: 28px;
   --metric: 30px;
+  --motion-fast: 120ms;
+  --motion-base: 160ms;
+  --motion-enter: 180ms;
+  --motion-slow: 220ms;
+  --motion-data: 300ms;
+  --motion-auth: 320ms;
+  --motion-spinner: 750ms;
+  --ease-standard: cubic-bezier(.4, 0, .2, 1);
+  --ease-out: cubic-bezier(.16, 1, .3, 1);
+  --ease-in-out: cubic-bezier(.65, 0, .35, 1);
   --mono: "Geist Mono", "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", monospace;
   --shadow-floating: 0 12px 32px rgba(0, 0, 0, .28);
 }
@@ -124,6 +134,94 @@ pre,
   outline-offset: 2px;
 }
 
+/* Motion */
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes modal-backdrop-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(.99);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes chart-enter {
+  from {
+    opacity: .65;
+    transform: translateY(2px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes auth-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes scrim-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
 /* Authentication */
 
 .auth-layout {
@@ -171,6 +269,7 @@ pre,
 
 .auth-copy {
   max-width: 540px;
+  animation: auth-enter var(--motion-auth) var(--ease-out) both;
 }
 
 .auth-copy h1 {
@@ -234,6 +333,7 @@ pre,
 
 .auth-card {
   width: min(100%, 420px);
+  animation: auth-enter var(--motion-auth) var(--ease-out) 50ms both;
 }
 
 .auth-card h2 {
@@ -286,6 +386,7 @@ pre,
   border-radius: var(--radius-control);
   color: var(--text-1);
   background: var(--surface-1);
+  transition: border-color var(--motion-base) var(--ease-standard), background-color var(--motion-base) var(--ease-standard), box-shadow var(--motion-base) var(--ease-standard);
 }
 
 .text-field input,
@@ -364,7 +465,7 @@ pre,
   font-size: var(--text-sm);
   font-weight: 540;
   line-height: 1;
-  transition: border-color .15s ease, background-color .15s ease, color .15s ease;
+  transition: background-color var(--motion-base) var(--ease-standard), border-color var(--motion-base) var(--ease-standard), color var(--motion-base) var(--ease-standard), transform var(--motion-fast) var(--ease-standard);
 }
 
 .button:hover,
@@ -373,9 +474,14 @@ pre,
   background: var(--surface-hover);
 }
 
-.button:active,
-.outline-button:active {
+.button:active:not(:disabled),
+.outline-button:active:not(:disabled) {
   background: #152d43;
+}
+
+.button:active:not(:disabled),
+.outline-button:active:not(:disabled) {
+  transform: scale(.985);
 }
 
 .button-primary {
@@ -454,12 +560,17 @@ pre,
   border-radius: var(--radius-control);
   color: var(--text-2);
   background: transparent;
+  transition: background-color var(--motion-base) var(--ease-standard), border-color var(--motion-base) var(--ease-standard), color var(--motion-base) var(--ease-standard), transform var(--motion-fast) var(--ease-standard);
 }
 
 .icon-button:hover {
   border-color: var(--border-strong);
   color: var(--text-1);
   background: var(--surface-hover);
+}
+
+.icon-button:active:not(:disabled) {
+  transform: scale(.96);
 }
 
 .text-button,
@@ -612,6 +723,7 @@ pre,
   text-align: left;
   font-size: var(--text-sm);
   font-weight: 520;
+  transition: background-color var(--motion-base) var(--ease-standard), color var(--motion-base) var(--ease-standard), box-shadow var(--motion-base) var(--ease-standard);
 }
 
 .nav-item:hover,
@@ -738,6 +850,7 @@ pre,
 .page-stack {
   display: grid;
   gap: 24px;
+  animation: page-enter var(--motion-enter) var(--ease-out) both;
 }
 
 .page-header {
@@ -945,6 +1058,7 @@ pre,
   color: var(--text-2);
   background: transparent;
   text-align: left;
+  transition: background-color var(--motion-base) var(--ease-standard), border-color var(--motion-base) var(--ease-standard), color var(--motion-base) var(--ease-standard);
 }
 
 .chart-switcher button:hover {
@@ -974,6 +1088,7 @@ pre,
   border-radius: var(--radius-control);
   padding: 8px 8px 0;
   background: #0a1727;
+  animation: chart-enter var(--motion-enter) var(--ease-out) both;
 }
 
 .risk-chart-canvas svg {
@@ -1100,6 +1215,7 @@ pre,
   min-height: 5px;
   border-radius: 3px 3px 0 0;
   background: rgba(117, 226, 244, .62);
+  transition: height var(--motion-data) var(--ease-out);
 }
 
 .activity-bar-wrap small {
@@ -1271,6 +1387,7 @@ pre,
   min-width: 3px;
   border-radius: inherit;
   background: var(--accent);
+  transition: width var(--motion-data) var(--ease-out);
 }
 
 .honeypot-rank {
@@ -1337,6 +1454,10 @@ pre,
 
 .data-table tbody tr.is-clickable {
   cursor: pointer;
+}
+
+.data-table tbody tr.is-clickable td {
+  transition: background-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard);
 }
 
 .data-table tbody tr.is-clickable:hover td {
@@ -1543,18 +1664,12 @@ pre,
   border: 2px solid rgba(117, 226, 244, .18);
   border-top-color: var(--accent);
   border-radius: 50%;
-  animation: spin .8s linear infinite;
+  animation: spin var(--motion-spinner) linear infinite;
 }
 
 .spinner-dark {
   border-color: rgba(7, 19, 33, .22);
   border-top-color: #071321;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 .pagination-controls {
@@ -1612,6 +1727,7 @@ pre,
 
 .instance-card {
   padding: 18px;
+  transition: border-color var(--motion-base) var(--ease-standard), background-color var(--motion-base) var(--ease-standard);
 }
 
 .instance-card-head {
@@ -1670,6 +1786,7 @@ pre,
   border-radius: var(--radius-pill);
   padding: 2px;
   background: var(--surface-2);
+  transition: background-color var(--motion-base) var(--ease-standard), border-color var(--motion-base) var(--ease-standard);
 }
 
 .toggle span {
@@ -1678,7 +1795,7 @@ pre,
   height: 16px;
   border-radius: 50%;
   background: var(--text-3);
-  transition: transform .15s ease, background-color .15s ease;
+  transition: transform var(--motion-base) var(--ease-out), background-color var(--motion-base) var(--ease-standard);
 }
 
 .toggle.is-on {
@@ -2036,6 +2153,10 @@ pre,
   background: rgba(12, 25, 41, .48);
 }
 
+.strategy-card {
+  transition: border-color var(--motion-base) var(--ease-standard), background-color var(--motion-base) var(--ease-standard);
+}
+
 .strategy-card-head,
 .rule-card-head,
 .chain-card-header,
@@ -2360,6 +2481,17 @@ pre,
   grid-template-columns: 8px minmax(0, 1fr) auto;
 }
 
+.event-feed-row,
+.actor-action-row,
+.chain-event,
+.fleet-row {
+  transition: background-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard);
+}
+
+.fleet-row:hover {
+  background: rgba(117, 226, 244, .035);
+}
+
 .event-feed-row:last-child,
 .fleet-row:last-child {
   border-bottom: 0;
@@ -2502,6 +2634,7 @@ pre,
   padding: 20px;
   background: rgba(1, 7, 14, .76);
   backdrop-filter: blur(4px);
+  animation: modal-backdrop-in var(--motion-base) var(--ease-out) both;
 }
 
 .modal {
@@ -2512,6 +2645,7 @@ pre,
   border-radius: var(--radius-modal);
   background: var(--surface-2);
   box-shadow: 0 24px 64px rgba(0, 0, 0, .42);
+  animation: modal-in var(--motion-enter) var(--ease-out) both;
 }
 
 .modal-wide {
@@ -2748,6 +2882,11 @@ pre,
 
 .actor-action-row > .icon {
   color: var(--text-3);
+  transition: color var(--motion-fast) var(--ease-standard), transform var(--motion-fast) var(--ease-out);
+}
+
+.actor-action-row:hover > .icon {
+  transform: translateX(2px);
 }
 
 /* Toast and loading */
@@ -2768,6 +2907,7 @@ pre,
   background: #102e31;
   box-shadow: var(--shadow-floating);
   font-size: var(--text-sm);
+  animation: toast-in var(--motion-enter) var(--ease-out) both;
 }
 
 .toast .icon-button {
@@ -2877,7 +3017,7 @@ pre,
     z-index: 4;
     width: min(280px, 84vw);
     transform: translateX(-100%);
-    transition: transform .18s ease;
+    transition: transform var(--motion-enter) var(--ease-out);
   }
 
   .sidebar.is-open {
@@ -2895,6 +3035,7 @@ pre,
     z-index: 3;
     display: block;
     background: rgba(1, 7, 14, .62);
+    animation: scrim-in var(--motion-base) var(--ease-out) both;
   }
 
   .mobile-menu {
@@ -3128,5 +3269,17 @@ pre,
   .chart-switcher button {
     flex: 1;
     min-width: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    animation-delay: 0ms !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
   }
 }
