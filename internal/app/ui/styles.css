@@ -2335,12 +2335,29 @@ pre,
 .event-feed-row,
 .fleet-row {
   display: grid;
-  grid-template-columns: 8px minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
   min-width: 0;
   padding: 10px 0;
   border-bottom: 1px solid var(--border-subtle);
+}
+
+.event-feed-row {
+  grid-template-columns: 8px minmax(0, 1fr) auto auto;
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  text-align: left;
+  color: inherit;
+  background: transparent;
+}
+
+.event-feed-row:hover {
+  background: var(--surface-hover);
+}
+
+.fleet-row {
+  grid-template-columns: 8px minmax(0, 1fr) auto;
 }
 
 .event-feed-row:last-child,
