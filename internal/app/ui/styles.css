@@ -1022,12 +1022,6 @@ pre,
   fill: var(--danger);
 }
 
-.chart-hit-area {
-  fill: transparent;
-  stroke: transparent;
-  cursor: crosshair;
-}
-
 .chart-label {
   fill: var(--text-3);
   font-size: 10px;
@@ -1077,53 +1071,6 @@ pre,
   color: var(--text-3);
 }
 
-.chart-tooltip {
-  position: absolute;
-  top: 14px;
-  z-index: 2;
-  display: grid;
-  gap: 3px;
-  min-width: 150px;
-  max-width: 190px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-control);
-  padding: 10px 11px;
-  color: var(--text-2);
-  background: #0e1d2f;
-  box-shadow: var(--shadow-floating);
-  pointer-events: none;
-  transform: translateX(-50%);
-  font-size: 11px;
-}
-
-.chart-tooltip strong,
-.chart-hover-detail strong {
-  color: var(--text-1);
-  font-size: var(--text-xs);
-}
-
-.chart-hover-detail {
-  display: grid;
-  gap: 4px;
-  min-height: 42px;
-  margin-top: 10px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-control);
-  padding: 9px 11px;
-  color: var(--text-2);
-  background: rgba(12, 25, 41, .64);
-  font-size: 11px;
-}
-
-.chart-hover-detail span {
-  color: var(--text-3);
-  line-height: 1.45;
-}
-
-.chart-hover-detail.is-muted {
-  color: var(--text-3);
-}
-
 .activity-chart {
   display: flex;
   align-items: flex-end;
@@ -1168,17 +1115,12 @@ pre,
 }
 
 .risk-donut {
+  position: relative;
   display: grid;
   place-items: center;
   flex: none;
   width: 160px;
   height: 160px;
-}
-
-.donut-interactive {
-  position: relative;
-  display: block;
-  cursor: crosshair;
 }
 
 .donut-svg {
@@ -1197,14 +1139,6 @@ pre,
 .donut-segment {
   stroke: #0b1929;
   stroke-width: 1.2;
-  cursor: pointer;
-  transition: opacity .15s ease, filter .15s ease;
-}
-
-.donut-segment:hover,
-.donut-segment.is-hovered {
-  opacity: .86;
-  filter: brightness(1.12);
 }
 
 .donut-center {
@@ -1257,10 +1191,6 @@ pre,
   font-size: var(--text-sm);
 }
 
-.legend-list > div.is-hovered {
-  background: var(--accent-soft);
-}
-
 .legend-list b {
   font-weight: 560;
 }
@@ -1286,13 +1216,6 @@ pre,
   gap: 7px;
   border-radius: var(--radius-xs);
   padding: 3px;
-}
-
-.country-row:hover,
-.honeypot-row:hover,
-.country-row.is-hovered,
-.honeypot-row.is-hovered {
-  background: rgba(117, 226, 244, .035);
 }
 
 .country-row-head,
