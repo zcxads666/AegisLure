@@ -887,6 +887,14 @@ pre,
   animation: page-enter var(--motion-enter) var(--ease-out) both;
 }
 
+.page-stack.dashboard-page {
+  animation: none;
+}
+
+.page-stack.dashboard-page.is-dashboard-entry {
+  animation: page-enter var(--motion-enter) var(--ease-out) both;
+}
+
 .page-header {
   display: flex;
   align-items: flex-end;
@@ -1122,6 +1130,10 @@ pre,
   border-radius: var(--radius-control);
   padding: 8px 8px 0;
   background: #0a1727;
+}
+
+.risk-chart-canvas.is-dashboard-entry,
+.risk-chart-canvas.is-period-entry {
   animation: chart-enter var(--motion-enter) var(--ease-out) both;
 }
 

@@ -412,7 +412,9 @@ function RiskDonut({ distribution = {}, animationKey = 0 }) {
 
 function RiskActivityChart({ series = {}, animationKey = 0 }) {
   const [period, setPeriod] = useState('hour')
+  const [periodAnimationKey, setPeriodAnimationKey] = useState(0)
   const periods = [{ key: 'hour', label: '近24小时', detail: '每小时滚动' }, { key: 'week', label: '近7天', detail: '每日滚动' }, { key: 'month', label: '近30天', detail: '每日滚动' }]
+  const selectPeriod = (next) => { if (next === period) return; setPeriod(next); setPeriodAnimationKey((value) => value + 1) }
   const selected = series[period] || (period === 'hour' ? series.day : {}) || {}
   const points = Array.isArray(selected.points) ? selected.points : []
   const width = 760; const height = 238; const padding = { top: 18, right: 14, bottom: 32, left: 14 }
@@ -426,7 +428,7 @@ function RiskActivityChart({ series = {}, animationKey = 0 }) {
   const areaPath = points.length ? `M ${x(0)} ${baseline} L ${points.map((point, index) => `${x(index)} ${y(point.count)}`).join(' L ')} L ${x(points.length - 1)} ${baseline} Z` : ''
   const labelStep = Math.max(1, Math.ceil(points.length / 6))
   const dashboardTimezone = selected.timezone || 'Asia/Shanghai'
-  return html`<div class="risk-activity"><div class="chart-switcher" role="tablist" aria-label="趋势时间范围">${periods.map((item) => html`<button key=${item.key} type="button" class=${cn(period === item.key && 'is-active')} onClick=${() => setPeriod(item.key)} role="tab" aria-selected=${period === item.key}><b>${item.label}</b><small>${item.detail}</small></button>`)}</div>${points.length ? html`<div class=${cn('risk-chart-canvas', animationKey && 'is-dashboard-entry')} key=${period}><svg viewBox=${`0 0 ${width} ${height}`} role="img" aria-label=${`${periods.find((item) => item.key === period)?.label || ''}风险触发趋势`}>${[0, .25, .5, .75, 1].map((ratio) => html`<line key=${ratio} class="chart-grid-line" x1=${padding.left} x2=${width - padding.right} y1=${y(ratio * max)} y2=${y(ratio * max)}></line>`)}<path class="chart-area" d=${areaPath}></path><path pathLength="1" class="chart-line chart-line-total" d=${totalPath}></path><path pathLength="1" class="chart-line chart-line-risk" d=${riskPath}></path>${points.map((point, index) => html`<g key=${point.key || point.start_at || `${point.label}-${index}`}><circle class="chart-dot chart-dot-total" cx=${x(index)} cy=${y(point.count)} r="3.5"></circle><circle class="chart-dot chart-dot-risk" cx=${x(index)} cy=${y(point.risk_count)} r="3"></circle>${(index === 0 || index === points.length - 1 || index % labelStep === 0) ? html`<text class="chart-label" x=${x(index)} y=${height - 8} text-anchor="middle">${point.label}</text>` : null}</g>`)}</svg></div>` : html`<${EmptyState} title="暂无趋势数据" description="新的观测事件出现后，这里会显示风险波动。" />`}<div class="chart-summary"><span><i class="chart-key key-total"></i><b>${formatNumber(selected.total)}</b> 总事件</span><span><i class="chart-key key-risk"></i><b>${formatNumber(selected.risk_total)}</b> 风险触发</span><span class="chart-threshold">阈值 ≥ ${selected.risk_threshold || 30}</span><span class="chart-window">${selected.bucket === 'hour' ? '按小时滚动' : '按日滚动'} · ${dashboardTimezone} · 下次刷新 ${selected.next_refresh_at ? formatTime(selected.next_refresh_at, false, dashboardTimezone) : '自动'}</span></div></div>`
+  return html`<div class="risk-activity"><div class="chart-switcher" role="tablist" aria-label="趋势时间范围">${periods.map((item) => html`<button key=${item.key} type="button" class=${cn(period === item.key && 'is-active')} onClick=${() => selectPeriod(item.key)} role="tab" aria-selected=${period === item.key}><b>${item.label}</b><small>${item.detail}</small></button>`)}</div>${points.length ? html`<div class=${cn('risk-chart-canvas', animationKey && 'is-dashboard-entry', periodAnimationKey && 'is-period-entry')} key=${period}><svg viewBox=${`0 0 ${width} ${height}`} role="img" aria-label=${`${periods.find((item) => item.key === period)?.label || ''}风险触发趋势`}>${[0, .25, .5, .75, 1].map((ratio) => html`<line key=${ratio} class="chart-grid-line" x1=${padding.left} x2=${width - padding.right} y1=${y(ratio * max)} y2=${y(ratio * max)}></line>`)}<path class="chart-area" d=${areaPath}></path><path pathLength="1" class="chart-line chart-line-total" d=${totalPath}></path><path pathLength="1" class="chart-line chart-line-risk" d=${riskPath}></path>${points.map((point, index) => html`<g key=${point.key || point.start_at || `${point.label}-${index}`}><circle class="chart-dot chart-dot-total" cx=${x(index)} cy=${y(point.count)} r="3.5"></circle><circle class="chart-dot chart-dot-risk" cx=${x(index)} cy=${y(point.risk_count)} r="3"></circle>${(index === 0 || index === points.length - 1 || index % labelStep === 0) ? html`<text class="chart-label" x=${x(index)} y=${height - 8} text-anchor="middle">${point.label}</text>` : null}</g>`)}</svg></div>` : html`<${EmptyState} title="暂无趋势数据" description="新的观测事件出现后，这里会显示风险波动。" />`}<div class="chart-summary"><span><i class="chart-key key-total"></i><b>${formatNumber(selected.total)}</b> 总事件</span><span><i class="chart-key key-risk"></i><b>${formatNumber(selected.risk_total)}</b> 风险触发</span><span class="chart-threshold">阈值 ≥ ${selected.risk_threshold || 30}</span><span class="chart-window">${selected.bucket === 'hour' ? '按小时滚动' : '按日滚动'} · ${dashboardTimezone} · 下次刷新 ${selected.next_refresh_at ? formatTime(selected.next_refresh_at, false, dashboardTimezone) : '自动'}</span></div></div>`
 }
 
 function donutArcPath(startPercent, endPercent, outerRadius = 46, innerRadius = 29) {
@@ -626,6 +628,7 @@ function AppShell({ route, onNavigate, onLogout, username, lastUpdated, children
 
 
 function DashboardControlPage({ dashboard, instances, onNavigate, onRefresh, onOpenEvent, animationKey = 0 }) {
+  const [entryAnimationKey] = useState(() => animationKey)
   if (!dashboard) return html`<${LoadingState} label="加载控制台数据…" />`
   const counts = dashboard.counts || {}
   const summary = dashboard.risk_summary || {}
@@ -635,7 +638,7 @@ function DashboardControlPage({ dashboard, instances, onNavigate, onRefresh, onO
   const riskRate = summary.event_rate ?? counts.risk_rate ?? 0
   const geoProvider = geoSourceLabel((dashboard.source_countries || []).map((item) => item.geo_source).find(Boolean))
   return html`
-    <div class="page-stack">
+    <div class=${cn('page-stack', 'dashboard-page', entryAnimationKey && 'is-dashboard-entry')}>
       <${PageHeader}
         title="观测总览"
         description="追踪蜜罐流量、风险触发与每一条可回溯的动作证据。"
@@ -643,24 +646,24 @@ function DashboardControlPage({ dashboard, instances, onNavigate, onRefresh, onO
       />
       <section class="metrics-panel" aria-label="关键指标">
         <div class="metrics-grid">
-          <${MetricCard} label="总观测" value=${Number(counts.events || 0)} animationKey=${animationKey} detail=${`风险触发 ${formatNumber(riskEvents)} · ${riskRate}%`} />
-          <${MetricCard} label="调用尝试" value=${Number(counts.invocations || 0)} animationKey=${animationKey} detail="全部响应均为合成" />
-          <${MetricCard} label="高风险" value=${Number(counts.high_risk || 0)} animationKey=${animationKey} detail=${`唯一 IP ${formatNumber(counts.unique_ips)}`} />
-          <${MetricCard} label="活跃实例" value=${running} suffix=${`/${(instances || []).length || 0}`} animationKey=${animationKey} detail="可从实例页控制" />
+          <${MetricCard} label="总观测" value=${Number(counts.events || 0)} animationKey=${entryAnimationKey} detail=${`风险触发 ${formatNumber(riskEvents)} · ${riskRate}%`} />
+          <${MetricCard} label="调用尝试" value=${Number(counts.invocations || 0)} animationKey=${entryAnimationKey} detail="全部响应均为合成" />
+          <${MetricCard} label="高风险" value=${Number(counts.high_risk || 0)} animationKey=${entryAnimationKey} detail=${`唯一 IP ${formatNumber(counts.unique_ips)}`} />
+          <${MetricCard} label="活跃实例" value=${running} suffix=${`/${(instances || []).length || 0}`} animationKey=${entryAnimationKey} detail="可从实例页控制" />
         </div>
       </section>
       <div class="dashboard-hero-grid">
         <${Panel} className="dashboard-trend-panel" title="风险触发趋势" action=${html`<span class="panel-meta">按小时 / 日滚动</span>`}>
-          <${RiskActivityChart} key=${animationKey} series=${dashboard.risk_activity || {}} animationKey=${animationKey} />
+          <${RiskActivityChart} key=${entryAnimationKey} series=${dashboard.risk_activity || {}} animationKey=${entryAnimationKey} />
         <//>
         <${Panel} className="dashboard-country-panel" title="风险 IP 来源区域" action=${html`<${Badge} tone="blue">${geoProvider}<//>`}>
           <${CountryDistribution} items=${dashboard.source_countries || []} />
         <//>
       </div>
       <div class="dashboard-analytics-grid">
-        <${Panel} title="蜜罐触发占比"><${HoneypotDistribution} key=${animationKey} items=${dashboard.honeypot_distribution || []} animationKey=${animationKey} /><//>
-        <${Panel} title="触发风险占比"><${DistributionDonut} key=${animationKey} items=${dashboard.risk_trigger_distribution || []} centerLabel="风险事件" animationKey=${animationKey} /><div class="panel-footnote">按事件风险分分档；中风险起算阈值为 ≥ ${dashboard.risk_threshold || 30}。</div><//>
-        <${Panel} title="IP 风险分布"><${RiskDonut} key=${animationKey} distribution=${dashboard.risk_distribution || {}} animationKey=${animationKey} /><div class="panel-footnote">IP 维度聚合；风险分只表示观测证据，不等同于真实身份。</div><//>
+        <${Panel} title="蜜罐触发占比"><${HoneypotDistribution} key=${entryAnimationKey} items=${dashboard.honeypot_distribution || []} animationKey=${entryAnimationKey} /><//>
+        <${Panel} title="触发风险占比"><${DistributionDonut} key=${entryAnimationKey} items=${dashboard.risk_trigger_distribution || []} centerLabel="风险事件" animationKey=${entryAnimationKey} /><div class="panel-footnote">按事件风险分分档；中风险起算阈值为 ≥ ${dashboard.risk_threshold || 30}。</div><//>
+        <${Panel} title="IP 风险分布"><${RiskDonut} key=${entryAnimationKey} distribution=${dashboard.risk_distribution || {}} animationKey=${entryAnimationKey} /><div class="panel-footnote">IP 维度聚合；风险分只表示观测证据，不等同于真实身份。</div><//>
       </div>
       <div class="dashboard-grid">
         <${Panel} className="span-7" title="最近观测" action=${html`<button class="text-button" type="button" onClick=${() => onNavigate('observations')}>查看全部 ${icon('arrow', 14)}</button>`} flush=${true}>
@@ -1027,6 +1030,7 @@ const IndicatorsPage = ServerIndicatorsPage
 function App() {
   const [route, setRoute] = useState(routeFromLocation()); const [auth, setAuth] = useState('checking'); const [username, setUsername] = useState(''); const [lastUpdated, setLastUpdated] = useState(null); const [busy, setBusy] = useState(false); const [loadError, setLoadError] = useState(''); const [toast, setToast] = useState(null); const [selectedEvent, setSelectedEvent] = useState(null); const [selectedActor, setSelectedActor] = useState(null); const [data, setData] = useState({ dashboard: null, instances: [], events: [], invocations: [], chains: [], indicators: [], packs: null, policies: null, ipinfo: null, frontendDetection: null, pagination: { observations: null, invocations: null, chains: null, indicators: null } })
   const [dashboardAnimationKey, setDashboardAnimationKey] = useState(0)
+  const [dashboardAnimationConsumedKey, setDashboardAnimationConsumedKey] = useState(0)
   const [, setListParams] = useState(LIST_DEFAULTS)
   const listParamsRef = useRef(LIST_DEFAULTS)
   const routeRequestsRef = useRef(new Map())
@@ -1160,6 +1164,10 @@ function App() {
     initialize(); return () => { active = false; controller.abort() }
   }, [])
   useEffect(() => { if (auth === 'app') loadRoute(route) }, [auth, route])
+  useEffect(() => {
+    if (auth !== 'app' || route !== 'dashboard' || !data.dashboard || dashboardAnimationConsumedKey === dashboardAnimationKey) return
+    setDashboardAnimationConsumedKey(dashboardAnimationKey)
+  }, [auth, route, data.dashboard, dashboardAnimationKey, dashboardAnimationConsumedKey])
   useEffect(() => { if (auth !== 'app') return undefined; const timer = window.setInterval(() => loadRoute(route, true), 30000); return () => window.clearInterval(timer) }, [auth, route, loadRoute])
   useEffect(() => {
     if (auth !== 'app' || route !== 'dashboard') return undefined
@@ -1199,7 +1207,8 @@ function App() {
   if (auth === 'checking') return html`<${AuthLoading} />`
   if (auth === 'setup') return html`<${SetupPage} onSetup=${setup} />`
   if (auth === 'login') return html`<${LoginPage} onLogin=${login} onForgot=${forgotPassword} onRecovery=${recoveryReset} />`
-  const page = route === 'observations' ? html`<${ObservationsPage} events=${data.events} pagination=${data.pagination.observations} onRefresh=${() => loadRoute('observations')} onSearch=${(changes) => loadList('observations', changes)} onPageChange=${(page) => loadList('observations', { page })} onDelete=${(id) => deleteListItem('observations', id)} onOpenEvent=${openEvent} loading=${listLoading?.target === 'observations' && (listLoading.query || data.events.length === 0)} />` : route === 'invocations' ? html`<${InvocationsPage} invocations=${data.invocations} pagination=${data.pagination.invocations} onRefresh=${() => loadRoute('invocations')} onSearch=${(changes) => loadList('invocations', changes)} onPageChange=${(page) => loadList('invocations', { page })} onDelete=${(id) => deleteListItem('invocations', id)} onOpenEvent=${openEvent} loading=${listLoading?.target === 'invocations' && (listLoading.query || data.invocations.length === 0)} />` : route === 'chains' ? html`<${ChainsPage} chains=${data.chains} pagination=${data.pagination.chains} onRefresh=${() => loadRoute('chains')} onSearch=${(changes) => loadList('chains', changes)} onPageChange=${(page) => loadList('chains', { page })} onDelete=${(id) => deleteListItem('chains', id)} onOpenEvent=${openEvent} loading=${listLoading?.target === 'chains' && (listLoading.query || data.chains.length === 0)} />` : route === 'indicators' ? html`<${IndicatorsPage} indicators=${data.indicators} pagination=${data.pagination.indicators} onRefresh=${() => loadRoute('indicators')} onSearch=${(changes) => loadList('indicators', changes)} onPageChange=${(page) => loadList('indicators', { page })} onDelete=${(id) => deleteListItem('indicators', id)} onOpenIndicator=${openActor} loading=${listLoading?.target === 'indicators' && (listLoading.query || data.indicators.length === 0)} />` : route === 'instances' ? html`<${InstancesPage} instances=${data.instances} onRefresh=${() => loadRoute('instances')} onAction=${instanceAction} busy=${busy} />` : route === 'packs' ? html`<${PacksPage} packs=${data.packs} policies=${data.policies} onRefresh=${() => loadRoute('packs')} />` : route === 'settings' ? html`<${SettingsPage} username=${username} ipinfo=${data.ipinfo} frontendDetection=${data.frontendDetection} onRotateEntry=${rotateEntry} onSaveIPInfo=${saveIPInfo} onSaveFrontendDetection=${saveFrontendDetection} />` : html`<${DashboardControlPage} dashboard=${data.dashboard} instances=${data.instances} onNavigate=${onNavigate} onRefresh=${() => loadRoute('dashboard')} onOpenEvent=${openEvent} animationKey=${dashboardAnimationKey} />`
+  const dashboardEntryKey = dashboardAnimationConsumedKey === dashboardAnimationKey ? 0 : dashboardAnimationKey
+  const page = route === 'observations' ? html`<${ObservationsPage} events=${data.events} pagination=${data.pagination.observations} onRefresh=${() => loadRoute('observations')} onSearch=${(changes) => loadList('observations', changes)} onPageChange=${(page) => loadList('observations', { page })} onDelete=${(id) => deleteListItem('observations', id)} onOpenEvent=${openEvent} loading=${listLoading?.target === 'observations' && (listLoading.query || data.events.length === 0)} />` : route === 'invocations' ? html`<${InvocationsPage} invocations=${data.invocations} pagination=${data.pagination.invocations} onRefresh=${() => loadRoute('invocations')} onSearch=${(changes) => loadList('invocations', changes)} onPageChange=${(page) => loadList('invocations', { page })} onDelete=${(id) => deleteListItem('invocations', id)} onOpenEvent=${openEvent} loading=${listLoading?.target === 'invocations' && (listLoading.query || data.invocations.length === 0)} />` : route === 'chains' ? html`<${ChainsPage} chains=${data.chains} pagination=${data.pagination.chains} onRefresh=${() => loadRoute('chains')} onSearch=${(changes) => loadList('chains', changes)} onPageChange=${(page) => loadList('chains', { page })} onDelete=${(id) => deleteListItem('chains', id)} onOpenEvent=${openEvent} loading=${listLoading?.target === 'chains' && (listLoading.query || data.chains.length === 0)} />` : route === 'indicators' ? html`<${IndicatorsPage} indicators=${data.indicators} pagination=${data.pagination.indicators} onRefresh=${() => loadRoute('indicators')} onSearch=${(changes) => loadList('indicators', changes)} onPageChange=${(page) => loadList('indicators', { page })} onDelete=${(id) => deleteListItem('indicators', id)} onOpenIndicator=${openActor} loading=${listLoading?.target === 'indicators' && (listLoading.query || data.indicators.length === 0)} />` : route === 'instances' ? html`<${InstancesPage} instances=${data.instances} onRefresh=${() => loadRoute('instances')} onAction=${instanceAction} busy=${busy} />` : route === 'packs' ? html`<${PacksPage} packs=${data.packs} policies=${data.policies} onRefresh=${() => loadRoute('packs')} />` : route === 'settings' ? html`<${SettingsPage} username=${username} ipinfo=${data.ipinfo} frontendDetection=${data.frontendDetection} onRotateEntry=${rotateEntry} onSaveIPInfo=${saveIPInfo} onSaveFrontendDetection=${saveFrontendDetection} />` : html`<${DashboardControlPage} dashboard=${data.dashboard} instances=${data.instances} onNavigate=${onNavigate} onRefresh=${() => loadRoute('dashboard')} onOpenEvent=${openEvent} animationKey=${dashboardEntryKey} />`
   return html`<${AppShell} route=${route} onNavigate=${onNavigate} onLogout=${logout} username=${username} lastUpdated=${lastUpdated}><div key=${route} class=${cn(loadError && 'has-page-error')}>${loadError ? html`<div class="page-error">${icon('warning', 17)}<span>${loadError}</span><button class="text-button" type="button" onClick=${() => loadRoute(route)}>重试</button></div>` : null}${page}</div><//>${selectedActor ? html`<${ActorDetailModal} actor=${selectedActor} onClose=${closeDetail} onOpenEvent=${openEvent} />` : null}${selectedEvent ? html`<${EventDetails} event=${{ ...selectedEvent, onClose: closeDetail }} />` : null}<${Toast} toast=${toast} onClose=${() => setToast(null)} />`
 }
 
