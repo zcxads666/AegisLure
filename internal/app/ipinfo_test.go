@@ -15,23 +15,23 @@ import (
 	"github.com/zcxads666/AegisLure/internal/model"
 )
 
-func TestIPInfoClientUsesLiteResponseAndCachesPublicLookup(t *testing.T) {
+func TestIPInfoClientUsesAPIResponseAndCachesPublicLookup(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
-		if r.URL.Path != "/lite/8.8.8.8" || r.URL.Query().Get("token") != "test-token" {
+		if r.URL.Path != "/8.8.8.8" || r.URL.Query().Get("token") != "test-token" {
 			t.Fatalf("unexpected IPinfo request: %s?%s", r.URL.Path, r.URL.RawQuery)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"ip":"8.8.8.8","asn":"AS15169","as_name":"Google LLC","as_domain":"google.com","country_code":"US","country":"United States","continent_code":"NA","continent":"North America"}`)
+		_, _ = io.WriteString(w, `{"ip":"8.8.8.8","city":"Mountain View","region":"California","country":"US","country_name":"United States","loc":"38.0088,-122.1175","org":"AS15169 Google LLC","postal":"94043","timezone":"America/Los_Angeles"}`)
 	}))
 	defer server.Close()
 
 	client := newIPInfoClient("test-token")
-	client.endpoint = server.URL + "/lite/"
+	client.endpoint = server.URL + "/"
 	first := client.resolve("8.8.8.8")
 	second := client.resolve("8.8.8.8")
-	if first.Country != "United States" || first.CountryCode != "US" || first.Source != "ipinfo_lite" || first.Status != "ok" {
+	if first.Country != "United States" || first.CountryCode != "US" || first.Source != config.GeoIPProviderIPInfoAPI || first.Status != "ok" {
 		t.Fatalf("unexpected IPinfo result: %#v", first)
 	}
 	if second != first || requests.Load() != 1 {
@@ -55,7 +55,7 @@ func TestIPInfoClientUsesFullAPIResponseForCityAndASN(t *testing.T) {
 		_, _ = io.WriteString(w, `{"ip":"8.8.8.8","city":"Mountain View","region":"California","country":"US","loc":"38.0088,-122.1175","org":"AS15169 Google LLC","postal":"94043","timezone":"America/Los_Angeles"}`)
 	}))
 	defer server.Close()
-	client := newGeoIPClient(&config.Config{DataDir: t.TempDir(), GeoIPProvider: config.GeoIPProviderIPInfoAPI, IPInfoLiteToken: "test-token"})
+	client := newGeoIPClient(&config.Config{DataDir: t.TempDir(), GeoIPProvider: config.GeoIPProviderIPInfoAPI, IPInfoToken: "test-token"})
 	defer client.close()
 	if client.endpoint != defaultIPInfoAPIEndpoint {
 		t.Fatalf("full IPinfo provider endpoint = %q", client.endpoint)
@@ -72,19 +72,11 @@ func TestIPInfoLiveProvidersWithConfiguredToken(t *testing.T) {
 	if token == "" {
 		t.Skip("set AEGISLURE_IPINFO_LIVE_TOKEN to run the live IPinfo API check")
 	}
-	for _, provider := range []string{config.GeoIPProviderIPInfoAPI, config.GeoIPProviderIPInfoLite} {
-		provider := provider
-		t.Run(provider, func(t *testing.T) {
-			client := newGeoIPClient(&config.Config{DataDir: t.TempDir(), GeoIPProvider: provider, IPInfoLiteToken: token})
-			defer client.close()
-			result := client.resolve("8.8.8.8")
-			if result.Status != "ok" || result.Source != provider || result.CountryCode == "" || result.ASN == "" {
-				t.Fatalf("live IPinfo %s result = %#v", provider, result)
-			}
-			if provider == config.GeoIPProviderIPInfoAPI && result.City == "" {
-				t.Fatalf("live full IPinfo API did not return city: %#v", result)
-			}
-		})
+	client := newGeoIPClient(&config.Config{DataDir: t.TempDir(), GeoIPProvider: config.GeoIPProviderIPInfoAPI, IPInfoToken: token})
+	defer client.close()
+	result := client.resolve("8.8.8.8")
+	if result.Status != "ok" || result.Source != config.GeoIPProviderIPInfoAPI || result.CountryCode == "" || result.ASN == "" || result.City == "" {
+		t.Fatalf("live IPinfo API result = %#v", result)
 	}
 }
 
@@ -106,7 +98,7 @@ func TestIPInfoClientFallsBackForMissingTokenAndProviderFailure(t *testing.T) {
 	}))
 	defer server.Close()
 	failing := newIPInfoClient("test-token")
-	failing.endpoint = server.URL + "/lite/"
+	failing.endpoint = server.URL + "/"
 	first := failing.resolve("1.1.1.1")
 	second := failing.resolve("1.1.1.1")
 	if first.Status != "fallback_error" || second.Status != "fallback_error" || requests.Load() != 1 {
@@ -114,37 +106,32 @@ func TestIPInfoClientFallsBackForMissingTokenAndProviderFailure(t *testing.T) {
 	}
 }
 
-func TestIPInfoSwitchClearsCachedUnknownAndQueriesAutomatically(t *testing.T) {
-	cfg := &config.Config{DataDir: t.TempDir(), GeoIPProvider: config.GeoIPProviderMaxMind}
+func TestIPInfoTokenSwitchClearsCachedUnknownAndQueriesAutomatically(t *testing.T) {
+	cfg := &config.Config{DataDir: t.TempDir(), GeoIPProvider: config.GeoIPProviderIPInfoAPI}
 	client := newGeoIPClient(cfg)
 	defer client.close()
 
 	first := client.resolve("8.8.8.8")
-	if first.Status != "fallback_maxmind_unavailable" || first.Country != "未知" {
+	if first.Status != "fallback_unconfigured" || first.Country != "未知" {
 		t.Fatalf("initial unavailable provider result = %#v", first)
-	}
-	client.setProvider(config.GeoIPProviderIPInfoAPI)
-	if client.endpoint != defaultIPInfoAPIEndpoint {
-		t.Fatalf("provider switch did not select full IPinfo endpoint: %q", client.endpoint)
 	}
 
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
-		if r.URL.Path != "/lite/8.8.8.8" || r.URL.Query().Get("token") != "new-token" {
-			t.Errorf("unexpected switched provider request: %s?%s", r.URL.Path, r.URL.RawQuery)
+		if r.URL.Path != "/8.8.8.8" || r.URL.Query().Get("token") != "new-token" {
+			t.Errorf("unexpected switched API request: %s?%s", r.URL.Path, r.URL.RawQuery)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"country_code":"US","country":"United States","continent_code":"NA","continent":"North America"}`)
+		_, _ = io.WriteString(w, `{"country":"US","country_name":"United States","continent_code":"NA","continent":"North America"}`)
 	}))
 	defer server.Close()
-	client.endpoint = server.URL + "/lite/"
-	client.setProvider(config.GeoIPProviderIPInfoLite)
+	client.endpoint = server.URL + "/"
 	client.setToken("new-token")
 
 	second := client.resolve("8.8.8.8")
-	if second.Status != "ok" || second.Country != "United States" || second.Source != config.GeoIPProviderIPInfoLite || requests.Load() != 1 {
-		t.Fatalf("provider switch did not re-query cached unknown: result=%#v requests=%d", second, requests.Load())
+	if second.Status != "ok" || second.Country != "United States" || second.Source != config.GeoIPProviderIPInfoAPI || requests.Load() != 1 {
+		t.Fatalf("token switch did not re-query cached unknown: result=%#v requests=%d", second, requests.Load())
 	}
 }
 
@@ -162,7 +149,7 @@ func TestIPInfoTokenRotationClearsCachedFailure(t *testing.T) {
 	defer server.Close()
 	client := newIPInfoClient("old-token")
 	defer client.close()
-	client.endpoint = server.URL + "/lite/"
+	client.endpoint = server.URL + "/"
 	if result := client.resolve("1.1.1.1"); result.Status != "fallback_error" {
 		t.Fatalf("initial API failure = %#v", result)
 	}
@@ -186,7 +173,7 @@ func TestIPInfoFailureCacheRetriesAfterExpiry(t *testing.T) {
 	defer server.Close()
 	client := newIPInfoClient("test-token")
 	defer client.close()
-	client.endpoint = server.URL + "/lite/"
+	client.endpoint = server.URL + "/"
 	if result := client.resolve("9.9.9.9"); result.Status != "fallback_error" {
 		t.Fatalf("initial failure = %#v", result)
 	}
@@ -211,7 +198,7 @@ func TestIPInfoClientSkipsNonPublicAddresses(t *testing.T) {
 	defer server.Close()
 	client := newIPInfoClient("test-token")
 	defer client.close()
-	client.endpoint = server.URL + "/lite/"
+	client.endpoint = server.URL + "/"
 	for _, rawIP := range []string{"127.0.0.1", "10.0.0.1", "192.168.1.1", "169.254.1.1", "224.0.0.1", "0.0.0.0", "::1", "fc00::1", "fe80::1", "2001:db8::1"} {
 		result := client.resolve(rawIP)
 		if result.Source != "offline" || requests.Load() != 0 {
@@ -224,71 +211,21 @@ func TestDashboardSourceCountryUsesIPInfoAndKeepsFallbackMetadata(t *testing.T) 
 	a, _, st := newTestApp(t, true)
 	defer st.Close()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/lite/8.8.8.8" {
+		if r.URL.Path != "/8.8.8.8" {
 			t.Fatalf("unexpected dashboard lookup path: %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"country_code":"US","country":"United States","continent":"North America"}`)
 	}))
 	defer server.Close()
-	a.ipInfo.setProvider(config.GeoIPProviderIPInfoLite)
-	a.ipInfo.endpoint = server.URL + "/lite/"
+	a.ipInfo.setProvider(config.GeoIPProviderIPInfoAPI)
+	a.ipInfo.endpoint = server.URL + "/"
 	a.ipInfo.setToken("test-token")
 
 	analytics := a.buildDashboardAnalytics(nil, []model.Indicator{{IP: "8.8.8.8", Score: 55}}, time.Now().UTC())
 	countries := analytics["source_countries"].([]map[string]any)
-	if len(countries) != 1 || countries[0]["name"] != "美国" || countries[0]["country_code"] != "US" || countries[0]["geo_source"] != "ipinfo_lite" {
+	if len(countries) != 1 || countries[0]["name"] != "美国" || countries[0]["country_code"] != "US" || countries[0]["geo_source"] != config.GeoIPProviderIPInfoAPI {
 		t.Fatalf("dashboard IPinfo country aggregation = %#v", countries)
-	}
-}
-
-func TestMaxMindClientDefaultsToLocalAndFallsBackWhenDatabasesAreMissing(t *testing.T) {
-	cfg := &config.Config{DataDir: t.TempDir(), GeoIPProvider: config.GeoIPProviderMaxMind}
-	client := newGeoIPClient(cfg)
-	defer client.close()
-	result := client.resolve("8.8.8.8")
-	if result.Source != "offline" || result.Status != "fallback_maxmind_unavailable" || result.Country != "未知" {
-		t.Fatalf("missing MaxMind databases should use fallback: %#v", result)
-	}
-	view := client.settingsView()
-	if view["provider"] != config.GeoIPProviderMaxMind || view["configured"] != false {
-		t.Fatalf("unexpected default MaxMind settings: %#v", view)
-	}
-}
-
-func TestIPInfoMMDBClientReadsOfficialSampleWhenPathsProvided(t *testing.T) {
-	locationPath := os.Getenv("AEGISLURE_IPINFO_LOCATION_MMDB")
-	asnPath := os.Getenv("AEGISLURE_IPINFO_ASN_MMDB")
-	if locationPath == "" || asnPath == "" {
-		t.Skip("set AEGISLURE_IPINFO_LOCATION_MMDB and AEGISLURE_IPINFO_ASN_MMDB to run the official IPinfo MMDB integration check")
-	}
-	client := newGeoIPClient(&config.Config{
-		DataDir:              t.TempDir(),
-		GeoIPProvider:        config.GeoIPProviderIPInfoMMDB,
-		IPInfoLocationDBPath: locationPath,
-		IPInfoASNDBPath:      asnPath,
-	})
-	defer client.close()
-	result := client.resolve("1.0.0.1")
-	if result.Status != "ok" || result.Source != "ipinfo_mmdb" || result.City != "Sydney" || result.CountryCode != "AU" || result.ASN != "AS13335" || result.ASName != "Cloudflare, Inc." {
-		t.Fatalf("IPinfo MMDB sample lookup = %#v", result)
-	}
-	view := client.settingsView()
-	if view["provider"] != config.GeoIPProviderIPInfoMMDB || view["configured"] != true {
-		t.Fatalf("IPinfo MMDB settings = %#v", view)
-	}
-}
-
-func TestIPInfoMMDBClientFallsBackWhenDatabasesAreMissing(t *testing.T) {
-	client := newGeoIPClient(&config.Config{DataDir: t.TempDir(), GeoIPProvider: config.GeoIPProviderIPInfoMMDB})
-	defer client.close()
-	result := client.resolve("8.8.8.8")
-	if result.Source != "offline" || result.Status != "fallback_ipinfo_mmdb_unavailable" || result.Country != "未知" {
-		t.Fatalf("missing IPinfo MMDB fallback = %#v", result)
-	}
-	view := client.settingsView()
-	if view["provider"] != config.GeoIPProviderIPInfoMMDB || view["configured"] != false {
-		t.Fatalf("missing IPinfo MMDB settings = %#v", view)
 	}
 }
 
@@ -298,29 +235,30 @@ func TestAdminIPInfoSwitchRequeriesDashboardAfterUnknown(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
-		if r.URL.Path != "/lite/8.8.8.8" {
+		if r.URL.Path != "/8.8.8.8" {
 			t.Errorf("unexpected dashboard re-query path: %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"country_code":"US","country":"United States","continent_code":"NA","continent":"North America"}`)
 	}))
 	defer server.Close()
-	a.ipInfo.endpoint = server.URL + "/lite/"
-	if result := a.resolveIPInfo("8.8.8.8"); result.Status != "fallback_maxmind_unavailable" {
+	a.ipInfo.endpoint = server.URL + "/"
+	if result := a.resolveIPInfo("8.8.8.8"); result.Status != "fallback_unconfigured" {
 		t.Fatalf("initial dashboard unknown = %#v", result)
 	}
+	a.ipInfo.endpoint = server.URL + "/"
 
 	admin := &inProcessClient{handler: a.adminHandler(), cookies: map[string]string{}}
 	if resp, _ := doJSON(t, admin, http.MethodPost, a.cfg.AdminPath+"admin/api/v1/auth/login", map[string]string{"username": "owner", "password": "correct horse battery staple"}); resp.StatusCode != http.StatusOK {
 		t.Fatalf("admin login status = %d", resp.StatusCode)
 	}
-	resp, body := doRawJSON(t, admin, http.MethodPut, a.cfg.AdminPath+"admin/api/v1/ipinfo-lite", map[string]string{"provider": config.GeoIPProviderIPInfoLite, "token": "new-token"}, nil)
+	resp, body := doRawJSON(t, admin, http.MethodPut, a.cfg.AdminPath+"admin/api/v1/ipinfo", map[string]string{"provider": config.GeoIPProviderIPInfoAPI, "token": "new-token"}, nil)
 	if resp.StatusCode != http.StatusOK || bytes.Contains(body, []byte("new-token")) {
 		t.Fatalf("admin provider switch = %d %s", resp.StatusCode, body)
 	}
 	analytics := a.buildDashboardAnalytics(nil, []model.Indicator{{IP: "8.8.8.8", Score: 55}}, time.Now().UTC())
 	countries := analytics["source_countries"].([]map[string]any)
-	if len(countries) != 1 || countries[0]["name"] != "美国" || countries[0]["geo_source"] != config.GeoIPProviderIPInfoLite || requests.Load() != 1 {
+	if len(countries) != 1 || countries[0]["name"] != "美国" || countries[0]["geo_source"] != config.GeoIPProviderIPInfoAPI || requests.Load() != 2 {
 		t.Fatalf("dashboard did not auto-query after provider switch: countries=%#v requests=%d", countries, requests.Load())
 	}
 }
@@ -334,7 +272,7 @@ func TestAdminIndicatorsRequeriesHistoricalIPsAndReturnsGeoFields(t *testing.T) 
 			t.Fatalf("append historical indicator %s: %v", ip, err)
 		}
 	}
-	if result := a.resolveIPInfo("8.8.8.8"); result.Status != "fallback_maxmind_unavailable" {
+	if result := a.resolveIPInfo("8.8.8.8"); result.Status != "fallback_unconfigured" {
 		t.Fatalf("historical IP should initially be unknown: %#v", result)
 	}
 
@@ -406,18 +344,43 @@ func TestAdminIPInfoSettingsPersistsAndDoesNotReturnRawToken(t *testing.T) {
 	if resp, _ := doJSON(t, admin, http.MethodPost, a.cfg.AdminPath+"admin/api/v1/auth/login", map[string]string{"username": "owner", "password": "correct horse battery staple"}); resp.StatusCode != http.StatusOK {
 		t.Fatalf("admin login status = %d", resp.StatusCode)
 	}
+	const token = "test-ipinfo-secret"
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.URL.Path != "/8.8.8.8" || r.URL.Query().Get("token") != token {
+			t.Errorf("unexpected key verification request: %s?%s", r.URL.Path, r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"country":"US","country_name":"United States","city":"Mountain View"}`)
+	}))
+	defer server.Close()
+	a.ipInfo.endpoint = server.URL + "/"
 
-	resp, body := doRawJSON(t, admin, http.MethodGet, a.cfg.AdminPath+"admin/api/v1/ipinfo-lite", nil, nil)
-	if resp.StatusCode != http.StatusOK || bytes.Contains(body, []byte("test-ipinfo-secret")) {
+	resp, body := doRawJSON(t, admin, http.MethodGet, a.cfg.AdminPath+"admin/api/v1/ipinfo", nil, nil)
+	if resp.StatusCode != http.StatusOK || bytes.Contains(body, []byte(token)) {
 		t.Fatalf("initial IPinfo settings response = %d %s", resp.StatusCode, body)
 	}
 	var initial map[string]any
-	if err := json.Unmarshal(body, &initial); err != nil || initial["provider"] != config.GeoIPProviderMaxMind || initial["configured"] != false || initial["masked_token"] != "" {
+	if err := json.Unmarshal(body, &initial); err != nil || initial["provider"] != config.GeoIPProviderIPInfoAPI || initial["configured"] != false || initial["masked_token"] != "" {
 		t.Fatalf("initial IPinfo settings = %s", body)
 	}
+	available, ok := initial["available_providers"].([]any)
+	if !ok || len(available) != 1 {
+		t.Fatalf("unexpected available providers: %#v", initial["available_providers"])
+	}
+	providerOption, ok := available[0].(map[string]any)
+	if !ok || providerOption["id"] != config.GeoIPProviderIPInfoAPI {
+		t.Fatalf("unexpected available provider option: %#v", available[0])
+	}
+	if _, ok := initial["maxmind"]; ok {
+		t.Fatal("settings should not expose MaxMind configuration")
+	}
+	if _, ok := initial["ipinfo_mmdb"]; ok {
+		t.Fatal("settings should not expose IPinfo MMDB configuration")
+	}
 
-	const token = "test-ipinfo-secret"
-	resp, body = doRawJSON(t, admin, http.MethodPut, a.cfg.AdminPath+"admin/api/v1/ipinfo-lite", map[string]string{"token": token}, nil)
+	resp, body = doRawJSON(t, admin, http.MethodPut, a.cfg.AdminPath+"admin/api/v1/ipinfo", map[string]string{"provider": config.GeoIPProviderIPInfoAPI, "token": token}, nil)
 	if resp.StatusCode != http.StatusOK || bytes.Contains(body, []byte(token)) {
 		t.Fatalf("saved IPinfo settings response = %d %s", resp.StatusCode, body)
 	}
@@ -435,7 +398,7 @@ func TestAdminIPInfoSettingsPersistsAndDoesNotReturnRawToken(t *testing.T) {
 		t.Fatalf("config permissions = %v, err=%v", info.Mode().Perm(), err)
 	}
 
-	resp, body = doRawJSON(t, admin, http.MethodPut, a.cfg.AdminPath+"admin/api/v1/ipinfo-lite", map[string]string{"token": ""}, nil)
+	resp, body = doRawJSON(t, admin, http.MethodPut, a.cfg.AdminPath+"admin/api/v1/ipinfo", map[string]string{"token": ""}, nil)
 	if resp.StatusCode != http.StatusOK || bytes.Contains(body, []byte(token)) {
 		t.Fatalf("cleared IPinfo settings response = %d %s", resp.StatusCode, body)
 	}
@@ -444,12 +407,52 @@ func TestAdminIPInfoSettingsPersistsAndDoesNotReturnRawToken(t *testing.T) {
 		t.Fatalf("cleared IPinfo settings = %s", body)
 	}
 
-	resp, body = doRawJSON(t, admin, http.MethodPut, a.cfg.AdminPath+"admin/api/v1/ipinfo-lite", map[string]string{"provider": config.GeoIPProviderMaxMind}, nil)
-	if resp.StatusCode != http.StatusOK || bytes.Contains(body, []byte(token)) {
-		t.Fatalf("switched MaxMind settings response = %d %s", resp.StatusCode, body)
+	if requests.Load() != 1 {
+		t.Fatalf("saving a key should verify 8.8.8.8 exactly once: requests=%d", requests.Load())
 	}
-	var switched map[string]any
-	if err := json.Unmarshal(body, &switched); err != nil || switched["provider"] != config.GeoIPProviderMaxMind || switched["configured"] != false {
-		t.Fatalf("switched MaxMind settings = %s", body)
+	for _, unsupported := range []string{"unsupported", "maxmind", "ipinfo_lite", "ipinfo_mmdb"} {
+		resp, body = doRawJSON(t, admin, http.MethodPut, a.cfg.AdminPath+"admin/api/v1/ipinfo", map[string]string{"provider": unsupported}, nil)
+		if resp.StatusCode != http.StatusBadRequest || !bytes.Contains(body, []byte("provider must be ipinfo_api")) {
+			t.Fatalf("unsupported provider %q response = %d %s", unsupported, resp.StatusCode, body)
+		}
+	}
+}
+
+func TestAdminIPInfoKeyVerificationRejectsFailureWithoutOverwritingConfig(t *testing.T) {
+	a, cfg, st := newTestApp(t, true)
+	defer st.Close()
+	configPath := os.Getenv("HP_CONFIG")
+	if err := config.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	admin := &inProcessClient{handler: a.adminHandler(), cookies: map[string]string{}}
+	if resp, _ := doJSON(t, admin, http.MethodPost, cfg.AdminPath+"admin/api/v1/auth/login", map[string]string{"username": "owner", "password": "correct horse battery staple"}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin login status = %d", resp.StatusCode)
+	}
+	const token = "bad-ipinfo-secret"
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.URL.Path != "/8.8.8.8" {
+			t.Errorf("unexpected key verification path: %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	a.ipInfo.endpoint = server.URL + "/"
+
+	resp, body := doRawJSON(t, admin, http.MethodPut, cfg.AdminPath+"admin/api/v1/ipinfo", map[string]string{"provider": config.GeoIPProviderIPInfoAPI, "token": token}, nil)
+	if resp.StatusCode != http.StatusBadGateway || !bytes.Contains(body, []byte("8.8.8.8")) || bytes.Contains(body, []byte(token)) {
+		t.Fatalf("failed key verification response = %d %s", resp.StatusCode, body)
+	}
+	if requests.Load() != 1 || a.ipInfo.token != "" {
+		t.Fatalf("failed verification changed runtime state: requests=%d token=%q", requests.Load(), a.ipInfo.token)
+	}
+	configBytes, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(configBytes, []byte(token)) {
+		t.Fatalf("failed key was persisted: %s", configBytes)
 	}
 }

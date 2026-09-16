@@ -47,31 +47,37 @@ type Config struct {
 	VLLMDocsEnabled      bool              `json:"vllm_docs_enabled,omitempty"`
 	VLLMServedNames      []string          `json:"vllm_served_model_names,omitempty"`
 	GeoIPProvider        string            `json:"geoip_provider,omitempty"`
-	IPInfoLiteToken      string            `json:"ipinfo_lite_token,omitempty"`
-	IPInfoLiteTokenFile  string            `json:"-"`
-	MaxMindCityDBPath    string            `json:"-"`
-	MaxMindASNDBPath     string            `json:"-"`
-	IPInfoLocationDBPath string            `json:"-"`
-	IPInfoASNDBPath      string            `json:"-"`
+	IPInfoToken          string            `json:"ipinfo_token,omitempty"`
+	IPInfoTokenFile      string            `json:"-"`
 	ProfilePorts         map[string]int    `json:"profile_ports"`
 	EnabledProfiles      []string          `json:"enabled_profiles"`
 	Scenario             map[string]string `json:"scenario"`
 }
 
 const (
-	GeoIPProviderMaxMind    = "maxmind"
-	GeoIPProviderIPInfoAPI  = "ipinfo_api"
-	GeoIPProviderIPInfoLite = "ipinfo_lite"
-	GeoIPProviderIPInfoMMDB = "ipinfo_mmdb"
-	DefaultMaxMindCityDB    = "GeoLite2-City.mmdb"
-	DefaultMaxMindASNDB     = "GeoLite2-ASN.mmdb"
-	DefaultIPInfoLocationDB = "ipinfo_location.mmdb"
-	DefaultIPInfoASNDB      = "ipinfo_asn.mmdb"
-	defaultSub2APIPort      = 8080
-	defaultLocalAIPort      = 8081
-	legacySub2APIPort       = 8081
-	legacyLocalAIPort       = 8080
+	GeoIPProviderIPInfoAPI = "ipinfo_api"
+	defaultSub2APIPort     = 8080
+	defaultLocalAIPort     = 8081
+	legacySub2APIPort      = 8081
+	legacyLocalAIPort      = 8080
 )
+
+// UnmarshalJSON migrates the old Lite-named credential field while keeping
+// newly saved configuration files on the provider-neutral API name.
+func (c *Config) UnmarshalJSON(data []byte) error {
+	type configAlias Config
+	payload := struct {
+		*configAlias
+		LegacyIPInfoToken string `json:"ipinfo_lite_token"`
+	}{configAlias: (*configAlias)(c)}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return err
+	}
+	if strings.TrimSpace(c.IPInfoToken) == "" {
+		c.IPInfoToken = strings.TrimSpace(payload.LegacyIPInfoToken)
+	}
+	return nil
+}
 
 func Load(path string) (*Config, error) {
 	b, err := os.ReadFile(path)
@@ -99,13 +105,7 @@ func Load(path string) (*Config, error) {
 		c.DatabaseDriver = "sqlite"
 	}
 	if c.GeoIPProvider == "" {
-		// Preserve an explicitly configured IPinfo token from older config
-		// versions; otherwise new and unconfigured instances default locally.
-		if strings.TrimSpace(c.IPInfoLiteToken) != "" {
-			c.GeoIPProvider = GeoIPProviderIPInfoLite
-		} else {
-			c.GeoIPProvider = GeoIPProviderMaxMind
-		}
+		c.GeoIPProvider = GeoIPProviderIPInfoAPI
 	}
 	if c.EventRetentionDays <= 0 {
 		c.EventRetentionDays = 30
@@ -274,7 +274,7 @@ func Init(path, dataDir string) (*Config, error) {
 		InstanceKey:        instanceKey,
 		DataDir:            dataDir,
 		DatabaseDriver:     "sqlite",
-		GeoIPProvider:      GeoIPProviderMaxMind,
+		GeoIPProvider:      GeoIPProviderIPInfoAPI,
 		PublicBind:         "0.0.0.0",
 		AdminBind:          "0.0.0.0",
 		AdminPort:          port,
@@ -307,24 +307,7 @@ func Init(path, dataDir string) (*Config, error) {
 	if value := os.Getenv("HP_GEOIP_PROVIDER"); value != "" {
 		c.GeoIPProvider = strings.TrimSpace(value)
 	}
-	if value := os.Getenv("HP_MAXMIND_CITY_DB"); value != "" {
-		c.MaxMindCityDBPath = strings.TrimSpace(value)
-	}
-	if value := os.Getenv("HP_MAXMIND_ASN_DB"); value != "" {
-		c.MaxMindASNDBPath = strings.TrimSpace(value)
-	}
-	if value := os.Getenv("HP_IPINFO_LOCATION_DB"); value != "" {
-		c.IPInfoLocationDBPath = strings.TrimSpace(value)
-	}
-	if value := os.Getenv("HP_IPINFO_ASN_DB"); value != "" {
-		c.IPInfoASNDBPath = strings.TrimSpace(value)
-	}
-	if value := os.Getenv("HP_IPINFO_LITE_TOKEN"); value != "" {
-		c.IPInfoLiteToken = strings.TrimSpace(value)
-	}
-	if value := os.Getenv("HP_IPINFO_LITE_TOKEN_FILE"); value != "" {
-		c.IPInfoLiteTokenFile = strings.TrimSpace(value)
-	}
+	applyIPInfoTokenEnv(c)
 	if err := NormalizeGeoIP(c); err != nil {
 		return nil, err
 	}
@@ -521,101 +504,51 @@ func applyEnv(c *Config) {
 	if v := os.Getenv("HP_VLLM_SERVED_MODEL_NAMES"); v != "" {
 		c.VLLMServedNames = splitComma(v)
 	}
-	if v := os.Getenv("HP_MAXMIND_CITY_DB"); v != "" {
-		c.MaxMindCityDBPath = strings.TrimSpace(v)
+	applyIPInfoTokenEnv(c)
+}
+
+func applyIPInfoTokenEnv(c *Config) {
+	if c == nil {
+		return
 	}
-	if v := os.Getenv("HP_MAXMIND_ASN_DB"); v != "" {
-		c.MaxMindASNDBPath = strings.TrimSpace(v)
+	if value := os.Getenv("HP_IPINFO_TOKEN"); value != "" {
+		c.IPInfoToken = strings.TrimSpace(value)
+	} else if value := os.Getenv("HP_IPINFO_LITE_TOKEN"); value != "" {
+		// Keep reading the old name so existing deployments can migrate without
+		// losing their credential. New deployments should use HP_IPINFO_TOKEN.
+		c.IPInfoToken = strings.TrimSpace(value)
 	}
-	if v := os.Getenv("HP_IPINFO_LOCATION_DB"); v != "" {
-		c.IPInfoLocationDBPath = strings.TrimSpace(v)
-	}
-	if v := os.Getenv("HP_IPINFO_ASN_DB"); v != "" {
-		c.IPInfoASNDBPath = strings.TrimSpace(v)
-	}
-	if v := os.Getenv("HP_IPINFO_LITE_TOKEN"); v != "" {
-		c.IPInfoLiteToken = strings.TrimSpace(v)
-	}
-	if v := os.Getenv("HP_IPINFO_LITE_TOKEN_FILE"); v != "" {
-		c.IPInfoLiteTokenFile = strings.TrimSpace(v)
+	if value := os.Getenv("HP_IPINFO_TOKEN_FILE"); value != "" {
+		c.IPInfoTokenFile = strings.TrimSpace(value)
+	} else if value := os.Getenv("HP_IPINFO_LITE_TOKEN_FILE"); value != "" {
+		c.IPInfoTokenFile = strings.TrimSpace(value)
 	}
 }
 
-// NormalizeGeoIP validates the selected lookup provider. Database paths are
-// runtime-only values so they never enter config backups or API responses.
+// NormalizeGeoIP restricts IP enrichment to the IPinfo API. Legacy provider
+// names are migrated to the API so an existing config keeps starting without
+// re-enabling any local database lookup.
 func NormalizeGeoIP(c *Config) error {
 	if c == nil {
 		return fmt.Errorf("geoip config is nil")
 	}
 	switch strings.ToLower(strings.TrimSpace(c.GeoIPProvider)) {
-	case "", GeoIPProviderMaxMind:
-		c.GeoIPProvider = GeoIPProviderMaxMind
-	case GeoIPProviderIPInfoAPI, "ipinfo-api", "ipinfo-full":
+	case "", GeoIPProviderIPInfoAPI, "ipinfo-api", "ipinfo-full",
+		"maxmind", "ipinfo_lite", "ipinfo", "ipinfo-lite",
+		"ipinfo_mmdb", "ipinfo-mmdb", "ipinfo-database", "ipinfo-db":
 		c.GeoIPProvider = GeoIPProviderIPInfoAPI
-	case GeoIPProviderIPInfoLite, "ipinfo", "ipinfo-lite":
-		c.GeoIPProvider = GeoIPProviderIPInfoLite
-	case GeoIPProviderIPInfoMMDB, "ipinfo-mmdb", "ipinfo-database", "ipinfo-db":
-		c.GeoIPProvider = GeoIPProviderIPInfoMMDB
 	default:
 		return fmt.Errorf("unsupported geoip provider %q", c.GeoIPProvider)
 	}
-	c.MaxMindCityDBPath = strings.TrimSpace(c.MaxMindCityDBPath)
-	c.MaxMindASNDBPath = strings.TrimSpace(c.MaxMindASNDBPath)
-	c.IPInfoLocationDBPath = strings.TrimSpace(c.IPInfoLocationDBPath)
-	c.IPInfoASNDBPath = strings.TrimSpace(c.IPInfoASNDBPath)
-	c.IPInfoLiteTokenFile = strings.TrimSpace(c.IPInfoLiteTokenFile)
-	if c.IPInfoLiteTokenFile != "" {
-		token, err := readSecretFile(c.IPInfoLiteTokenFile, "IPinfo token")
+	c.IPInfoTokenFile = strings.TrimSpace(c.IPInfoTokenFile)
+	if c.IPInfoTokenFile != "" {
+		token, err := readSecretFile(c.IPInfoTokenFile, "IPinfo token")
 		if err != nil {
 			return err
 		}
-		c.IPInfoLiteToken = token
+		c.IPInfoToken = token
 	}
 	return nil
-}
-
-// GeoIPDatabasePaths returns the configured MaxMind City and ASN database
-// paths. If no explicit path is configured, the databases live below the
-// deployment data directory.
-func (c *Config) GeoIPDatabasePaths() (string, string) {
-	if c == nil {
-		return "", ""
-	}
-	dataDir := strings.TrimSpace(c.DataDir)
-	if dataDir == "" {
-		dataDir = "data"
-	}
-	cityPath := strings.TrimSpace(c.MaxMindCityDBPath)
-	if cityPath == "" {
-		cityPath = filepath.Join(dataDir, "geoip", DefaultMaxMindCityDB)
-	}
-	asnPath := strings.TrimSpace(c.MaxMindASNDBPath)
-	if asnPath == "" {
-		asnPath = filepath.Join(dataDir, "geoip", DefaultMaxMindASNDB)
-	}
-	return cityPath, asnPath
-}
-
-// IPInfoDatabasePaths returns the configured IPinfo location and ASN database
-// paths. If no explicit path is configured, both files live below the
-// deployment data directory's geoip subdirectory.
-func (c *Config) IPInfoDatabasePaths() (string, string) {
-	if c == nil {
-		return "", ""
-	}
-	dataDir := strings.TrimSpace(c.DataDir)
-	if dataDir == "" {
-		dataDir = "data"
-	}
-	locationPath := strings.TrimSpace(c.IPInfoLocationDBPath)
-	if locationPath == "" {
-		locationPath = filepath.Join(dataDir, "geoip", DefaultIPInfoLocationDB)
-	}
-	asnPath := strings.TrimSpace(c.IPInfoASNDBPath)
-	if asnPath == "" {
-		asnPath = filepath.Join(dataDir, "geoip", DefaultIPInfoASNDB)
-	}
-	return locationPath, asnPath
 }
 
 // NormalizeDatabase resolves the runtime-only database settings. Credentials

@@ -27,12 +27,8 @@ func TestLoadAppliesSecureRuntimeDefaultsAndEnvironmentOverrides(t *testing.T) {
 	if len(cfg.AdminHostAllowlist) != 2 || cfg.AdminHostAllowlist[0] != "admin.example" || cfg.AdminHostAllowlist[1] != "127.0.0.1" {
 		t.Fatalf("host allowlist not applied: %#v", cfg.AdminHostAllowlist)
 	}
-	if cfg.GeoIPProvider != GeoIPProviderMaxMind {
-		t.Fatalf("GeoIP provider default = %q, want %q", cfg.GeoIPProvider, GeoIPProviderMaxMind)
-	}
-	cityPath, asnPath := cfg.GeoIPDatabasePaths()
-	if cityPath != filepath.Join(filepath.Dir(path), "geoip", DefaultMaxMindCityDB) || asnPath != filepath.Join(filepath.Dir(path), "geoip", DefaultMaxMindASNDB) {
-		t.Fatalf("unexpected default GeoIP database paths: %q %q", cityPath, asnPath)
+	if cfg.GeoIPProvider != GeoIPProviderIPInfoAPI {
+		t.Fatalf("GeoIP provider default = %q, want %q", cfg.GeoIPProvider, GeoIPProviderIPInfoAPI)
 	}
 }
 
@@ -92,60 +88,50 @@ func TestNormalizeEnabledProfilesKeepsExplicitLocalAIWhenSub2APIIsAbsent(t *test
 	}
 }
 
-func TestLoadNormalizesGeoIPProviderAndRuntimeDatabasePaths(t *testing.T) {
+func TestLoadNormalizesGeoIPProviderAndReadsAPIKeyEnvironment(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(`{"instance_id":"instance","instance_key":"key"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("HP_GEOIP_PROVIDER", "ipinfo-lite")
-	t.Setenv("HP_MAXMIND_CITY_DB", "/srv/geoip/city.mmdb")
-	t.Setenv("HP_MAXMIND_ASN_DB", "/srv/geoip/asn.mmdb")
+	t.Setenv("HP_GEOIP_PROVIDER", "ipinfo-api")
+	t.Setenv("HP_IPINFO_TOKEN", "test-token")
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.GeoIPProvider != GeoIPProviderIPInfoLite {
+	if cfg.GeoIPProvider != GeoIPProviderIPInfoAPI || cfg.IPInfoToken != "test-token" {
 		t.Fatalf("GeoIP provider normalization = %q", cfg.GeoIPProvider)
-	}
-	cityPath, asnPath := cfg.GeoIPDatabasePaths()
-	if cityPath != "/srv/geoip/city.mmdb" || asnPath != "/srv/geoip/asn.mmdb" {
-		t.Fatalf("runtime database paths = %q %q", cityPath, asnPath)
 	}
 	encoded, err := json.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(encoded), "city.mmdb") || strings.Contains(string(encoded), "asn.mmdb") {
-		t.Fatalf("runtime database paths leaked into config JSON: %s", encoded)
+	if strings.Contains(string(encoded), "mmdb") || strings.Contains(string(encoded), "maxmind") {
+		t.Fatalf("legacy local database settings leaked into config JSON: %s", encoded)
+	}
+	if !strings.Contains(string(encoded), `"ipinfo_token":"test-token"`) || strings.Contains(string(encoded), "ipinfo_lite_token") {
+		t.Fatalf("IPinfo token was not saved under the API field: %s", encoded)
 	}
 }
 
-func TestLoadSupportsIPInfoMMDBPathsAndTokenEnvironment(t *testing.T) {
+func TestLoadMigratesLegacyGeoIPProviderToIPInfoAPI(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(`{"instance_id":"instance","instance_key":"key"}`), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"instance_id":"instance","instance_key":"key","geoip_provider":"ipinfo_mmdb","ipinfo_lite_token":"test-token"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("HP_GEOIP_PROVIDER", "ipinfo-database")
-	t.Setenv("HP_IPINFO_LOCATION_DB", "/srv/geoip/ipinfo_location.mmdb")
-	t.Setenv("HP_IPINFO_ASN_DB", "/srv/geoip/ipinfo_asn.mmdb")
-	t.Setenv("HP_IPINFO_LITE_TOKEN", "test-token")
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.GeoIPProvider != GeoIPProviderIPInfoMMDB || cfg.IPInfoLiteToken != "test-token" {
+	if cfg.GeoIPProvider != GeoIPProviderIPInfoAPI || cfg.IPInfoToken != "test-token" {
 		t.Fatalf("IPinfo settings normalization = %#v", cfg)
-	}
-	locationPath, asnPath := cfg.IPInfoDatabasePaths()
-	if locationPath != "/srv/geoip/ipinfo_location.mmdb" || asnPath != "/srv/geoip/ipinfo_asn.mmdb" {
-		t.Fatalf("IPinfo database paths = %q %q", locationPath, asnPath)
 	}
 	encoded, err := json.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(encoded), "ipinfo_location.mmdb") || strings.Contains(string(encoded), "ipinfo_asn.mmdb") {
-		t.Fatalf("IPinfo runtime database paths leaked into config JSON: %s", encoded)
+	if !strings.Contains(string(encoded), `"ipinfo_token":"test-token"`) || strings.Contains(string(encoded), "ipinfo_lite_token") {
+		t.Fatalf("legacy IPinfo token field was not migrated on save: %s", encoded)
 	}
 }
 
@@ -159,12 +145,12 @@ func TestLoadReadsIPInfoTokenFromProtectedRuntimeFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("HP_GEOIP_PROVIDER", "ipinfo-api")
-	t.Setenv("HP_IPINFO_LITE_TOKEN_FILE", tokenPath)
+	t.Setenv("HP_IPINFO_TOKEN_FILE", tokenPath)
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.GeoIPProvider != GeoIPProviderIPInfoAPI || cfg.IPInfoLiteToken != "test-token" || cfg.IPInfoLiteTokenFile != tokenPath {
+	if cfg.GeoIPProvider != GeoIPProviderIPInfoAPI || cfg.IPInfoToken != "test-token" || cfg.IPInfoTokenFile != tokenPath {
 		t.Fatalf("IPinfo token file settings = %#v", cfg)
 	}
 	encoded, err := json.Marshal(cfg)

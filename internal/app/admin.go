@@ -375,7 +375,7 @@ func (a *App) handleAdminAPI(w http.ResponseWriter, r *http.Request, path string
 	switch {
 	case path == "dashboard":
 		a.adminDashboard(w, r)
-	case (path == "ipinfo-lite" || path == "geoip") && (r.Method == http.MethodGet || r.Method == http.MethodPut):
+	case (path == "ipinfo" || path == "ipinfo-lite" || path == "geoip") && (r.Method == http.MethodGet || r.Method == http.MethodPut):
 		a.adminIPInfoSettings(w, r)
 	case path == "frontend-detection" && (r.Method == http.MethodGet || r.Method == http.MethodPut || r.Method == http.MethodPatch):
 		a.adminFrontendDetection(w, r)

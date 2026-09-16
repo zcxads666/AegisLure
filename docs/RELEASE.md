@@ -64,7 +64,7 @@ replace packet capture or an isolated adversarial test.
   cookie attributes and setup/recovery races from an external test host.
 - Capture host/container traffic with all non-provider egress blocked. Verify
   that public profile requests cannot reach a canary, metadata service,
-  private address, model registry, shell or GPU. If IPinfo API is selected,
+  private address, model registry, shell or GPU. When an IPinfo API key is configured,
   allow and verify only its documented HTTPS endpoint; if OAuth is enabled,
   verify that only the fixed official endpoints are contacted.
 - Exercise restart, host reboot, retention pruning, backup restore on a clean

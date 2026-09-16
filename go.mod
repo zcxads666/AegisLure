@@ -4,8 +4,6 @@ go 1.25.0
 
 require (
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/oschwald/geoip2-golang/v2 v2.3.0
-	github.com/oschwald/maxminddb-golang/v2 v2.5.0
 	golang.org/x/crypto v0.31.0
 )
 

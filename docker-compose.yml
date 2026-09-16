@@ -36,12 +36,8 @@ services:
       HP_DB_PASSWORD_FILE: ${HP_DB_PASSWORD_FILE:-}
       HP_DB_SSLMODE: ${HP_DB_SSLMODE:-disable}
       HP_GEOIP_PROVIDER: ${HP_GEOIP_PROVIDER:-}
-      HP_MAXMIND_CITY_DB: ${HP_MAXMIND_CITY_DB:-/var/lib/aegislure/data/geoip/GeoLite2-City.mmdb}
-      HP_MAXMIND_ASN_DB: ${HP_MAXMIND_ASN_DB:-/var/lib/aegislure/data/geoip/GeoLite2-ASN.mmdb}
-      HP_IPINFO_LOCATION_DB: ${HP_IPINFO_LOCATION_DB:-/var/lib/aegislure/data/geoip/ipinfo_location.mmdb}
-      HP_IPINFO_ASN_DB: ${HP_IPINFO_ASN_DB:-/var/lib/aegislure/data/geoip/ipinfo_asn.mmdb}
-      HP_IPINFO_LITE_TOKEN: ${HP_IPINFO_LITE_TOKEN:-}
-      HP_IPINFO_LITE_TOKEN_FILE: ${HP_IPINFO_LITE_TOKEN_FILE:-}
+      HP_IPINFO_TOKEN: ${HP_IPINFO_TOKEN:-}
+      HP_IPINFO_TOKEN_FILE: ${HP_IPINFO_TOKEN_FILE:-}
       # Docker deployments expose the default public profiles. LocalAI and
       # Sub2API are mutually exclusive; Sub2API is selected by default.
       # Set HP_PROFILES explicitly to run another selected subset.
@@ -93,7 +89,7 @@ services:
       # Docker Desktop does not create a host-side port publisher when the
       # container's default network is `internal: true`. Keep the bait and
       # admin networks isolated, but put the published listeners on this
-      # dedicated edge bridge. GeoIP API providers such as IPinfo require
+      # dedicated edge bridge. The IPinfo API requires
       # outbound HTTPS, so only this published edge network has egress.
       - edge_net
       - bait_net

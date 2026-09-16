@@ -49,57 +49,28 @@ IP review actions are local, manual decisions with a 60-second to 7-day TTL. `st
 
 ## IP geolocation provider
 
-The default provider is local MaxMind GeoLite2 City + ASN. Put the two
-databases in the deployment data directory's `geoip` subdirectory:
+The only provider is IPinfo API (City + ASN). Only public IPs reach the API;
+loopback, private, link-local, multicast, unspecified and documentation ranges
+are classified locally and are never sent to IPinfo. A missing key, API failure
+or missing location data falls back to `未知`.
 
-```text
-runtime/data/geoip/GeoLite2-City.mmdb
-runtime/data/geoip/GeoLite2-ASN.mmdb
-```
+The Settings page saves the IPinfo API key. Before a non-empty key is persisted,
+the service requests `8.8.8.8` through the API. If that verification fails, the
+endpoint returns an error and keeps the previous provider/key unchanged. The
+backend never returns the raw key; `GET /admin/api/v1/ipinfo` returns the
+provider, masked key and bounded timeout/cache metadata. The legacy
+`/admin/api/v1/ipinfo-lite` and `/admin/api/v1/geoip` paths remain aliases for
+existing clients. The endpoint accepts `{"provider":"ipinfo_api","token":"..."}`
+or the legacy token-only form. Set `HP_GEOIP_PROVIDER=ipinfo_api` to choose the
+startup provider; an environment value takes precedence over the saved setting.
+`HP_IPINFO_TOKEN` can provide the key through the container environment; for a
+deployment secret, use `HP_IPINFO_TOKEN_FILE=/var/lib/aegislure/secrets/ipinfo_token`
+instead.
 
-The container equivalent is
-`/var/lib/aegislure/data/geoip/GeoLite2-City.mmdb` and
-`/var/lib/aegislure/data/geoip/GeoLite2-ASN.mmdb`. Override either path with
-`HP_MAXMIND_CITY_DB` or `HP_MAXMIND_ASN_DB`. Database files are opened once and
-reused for concurrent lookups; replacing them requires a service restart.
-Only public IPs reach the selected provider. Loopback, private, link-local,
-multicast, unspecified and documentation ranges are classified locally. A
-missing database, missing record or lookup error falls back to the deterministic
-local label or `未知`.
-
-The project also supports IPinfo's offline databases, which are MMDB files but
-do not use MaxMind's nested record schema. Put them in the same `geoip`
-subdirectory:
-
-```text
-runtime/data/geoip/ipinfo_location.mmdb
-runtime/data/geoip/ipinfo_asn.mmdb
-```
-
-Choose `ipinfo_mmdb` as the provider. The service uses a generic MMDB reader
-and maps IPinfo's flat `city`, `region`, `country_code`, `continent_code`,
-`latitude`, `longitude`, `timezone`, `asn`, `name` and `domain` fields. Override
-the paths with `HP_IPINFO_LOCATION_DB` and `HP_IPINFO_ASN_DB`. IPinfo database
-files are opened once and replacing them requires a service restart.
-
-The Settings page can instead switch the provider to IPinfo API (City + ASN)
-or IPinfo Lite API (country + ASN) and save its token. The backend never
-returns the raw token;
-`GET /admin/api/v1/ipinfo-lite` returns the selected provider, both database
-availability blocks, the masked token and bounded timeout/cache metadata. The
-same endpoint accepts `{"provider":"maxmind"|"ipinfo_mmdb"|"ipinfo_api"|"ipinfo_lite","token":"..."}`
-or the legacy token-only form. Set `HP_GEOIP_PROVIDER=maxmind|ipinfo_mmdb|ipinfo_api|ipinfo_lite`
-to choose the startup provider; an environment value takes precedence over the
-saved setting. `HP_IPINFO_LITE_TOKEN` can provide the token through the
-container environment; for a deployment secret, use
-`HP_IPINFO_LITE_TOKEN_FILE=/var/lib/aegislure/secrets/ipinfo_token` instead.
-
-When the provider or token changes, cached successful, partial and unknown
-results are invalidated. The next dashboard refresh/query automatically uses
-the new provider without a process restart. A temporary API failure is cached
-for five minutes to avoid request storms, then retried automatically; successful
-results are cached for 24 hours. Adding or replacing MMDB files still requires
-a service restart because readers are opened at process startup.
+When the key changes, cached successful and unknown results are invalidated. The
+next dashboard refresh/query automatically uses the new key without a process
+restart. A temporary API failure is cached for five minutes to avoid request
+storms, then retried automatically; successful results are cached for 24 hours.
 
 The IP intelligence list (`GET /admin/api/v1/indicators`) also resolves every
 returned historical IP through the current provider and includes country,
@@ -116,11 +87,8 @@ The checked-in Compose file enables this setting, and `install.sh` plus the
 `hpctl` start/restart/upgrade/rollback paths reject a deployment whose
 rendered `edge_net` disables it.
 
-Download GeoLite2 through an authorized MaxMind account and follow its license
-terms. See the [MaxMind GeoLite2 download documentation](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data/),
-the [GeoIP2 Go reader documentation](https://github.com/oschwald/geoip2-golang),
-the [IPinfo database download documentation](https://ipinfo.io/developers/database-download),
-and the [IPinfo Lite API documentation](https://ipinfo.io/developers/lite-api).
+See the [IPinfo IP Geolocation API documentation](https://ipinfo.io/developers/ip-to-geolocation-database)
+for provider details.
 
 ## Optional OAuth broker
 
@@ -168,7 +136,7 @@ Compose, a file under `runtime/secrets` is visible inside the container under
 ## Incident response
 
 If a public decoy handler appears to make an outbound connection outside the
-operator-selected IPinfo or OAuth provider endpoints, stop the public
+configured IPinfo API or OAuth provider endpoints, stop the public
 listener, preserve only the bounded event hashes and process/container
 metadata, block egress at the host firewall, and inspect the exact image
 digest and config pack revision. Do not reproduce the payload on a production

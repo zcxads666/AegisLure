@@ -2,9 +2,9 @@
 
 AegisLure is intended for an isolated honeynet, never a production VPC. The
 public decoy handlers do not fetch user-supplied URLs or make general outbound
-requests. When the operator selects an IPinfo API provider, the Compose
-`edge_net` permits the built-in provider client to make HTTPS lookups; restrict
-that network's destinations with the host firewall where possible. The
+requests. When an IPinfo API key is configured, the Compose `edge_net` permits
+the built-in provider client to make HTTPS lookups; restrict that network's
+destinations with the host firewall where possible. The
 process must not be given Docker socket, host networking, host PID, GPU, cloud
 credentials or production routes.
 
@@ -17,8 +17,8 @@ Do not send live exploit payloads or credentials in an issue. Report a suspected
 The project deliberately does not execute attacker-controlled code, shell,
 templates, SQL, WASM, pickle/torch loading, FFmpeg, archive extraction, model
 loading, DNS resolution or attacker-controlled remote URL fetching. The
-application egress exceptions are limited to the operator-selected IPinfo
-provider lookup and the optional OAuth broker's fixed official endpoints. A
+application egress exceptions are limited to the configured IPinfo API lookup
+and the optional OAuth broker's fixed official endpoints. A
 failure of this boundary is a release-blocking security bug.
 
 ## Deployment requirements

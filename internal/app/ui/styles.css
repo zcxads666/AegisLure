@@ -2123,13 +2123,6 @@ pre,
   font-size: var(--text-sm);
 }
 
-.geoip-status-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.geoip-status-grid > div,
 .ipinfo-facts,
 .account-preview {
   display: grid;
@@ -2140,25 +2133,11 @@ pre,
   background: rgba(12, 25, 41, .58);
 }
 
-.geoip-status-grid span,
 .ipinfo-facts span {
   color: var(--text-3);
   font-size: var(--text-xs);
 }
 
-.geoip-status-grid b {
-  font-size: var(--text-sm);
-}
-
-.geoip-status-grid b.is-ready {
-  color: var(--success);
-}
-
-.geoip-status-grid b.is-missing {
-  color: var(--warning);
-}
-
-.geoip-status-grid small,
 .ipinfo-facts code,
 .ipinfo-facts b {
   overflow-wrap: anywhere;
@@ -3269,8 +3248,7 @@ pre,
   }
 
   .detail-grid,
-  .insight-ip-grid,
-  .geoip-status-grid {
+  .insight-ip-grid {
     grid-template-columns: 1fr;
   }
 }

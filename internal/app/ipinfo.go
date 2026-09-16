@@ -7,33 +7,26 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/netip"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	geoip2 "github.com/oschwald/geoip2-golang/v2"
-	"github.com/oschwald/maxminddb-golang/v2"
 	"github.com/zcxads666/AegisLure/internal/config"
 )
 
 const (
-	defaultIPInfoLiteEndpoint = "https://api.ipinfo.io/lite/"
-	defaultIPInfoAPIEndpoint  = "https://ipinfo.io/"
-	maxMindSource             = "maxmind_geolite2"
-	ipInfoMMDBSource          = "ipinfo_mmdb"
-	ipInfoLookupTimeout       = 2 * time.Second
-	ipInfoDashboardTimeout    = 4 * time.Second
-	ipInfoCacheTTL            = 24 * time.Hour
-	ipInfoFailureCacheTTL     = 5 * time.Minute
-	ipInfoMaxTokenLength      = 256
-	ipInfoMaxDashboardIPs     = 128
-	ipInfoRiskListTimeout     = 8 * time.Second
-	ipInfoWorkers             = 6
+	defaultIPInfoAPIEndpoint = "https://ipinfo.io/"
+	ipInfoProbeIP            = "8.8.8.8"
+	ipInfoLookupTimeout      = 2 * time.Second
+	ipInfoDashboardTimeout   = 4 * time.Second
+	ipInfoCacheTTL           = 24 * time.Hour
+	ipInfoFailureCacheTTL    = 5 * time.Minute
+	ipInfoMaxTokenLength     = 256
+	ipInfoMaxDashboardIPs    = 128
+	ipInfoRiskListTimeout    = 8 * time.Second
+	ipInfoWorkers            = 6
 )
 
 type ipInfoResult struct {
@@ -56,7 +49,7 @@ type ipInfoResult struct {
 	Status        string  `json:"status"`
 }
 
-type ipInfoLiteResponse struct {
+type ipInfoAPIResponse struct {
 	IP            string  `json:"ip"`
 	City          string  `json:"city"`
 	Region        string  `json:"region"`
@@ -85,64 +78,39 @@ type ipInfoCacheEntry struct {
 }
 
 type ipInfoClient struct {
-	mu                   sync.Mutex
-	provider             string
-	token                string
-	generation           uint64
-	cache                map[string]ipInfoCacheEntry
-	httpClient           *http.Client
-	endpoint             string
-	cityDB               *geoip2.Reader
-	asnDB                *geoip2.Reader
-	cityDBPath           string
-	asnDBPath            string
-	ipInfoLocationDB     *maxminddb.Reader
-	ipInfoASNDB          *maxminddb.Reader
-	ipInfoLocationDBPath string
-	ipInfoASNDBPath      string
+	mu         sync.Mutex
+	provider   string
+	token      string
+	generation uint64
+	cache      map[string]ipInfoCacheEntry
+	httpClient *http.Client
+	endpoint   string
 }
 
 // newIPInfoClient is kept for tests and compatibility with the previous
-// client constructor. Production App instances use newGeoIPClient so the
-// default provider is local MaxMind GeoLite2.
+// client constructor. IPinfo API is the only supported provider.
 func newIPInfoClient(token string) *ipInfoClient {
 	return newGeoIPClient(&config.Config{
-		GeoIPProvider:   config.GeoIPProviderIPInfoLite,
-		IPInfoLiteToken: token,
+		GeoIPProvider: config.GeoIPProviderIPInfoAPI,
+		IPInfoToken:   token,
 	})
 }
 
 func newGeoIPClient(cfg *config.Config) *ipInfoClient {
-	provider := config.GeoIPProviderMaxMind
+	provider := config.GeoIPProviderIPInfoAPI
 	token := ""
-	cityPath, asnPath := "", ""
-	ipInfoLocationPath, ipInfoASNPath := "", ""
 	if cfg != nil {
 		if normalized, ok := normalizeGeoIPProvider(cfg.GeoIPProvider); ok {
 			provider = normalized
 		}
-		token = strings.TrimSpace(cfg.IPInfoLiteToken)
-		cityPath, asnPath = cfg.GeoIPDatabasePaths()
-		ipInfoLocationPath, ipInfoASNPath = cfg.IPInfoDatabasePaths()
+		token = strings.TrimSpace(cfg.IPInfoToken)
 	}
-	cityDB := openMaxMindReader(cityPath)
-	asnDB := openMaxMindReader(asnPath)
-	ipInfoLocationDB := openIPInfoReader(ipInfoLocationPath)
-	ipInfoASNDB := openIPInfoReader(ipInfoASNPath)
 	return &ipInfoClient{
-		provider:             provider,
-		token:                token,
-		cache:                make(map[string]ipInfoCacheEntry),
-		httpClient:           newIPInfoHTTPClient(),
-		endpoint:             defaultIPInfoEndpoint(provider),
-		cityDB:               cityDB,
-		asnDB:                asnDB,
-		cityDBPath:           cityPath,
-		asnDBPath:            asnPath,
-		ipInfoLocationDB:     ipInfoLocationDB,
-		ipInfoASNDB:          ipInfoASNDB,
-		ipInfoLocationDBPath: ipInfoLocationPath,
-		ipInfoASNDBPath:      ipInfoASNPath,
+		provider:   provider,
+		token:      token,
+		cache:      make(map[string]ipInfoCacheEntry),
+		httpClient: newIPInfoHTTPClient(),
+		endpoint:   defaultIPInfoAPIEndpoint,
 	}
 }
 
@@ -157,62 +125,11 @@ func newIPInfoHTTPClient() *http.Client {
 
 func normalizeGeoIPProvider(value string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", config.GeoIPProviderMaxMind:
-		return config.GeoIPProviderMaxMind, true
-	case config.GeoIPProviderIPInfoAPI, "ipinfo-api", "ipinfo-full":
+	case "", config.GeoIPProviderIPInfoAPI, "ipinfo-api", "ipinfo-full":
 		return config.GeoIPProviderIPInfoAPI, true
-	case config.GeoIPProviderIPInfoLite, "ipinfo", "ipinfo-lite":
-		return config.GeoIPProviderIPInfoLite, true
-	case config.GeoIPProviderIPInfoMMDB, "ipinfo-mmdb", "ipinfo-database", "ipinfo-db":
-		return config.GeoIPProviderIPInfoMMDB, true
 	default:
 		return "", false
 	}
-}
-
-func openMaxMindReader(path string) *geoip2.Reader {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return nil
-	}
-	info, err := os.Stat(path)
-	if err != nil || info.IsDir() || info.Size() == 0 || info.Size() > 1<<30 {
-		return nil
-	}
-	reader, err := geoip2.Open(path)
-	if err != nil {
-		if reader != nil {
-			_ = reader.Close()
-		}
-		return nil
-	}
-	return reader
-}
-
-// openIPInfoReader uses the generic MMDB reader because IPinfo databases use
-// a flat record schema and an IPinfo-specific database_type. geoip2.Reader
-// intentionally rejects that metadata before a lookup can happen.
-func openIPInfoReader(path string) *maxminddb.Reader {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return nil
-	}
-	info, err := os.Stat(path)
-	if err != nil || info.IsDir() || info.Size() == 0 || info.Size() > 4<<30 {
-		return nil
-	}
-	reader, err := maxminddb.Open(path)
-	if err != nil {
-		if reader != nil {
-			_ = reader.Close()
-		}
-		return nil
-	}
-	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(reader.Metadata.DatabaseType)), "ipinfo") {
-		_ = reader.Close()
-		return nil
-	}
-	return reader
 }
 
 func (c *ipInfoClient) setProvider(provider string) {
@@ -229,18 +146,11 @@ func (c *ipInfoClient) setProvider(provider string) {
 		return
 	}
 	c.provider = normalized
-	if c.endpoint == "" || c.endpoint == defaultIPInfoLiteEndpoint || c.endpoint == defaultIPInfoAPIEndpoint {
-		c.endpoint = defaultIPInfoEndpoint(normalized)
+	if c.endpoint == "" || c.endpoint == defaultIPInfoAPIEndpoint {
+		c.endpoint = defaultIPInfoAPIEndpoint
 	}
 	c.generation++
 	c.cache = make(map[string]ipInfoCacheEntry)
-}
-
-func defaultIPInfoEndpoint(provider string) string {
-	if provider == config.GeoIPProviderIPInfoAPI {
-		return defaultIPInfoAPIEndpoint
-	}
-	return defaultIPInfoLiteEndpoint
 }
 
 func (c *ipInfoClient) setToken(token string) {
@@ -261,35 +171,17 @@ func (c *ipInfoClient) setToken(token string) {
 }
 
 func (c *ipInfoClient) settingsView() map[string]any {
-	provider := config.GeoIPProviderMaxMind
+	provider := config.GeoIPProviderIPInfoAPI
 	token := ""
-	endpoint := defaultIPInfoLiteEndpoint
-	cityDBAvailable := false
-	asnDBAvailable := false
-	cityDBPath, asnDBPath := "", ""
-	ipInfoLocationAvailable := false
-	ipInfoASNAvailable := false
-	ipInfoLocationPath, ipInfoASNPath := "", ""
+	endpoint := defaultIPInfoAPIEndpoint
 	if c != nil {
 		c.mu.Lock()
 		provider = c.provider
 		token = c.token
 		endpoint = c.endpoint
-		cityDBAvailable = c.cityDB != nil
-		asnDBAvailable = c.asnDB != nil
-		cityDBPath = c.cityDBPath
-		asnDBPath = c.asnDBPath
-		ipInfoLocationAvailable = c.ipInfoLocationDB != nil
-		ipInfoASNAvailable = c.ipInfoASNDB != nil
-		ipInfoLocationPath = c.ipInfoLocationDBPath
-		ipInfoASNPath = c.ipInfoASNDBPath
 		c.mu.Unlock()
 	}
-	maxMindReady := cityDBAvailable && asnDBAvailable
-	ipInfoMMDBReady := ipInfoLocationAvailable && ipInfoASNAvailable
-	configured := (provider == config.GeoIPProviderMaxMind && maxMindReady) ||
-		((provider == config.GeoIPProviderIPInfoAPI || provider == config.GeoIPProviderIPInfoLite) && token != "") ||
-		(provider == config.GeoIPProviderIPInfoMMDB && ipInfoMMDBReady)
+	configured := provider == config.GeoIPProviderIPInfoAPI && token != ""
 	return map[string]any{
 		"provider":                  provider,
 		"provider_label":            geoIPProviderLabel(provider),
@@ -303,56 +195,19 @@ func (c *ipInfoClient) settingsView() map[string]any {
 		"cache_ttl_seconds":         int(ipInfoCacheTTL / time.Second),
 		"failure_cache_ttl_seconds": int(ipInfoFailureCacheTTL / time.Second),
 		"dashboard_lookup_limit":    ipInfoMaxDashboardIPs,
-		"fallback":                  "本地/保留地址离线识别；当前查询不可用时显示未知",
-		"maxmind": map[string]any{
-			"ready":          maxMindReady,
-			"city_available": cityDBAvailable,
-			"asn_available":  asnDBAvailable,
-			"city_file":      databaseFileName(cityDBPath),
-			"asn_file":       databaseFileName(asnDBPath),
-		},
-		"ipinfo_mmdb": map[string]any{
-			"ready":              ipInfoMMDBReady,
-			"location_available": ipInfoLocationAvailable,
-			"asn_available":      ipInfoASNAvailable,
-			"location_file":      databaseFileName(ipInfoLocationPath),
-			"asn_file":           databaseFileName(ipInfoASNPath),
-		},
+		"fallback":                  "本地/保留地址本地识别；公网 API 查询不可用时显示未知",
 	}
 }
 
 func geoIPProviderLabel(provider string) string {
-	if provider == config.GeoIPProviderIPInfoAPI {
-		return "IPinfo API（City + ASN）"
-	}
-	if provider == config.GeoIPProviderIPInfoLite {
-		return "IPinfo Lite API"
-	}
-	if provider == config.GeoIPProviderIPInfoMMDB {
-		return "IPinfo Location + ASN MMDB"
-	}
-	return "MaxMind GeoLite2 City + ASN"
+	_ = provider
+	return "IPinfo API（City + ASN）"
 }
 
 func geoIPProviderOptions() []map[string]any {
 	return []map[string]any{
-		{"id": config.GeoIPProviderMaxMind, "label": geoIPProviderLabel(config.GeoIPProviderMaxMind)},
 		{"id": config.GeoIPProviderIPInfoAPI, "label": geoIPProviderLabel(config.GeoIPProviderIPInfoAPI)},
-		{"id": config.GeoIPProviderIPInfoLite, "label": geoIPProviderLabel(config.GeoIPProviderIPInfoLite)},
-		{"id": config.GeoIPProviderIPInfoMMDB, "label": geoIPProviderLabel(config.GeoIPProviderIPInfoMMDB)},
 	}
-}
-
-func databaseFileName(path string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return ""
-	}
-	name := filepath.Base(path)
-	if name == "." || name == string(filepath.Separator) {
-		return ""
-	}
-	return name
 }
 
 func maskIPInfoToken(token string) string {
@@ -391,172 +246,12 @@ func (c *ipInfoClient) resolveContext(ctx context.Context, rawIP string) ipInfoR
 		c.mu.Unlock()
 		return cached.Result
 	}
-	provider := c.provider
 	token := c.token
 	generation := c.generation
 	endpoint := c.endpoint
 	client := c.httpClient
-	cityDB := c.cityDB
-	asnDB := c.asnDB
-	ipInfoLocationDB := c.ipInfoLocationDB
-	ipInfoASNDB := c.ipInfoASNDB
 	c.mu.Unlock()
-
-	if provider == config.GeoIPProviderMaxMind {
-		addr, err := netip.ParseAddr(canonical)
-		if err != nil {
-			return fallbackIPInfo(canonical, "fallback_invalid")
-		}
-		return c.resolveMaxMind(canonical, addr, generation, cityDB, asnDB)
-	}
-	if provider == config.GeoIPProviderIPInfoMMDB {
-		addr, err := netip.ParseAddr(canonical)
-		if err != nil {
-			return fallbackIPInfo(canonical, "fallback_invalid")
-		}
-		return c.resolveIPInfoMMDB(canonical, addr, generation, ipInfoLocationDB, ipInfoASNDB)
-	}
-	return c.resolveIPInfo(ctx, canonical, token, generation, endpoint, client, provider)
-}
-
-func (c *ipInfoClient) resolveMaxMind(canonical string, addr netip.Addr, generation uint64, cityDB, asnDB *geoip2.Reader) ipInfoResult {
-	if cityDB == nil && asnDB == nil {
-		return c.cacheFailure(canonical, "fallback_maxmind_unavailable", generation)
-	}
-	result := ipInfoResult{IP: canonical, Source: maxMindSource, Status: "partial"}
-	cityFound, asnFound := false, false
-	if cityDB != nil {
-		if record, err := cityDB.City(addr); err == nil && record != nil && record.HasData() {
-			result.City = strings.TrimSpace(record.City.Names.English)
-			if len(record.Subdivisions) > 0 {
-				result.Region = strings.TrimSpace(record.Subdivisions[0].Names.English)
-				result.RegionCode = strings.TrimSpace(record.Subdivisions[0].ISOCode)
-			}
-			result.PostalCode = strings.TrimSpace(record.Postal.Code)
-			if record.Location.Latitude != nil {
-				result.Latitude = *record.Location.Latitude
-			}
-			if record.Location.Longitude != nil {
-				result.Longitude = *record.Location.Longitude
-			}
-			result.Timezone = strings.TrimSpace(record.Location.TimeZone)
-			result.CountryCode = strings.TrimSpace(record.Country.ISOCode)
-			result.Country = strings.TrimSpace(record.Country.Names.English)
-			result.ContinentCode = strings.TrimSpace(record.Continent.Code)
-			result.Continent = strings.TrimSpace(record.Continent.Names.English)
-			cityFound = result.City != "" || result.Region != "" || result.CountryCode != "" || result.Country != "" || result.ContinentCode != "" || result.Continent != "" || result.PostalCode != "" || result.Latitude != 0 || result.Longitude != 0
-		}
-	}
-	if asnDB != nil {
-		if record, err := asnDB.ASN(addr); err == nil && record != nil && record.HasData() {
-			if record.AutonomousSystemNumber != 0 {
-				result.ASN = fmt.Sprintf("AS%d", record.AutonomousSystemNumber)
-			}
-			result.ASName = strings.TrimSpace(record.AutonomousSystemOrganization)
-			asnFound = result.ASN != "" || result.ASName != ""
-		}
-	}
-	if !cityFound && !asnFound {
-		return c.cacheFailure(canonical, "fallback_maxmind_not_found", generation)
-	}
-	if cityFound && asnFound {
-		result.Status = "ok"
-	}
-	c.cacheResult(canonical, result, ipInfoCacheTTL, generation)
-	return result
-}
-
-func (c *ipInfoClient) resolveIPInfoMMDB(canonical string, addr netip.Addr, generation uint64, locationDB, asnDB *maxminddb.Reader) ipInfoResult {
-	if locationDB == nil && asnDB == nil {
-		return c.cacheFailure(canonical, "fallback_ipinfo_mmdb_unavailable", generation)
-	}
-	result := ipInfoResult{IP: canonical, Source: ipInfoMMDBSource, Status: "partial"}
-	locationFound, asnFound := false, false
-	if locationDB != nil {
-		var record map[string]any
-		lookup := locationDB.Lookup(addr)
-		if lookup.Found() {
-			if err := lookup.Decode(&record); err == nil {
-				result.City = ipInfoDatabaseString(record, "city")
-				result.Region = ipInfoDatabaseString(record, "region")
-				result.RegionCode = ipInfoDatabaseString(record, "region_code")
-				result.PostalCode = ipInfoDatabaseString(record, "postal_code")
-				result.Country = ipInfoDatabaseString(record, "country")
-				result.CountryCode = strings.ToUpper(ipInfoDatabaseString(record, "country_code"))
-				result.Continent = ipInfoDatabaseString(record, "continent")
-				result.ContinentCode = strings.ToUpper(ipInfoDatabaseString(record, "continent_code"))
-				result.Latitude = ipInfoDatabaseFloat(record, "latitude")
-				result.Longitude = ipInfoDatabaseFloat(record, "longitude")
-				result.Timezone = ipInfoDatabaseString(record, "timezone")
-				locationFound = result.City != "" || result.Region != "" || result.Country != "" || result.CountryCode != "" || result.Continent != "" || result.ContinentCode != "" || result.PostalCode != "" || result.Latitude != 0 || result.Longitude != 0
-			}
-		}
-	}
-	if asnDB != nil {
-		var record map[string]any
-		lookup := asnDB.Lookup(addr)
-		if lookup.Found() {
-			if err := lookup.Decode(&record); err == nil {
-				result.ASN = normalizeASN(ipInfoDatabaseString(record, "asn"))
-				result.ASName = ipInfoDatabaseString(record, "name", "as_name")
-				result.ASDomain = ipInfoDatabaseString(record, "domain", "as_domain")
-				asnFound = result.ASN != "" || result.ASName != "" || result.ASDomain != ""
-			}
-		}
-	}
-	if !locationFound && !asnFound {
-		return c.cacheFailure(canonical, "fallback_ipinfo_mmdb_not_found", generation)
-	}
-	if locationFound && asnFound {
-		result.Status = "ok"
-	}
-	c.cacheResult(canonical, result, ipInfoCacheTTL, generation)
-	return result
-}
-
-func ipInfoDatabaseString(record map[string]any, keys ...string) string {
-	for _, key := range keys {
-		value, ok := record[key]
-		if !ok || value == nil {
-			continue
-		}
-		switch value := value.(type) {
-		case string:
-			if value = strings.TrimSpace(value); value != "" {
-				return value
-			}
-		case []byte:
-			if text := strings.TrimSpace(string(value)); text != "" {
-				return text
-			}
-		default:
-			if text := strings.TrimSpace(fmt.Sprint(value)); text != "" && text != "<nil>" {
-				return text
-			}
-		}
-	}
-	return ""
-}
-
-func ipInfoDatabaseFloat(record map[string]any, key string) float64 {
-	value, ok := record[key]
-	if !ok || value == nil {
-		return 0
-	}
-	switch value := value.(type) {
-	case float64:
-		return value
-	case float32:
-		return float64(value)
-	case int:
-		return float64(value)
-	case int64:
-		return float64(value)
-	case uint64:
-		return float64(value)
-	default:
-		return 0
-	}
+	return c.resolveIPInfo(ctx, canonical, token, generation, endpoint, client)
 }
 
 func normalizeASN(value string) string {
@@ -570,75 +265,99 @@ func normalizeASN(value string) string {
 	return "AS" + value
 }
 
-func (c *ipInfoClient) resolveIPInfo(ctx context.Context, canonical, token string, generation uint64, endpoint string, client *http.Client, provider string) ipInfoResult {
+func (c *ipInfoClient) resolveIPInfo(ctx context.Context, canonical, token string, generation uint64, endpoint string, client *http.Client) ipInfoResult {
 	if token == "" {
 		result := fallbackIPInfo(canonical, "fallback_unconfigured")
 		c.cacheResult(canonical, result, ipInfoFailureCacheTTL, generation)
 		return result
 	}
+	result, err := c.fetchIPInfo(ctx, canonical, token, endpoint, client)
+	if err != nil {
+		if ctx.Err() != nil {
+			return fallbackIPInfo(canonical, "fallback_timeout")
+		}
+		return c.cacheFailure(canonical, "fallback_error", generation)
+	}
+	c.cacheResult(canonical, result, ipInfoCacheTTL, generation)
+	return result
+}
+
+func (c *ipInfoClient) fetchIPInfo(ctx context.Context, canonical, token, endpoint string, client *http.Client) (ipInfoResult, error) {
+	if strings.TrimSpace(token) == "" {
+		return ipInfoResult{}, fmt.Errorf("IPinfo API key is empty")
+	}
 	if endpoint == "" {
-		endpoint = defaultIPInfoEndpoint(provider)
+		endpoint = defaultIPInfoAPIEndpoint
 	}
 	if client == nil {
 		client = http.DefaultClient
 	}
-
 	requestURL := strings.TrimRight(endpoint, "/") + "/" + url.PathEscape(canonical)
 	parsedURL, err := url.Parse(requestURL)
 	if err != nil {
-		return c.cacheFailure(canonical, "fallback_error", generation)
+		return ipInfoResult{}, fmt.Errorf("invalid IPinfo API endpoint")
 	}
 	query := parsedURL.Query()
 	query.Set("token", token)
 	parsedURL.RawQuery = query.Encode()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsedURL.String(), nil)
 	if err != nil {
-		return c.cacheFailure(canonical, "fallback_error", generation)
+		return ipInfoResult{}, fmt.Errorf("could not create IPinfo API request")
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("User-Agent", "AegisLure-IPinfo/1.0")
 	response, err := client.Do(request)
 	if err != nil {
 		if ctx.Err() != nil {
-			return fallbackIPInfo(canonical, "fallback_timeout")
+			return ipInfoResult{}, fmt.Errorf("IPinfo API request timed out")
 		}
-		return c.cacheFailure(canonical, "fallback_error", generation)
+		return ipInfoResult{}, fmt.Errorf("IPinfo API request failed")
 	}
 	defer response.Body.Close()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		if ctx.Err() != nil {
-			return fallbackIPInfo(canonical, "fallback_timeout")
-		}
-		return c.cacheFailure(canonical, "fallback_error", generation)
+		return ipInfoResult{}, fmt.Errorf("IPinfo API returned HTTP %d", response.StatusCode)
 	}
-	var payload ipInfoLiteResponse
+	var payload ipInfoAPIResponse
 	decoder := json.NewDecoder(io.LimitReader(response.Body, 16*1024))
-	if err := decoder.Decode(&payload); err != nil || strings.TrimSpace(payload.Country) == "" && strings.TrimSpace(payload.CountryCode) == "" && strings.TrimSpace(payload.Continent) == "" && strings.TrimSpace(payload.ContinentCode) == "" {
-		if ctx.Err() != nil {
-			return fallbackIPInfo(canonical, "fallback_timeout")
-		}
-		return c.cacheFailure(canonical, "fallback_error", generation)
+	if err := decoder.Decode(&payload); err != nil {
+		return ipInfoResult{}, fmt.Errorf("IPinfo API returned invalid JSON")
 	}
-	result := parseIPInfoResponse(canonical, payload, provider)
-	c.cacheResult(canonical, result, ipInfoCacheTTL, generation)
-	return result
+	if strings.TrimSpace(payload.Country) == "" && strings.TrimSpace(payload.CountryCode) == "" && strings.TrimSpace(payload.Continent) == "" && strings.TrimSpace(payload.ContinentCode) == "" {
+		return ipInfoResult{}, fmt.Errorf("IPinfo API returned no location data")
+	}
+	return parseIPInfoResponse(canonical, payload), nil
 }
 
-func parseIPInfoResponse(canonical string, payload ipInfoLiteResponse, provider string) ipInfoResult {
+func (c *ipInfoClient) verifyToken(token string) error {
+	if c == nil {
+		return fmt.Errorf("IPinfo API client is unavailable")
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return fmt.Errorf("IPinfo API key is empty")
+	}
+	c.mu.Lock()
+	endpoint := c.endpoint
+	client := c.httpClient
+	c.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), ipInfoLookupTimeout)
+	defer cancel()
+	if _, err := c.fetchIPInfo(ctx, ipInfoProbeIP, token, endpoint, client); err != nil {
+		return fmt.Errorf("IPinfo API 获取 %s 失败：%s", ipInfoProbeIP, err)
+	}
+	return nil
+}
+
+func parseIPInfoResponse(canonical string, payload ipInfoAPIResponse) ipInfoResult {
 	countryCode := strings.ToUpper(strings.TrimSpace(payload.CountryCode))
 	country := strings.TrimSpace(payload.Country)
-	if provider == config.GeoIPProviderIPInfoAPI {
-		if countryCode == "" {
-			countryCode = strings.ToUpper(country)
-		}
-		country = strings.TrimSpace(payload.CountryName)
-		if country == "" {
-			country = countryCode
-		}
+	if countryCode == "" {
+		countryCode = strings.ToUpper(country)
 	}
+	country = firstNonEmpty(payload.CountryName, payload.Country, countryCode)
 	asn := normalizeASN(payload.ASN)
 	asName := strings.TrimSpace(payload.ASName)
-	if provider == config.GeoIPProviderIPInfoAPI && (asn == "" || asName == "") {
+	if asn == "" || asName == "" {
 		orgASN, orgName := parseIPInfoOrganization(payload.Org)
 		if asn == "" {
 			asn = orgASN
@@ -648,7 +367,7 @@ func parseIPInfoResponse(canonical string, payload ipInfoLiteResponse, provider 
 		}
 	}
 	latitude, longitude := payload.Latitude, payload.Longitude
-	if provider == config.GeoIPProviderIPInfoAPI && (latitude == 0 && longitude == 0) {
+	if latitude == 0 && longitude == 0 {
 		latitude, longitude = parseIPInfoLocation(payload.Loc)
 	}
 	return ipInfoResult{
@@ -667,7 +386,7 @@ func parseIPInfoResponse(canonical string, payload ipInfoLiteResponse, provider 
 		Country:       country,
 		ContinentCode: strings.ToUpper(strings.TrimSpace(payload.ContinentCode)),
 		Continent:     strings.TrimSpace(payload.Continent),
-		Source:        provider,
+		Source:        config.GeoIPProviderIPInfoAPI,
 		Status:        "ok",
 	}
 }
@@ -793,37 +512,7 @@ func (c *ipInfoClient) lookupManyWithOptions(rawIPs []string, maxIPs int, timeou
 }
 
 func (c *ipInfoClient) close() error {
-	if c == nil {
-		return nil
-	}
-	c.mu.Lock()
-	cityDB, asnDB := c.cityDB, c.asnDB
-	ipInfoLocationDB, ipInfoASNDB := c.ipInfoLocationDB, c.ipInfoASNDB
-	c.cityDB, c.asnDB = nil, nil
-	c.ipInfoLocationDB, c.ipInfoASNDB = nil, nil
-	c.mu.Unlock()
-	var first error
-	if cityDB != nil {
-		if err := cityDB.Close(); err != nil {
-			first = err
-		}
-	}
-	if asnDB != nil {
-		if err := asnDB.Close(); err != nil && first == nil {
-			first = err
-		}
-	}
-	if ipInfoLocationDB != nil {
-		if err := ipInfoLocationDB.Close(); err != nil && first == nil {
-			first = err
-		}
-	}
-	if ipInfoASNDB != nil {
-		if err := ipInfoASNDB.Close(); err != nil && first == nil {
-			first = err
-		}
-	}
-	return first
+	return nil
 }
 
 func fallbackIPInfo(rawIP, status string) ipInfoResult {
@@ -890,7 +579,7 @@ func (a *App) adminIPInfoSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	provider := config.GeoIPProviderMaxMind
+	provider := config.GeoIPProviderIPInfoAPI
 	a.ipInfo.mu.Lock()
 	provider = a.ipInfo.provider
 	a.ipInfo.mu.Unlock()
@@ -901,12 +590,11 @@ func (a *App) adminIPInfoSettings(w http.ResponseWriter, r *http.Request) {
 			a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provider must be a string"})
 			return
 		}
-		var valid bool
-		provider, valid = normalizeGeoIPProvider(providerValue)
-		if !valid {
-			a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provider must be maxmind, ipinfo_mmdb, ipinfo_api, or ipinfo_lite"})
+		if strings.TrimSpace(providerValue) != config.GeoIPProviderIPInfoAPI {
+			a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provider must be ipinfo_api"})
 			return
 		}
+		provider = config.GeoIPProviderIPInfoAPI
 	}
 	rawToken, tokenProvided := value["token"]
 	if !tokenProvided {
@@ -915,7 +603,7 @@ func (a *App) adminIPInfoSettings(w http.ResponseWriter, r *http.Request) {
 	if !tokenProvided {
 		rawToken, tokenProvided = value["apikey"]
 	}
-	token := a.cfg.IPInfoLiteToken
+	token := a.cfg.IPInfoToken
 	if tokenProvided {
 		var tokenOK bool
 		token, tokenOK = rawToken.(string)
@@ -930,22 +618,29 @@ func (a *App) adminIPInfoSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !providerProvided && tokenProvided {
-		// Preserve the old PUT contract: sending only token/key selected the
-		// IPinfo provider. New clients should send provider explicitly.
-		provider = config.GeoIPProviderIPInfoLite
+		// Preserve the old PUT contract: sending only token/key selects the
+		// sole supported IPinfo API provider.
+		provider = config.GeoIPProviderIPInfoAPI
 	}
 	if !providerProvided && !tokenProvided {
 		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provider or token field is required"})
 		return
 	}
 
-	previousProvider, previousToken := a.cfg.GeoIPProvider, a.cfg.IPInfoLiteToken
+	if tokenProvided && token != "" {
+		if err := a.ipInfo.verifyToken(token); err != nil {
+			a.writeJSON(w, http.StatusBadGateway, map[string]string{"error": "IPinfo API key 验证失败：" + err.Error()})
+			return
+		}
+	}
+
+	previousProvider, previousToken := a.cfg.GeoIPProvider, a.cfg.IPInfoToken
 	a.cfg.GeoIPProvider = provider
 	if tokenProvided {
-		a.cfg.IPInfoLiteToken = token
+		a.cfg.IPInfoToken = token
 	}
 	if err := config.Save(configPathForApp(), a.cfg); err != nil {
-		a.cfg.GeoIPProvider, a.cfg.IPInfoLiteToken = previousProvider, previousToken
+		a.cfg.GeoIPProvider, a.cfg.IPInfoToken = previousProvider, previousToken
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "geolocation setting could not be saved"})
 		return
 	}

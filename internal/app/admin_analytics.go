@@ -276,9 +276,8 @@ func sharePercentage(count, total int) int {
 	return (count*100 + total/2) / total
 }
 
-// sourceCountryLabel is deliberately offline. AegisLure does not ship a
-// GeoIP database, so it only classifies address ranges whose meaning is
-// deterministic and leaves public addresses as unknown.
+// sourceCountryLabel is deliberately local. It only classifies address ranges
+// whose meaning is deterministic and leaves public addresses for IPinfo API.
 func sourceCountryLabel(raw string) string {
 	ip := net.ParseIP(strings.TrimSpace(raw))
 	if ip == nil {
