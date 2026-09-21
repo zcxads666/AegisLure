@@ -2,18 +2,21 @@
 set -Eeuo pipefail
 
 REPOSITORY="zcxads666/AegisLure"
-DEFAULT_VERSION="v0.1.0"
+DEFAULT_VERSION="main"
 MODE="sqlite"
 VERSION="$DEFAULT_VERSION"
 TARGET_DIR="${AEGISLURE_DIR:-$PWD/aegislure}"
+PUBLIC_HOST="${HP_PUBLIC_HOST:-}"
 
 usage() {
   cat <<'EOF'
 Usage: curl -fsSL https://raw.githubusercontent.com/zcxads666/AegisLure/main/install-remote.sh | bash -s -- [options]
 
   --mode sqlite|postgres   backend (default: sqlite)
-  --version vX.Y.Z|last    fixed release, or resolve the latest GitHub release
+  --version main|vX.Y.Z|latest
+                            build current main, use a fixed release, or resolve latest
   --dir PATH               installation directory (default: ./aegislure)
+  --public-host HOST       hostname or IP printed in the public admin URL
   --help                   show this help
 EOF
 }
@@ -33,6 +36,11 @@ while [[ $# -gt 0 ]]; do
     --dir)
       [[ $# -ge 2 ]] || { echo "--dir requires a value" >&2; exit 2; }
       TARGET_DIR="$2"
+      shift 2
+      ;;
+    --public-host)
+      [[ $# -ge 2 ]] || { echo "--public-host requires a value" >&2; exit 2; }
+      PUBLIC_HOST="$2"
       shift 2
       ;;
     --help|-h)
@@ -69,12 +77,48 @@ if [[ "$VERSION" == "last" || "$VERSION" == "latest" ]]; then
   latest_json="$(curl -fsSL -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/${REPOSITORY}/releases/latest")"
   VERSION="$(printf '%s\n' "$latest_json" | sed -n 's/^[[:space:]]*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
 fi
-[[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "release version must look like v0.1.0 or last" >&2; exit 2; }
+if [[ "$VERSION" != "main" && ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "version must be main, latest, or look like v0.1.0" >&2
+  exit 2
+fi
 
-release_url="https://github.com/${REPOSITORY}/releases/download/${VERSION}"
 temporary="$(mktemp -d "${TMPDIR:-/tmp}/aegislure-remote.XXXXXX")"
 cleanup() { rm -rf "$temporary"; }
 trap cleanup EXIT
+
+install_args=(--mode "$MODE")
+if [[ -n "$PUBLIC_HOST" ]]; then
+  install_args+=(--public-host "$PUBLIC_HOST")
+fi
+
+if [[ "$VERSION" == "main" ]]; then
+  source_bundle="$temporary/aegislure-main.tar.gz"
+  curl -fsSL "https://github.com/${REPOSITORY}/archive/refs/heads/main.tar.gz" -o "$source_bundle"
+  archive_prefix="$(tar -tzf "$source_bundle" | sed -n '1p')"
+  if [[ "$archive_prefix" != "AegisLure-main/" ]]; then
+    echo "GitHub source archive has an unexpected layout" >&2
+    exit 1
+  fi
+  if tar -tzf "$source_bundle" | awk -v prefix="$archive_prefix" 'index($0, prefix) != 1 { bad = 1 } END { exit bad }'; then
+    :
+  else
+    echo "GitHub source archive contains an unsafe path" >&2
+    exit 1
+  fi
+  if [[ -d "$TARGET_DIR" && -n "$(ls -A "$TARGET_DIR" 2>/dev/null)" \
+    && ! -f "$TARGET_DIR/docker-compose.yml" ]]; then
+    echo "refusing to overwrite a non-AegisLure directory: $TARGET_DIR" >&2
+    exit 1
+  fi
+  mkdir -p "$TARGET_DIR"
+  tar -xzf "$source_bundle" -C "$TARGET_DIR" --strip-components=1
+  cd "$TARGET_DIR"
+  ./install.sh "${install_args[@]}" --version main --image aegislure:main
+  echo "Installed GitHub main source in ${TARGET_DIR}"
+  exit 0
+fi
+
+release_url="https://github.com/${REPOSITORY}/releases/download/${VERSION}"
 
 manifest_path="$temporary/release-manifest.json"
 checksums_path="$temporary/sha256sums.txt"
@@ -126,5 +170,5 @@ chmod 0644 "$TARGET_DIR/Dockerfile" "$TARGET_DIR/docker-compose.yml" "$TARGET_DI
 chmod 0755 "$TARGET_DIR/install.sh" "$TARGET_DIR/hpctl"
 
 cd "$TARGET_DIR"
-./install.sh --mode "$MODE" --version "$VERSION" --image "$manifest_image" --no-build --pull
+./install.sh "${install_args[@]}" --version "$VERSION" --image "$manifest_image" --no-build --pull
 echo "Installed ${manifest_image} in ${TARGET_DIR}"

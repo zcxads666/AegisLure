@@ -12,6 +12,7 @@ DEFAULT_VERSION="v0.1.0"
 MODE="${HP_DB_DRIVER:-}"
 VERSION="${HP_VERSION:-}"
 IMAGE="${HP_IMAGE:-}"
+PUBLIC_HOST="${HP_PUBLIC_HOST:-}"
 if [[ -f .env ]]; then
   [[ -n "$MODE" ]] || MODE="$(awk -F= '/^HP_DB_DRIVER=/ { print substr($0, index($0, "=")+1); exit }' .env)"
   [[ -n "$VERSION" ]] || VERSION="$(awk -F= '/^HP_VERSION=/ { print substr($0, index($0, "=")+1); exit }' .env)"
@@ -27,8 +28,9 @@ usage() {
 Usage: ./install.sh [options]
 
   --mode sqlite|postgres   backend (default: sqlite)
-  --version vX.Y.Z         release tag used for the default image
+  --version vX.Y.Z|main    release tag, or main for a source build
   --image IMAGE            explicit image reference (remote installer uses a digest)
+  --public-host HOST       hostname or IP printed in the public admin URL
   --no-build               use the configured image without building locally
   --pull                   pull the configured image before starting
   --help                   show this help
@@ -50,6 +52,11 @@ while [[ $# -gt 0 ]]; do
     --image)
       [[ $# -ge 2 ]] || { echo "--image requires a value" >&2; exit 2; }
       IMAGE="$2"
+      shift 2
+      ;;
+    --public-host)
+      [[ $# -ge 2 ]] || { echo "--public-host requires a value" >&2; exit 2; }
+      PUBLIC_HOST="$2"
       shift 2
       ;;
     --no-build)
@@ -78,16 +85,47 @@ case "$MODE" in
   postgres|postgresql) MODE=postgres ;;
   *) echo "--mode must be sqlite or postgres" >&2; exit 2 ;;
 esac
-[[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "--version must look like v0.1.0" >&2; exit 2; }
+if [[ "$VERSION" != "main" && ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "--version must be main or look like v0.1.0" >&2
+  exit 2
+fi
 if [[ -z "$IMAGE" ]]; then
   IMAGE="ghcr.io/zcxads666/aegislure:${VERSION}"
 fi
 [[ "$IMAGE" != *[[:space:]]* ]] || { echo "image reference contains whitespace" >&2; exit 2; }
+is_ipv4() {
+  local address="$1" octet
+  local IFS=.
+  local -a octets
+  [[ "$address" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+  read -r -a octets <<<"$address"
+  for octet in "${octets[@]}"; do
+    (( 10#$octet <= 255 )) || return 1
+  done
+}
+if [[ -n "$PUBLIC_HOST" ]]; then
+  [[ "$PUBLIC_HOST" =~ ^[A-Za-z0-9._:-]+$ ]] || { echo "--public-host must be a hostname or IP address without a scheme, path, or port" >&2; exit 2; }
+  if [[ "$PUBLIC_HOST" == *:* && ! "$PUBLIC_HOST" =~ ^[0-9A-Fa-f:]+$ ]]; then
+    echo "--public-host contains an invalid IPv6 address" >&2
+    exit 2
+  fi
+  if [[ "$PUBLIC_HOST" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] && ! is_ipv4 "$PUBLIC_HOST"; then
+    echo "--public-host contains an invalid IPv4 address" >&2
+    exit 2
+  fi
+fi
 
 command -v docker >/dev/null 2>&1 || { echo "Docker Engine is required" >&2; exit 1; }
 docker compose version >/dev/null 2>&1 || { echo "Docker Compose v2 is required" >&2; exit 1; }
 docker info >/dev/null 2>&1 || { echo "Docker CLI is installed, but Docker Engine is not reachable; install/start the daemon or set DOCKER_HOST" >&2; exit 1; }
 command -v openssl >/dev/null 2>&1 || { echo "openssl is required" >&2; exit 1; }
+
+if [[ -z "$PUBLIC_HOST" ]] && command -v curl >/dev/null 2>&1; then
+  detected_public_host="$(curl -4 -fsS --connect-timeout 3 --max-time 5 https://api.ipify.org 2>/dev/null || true)"
+  if is_ipv4 "$detected_public_host"; then
+    PUBLIC_HOST="$detected_public_host"
+  fi
+fi
 
 mkdir -p runtime/data runtime/secrets
 chmod 700 runtime runtime/data runtime/secrets
@@ -169,9 +207,15 @@ if [[ "$MODE" == postgres ]]; then
 fi
 
 if [[ ! -f runtime/secrets/admin.crt || ! -f runtime/secrets/admin.key ]]; then
+  admin_san="DNS:aegislure.local"
+  if is_ipv4 "$PUBLIC_HOST" || [[ "$PUBLIC_HOST" == *:* ]]; then
+    admin_san="${admin_san},IP:${PUBLIC_HOST}"
+  elif [[ -n "$PUBLIC_HOST" && "$PUBLIC_HOST" != *:* ]]; then
+    admin_san="${admin_san},DNS:${PUBLIC_HOST}"
+  fi
   openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 30 \
     -subj "/CN=aegislure.local" \
-    -addext "subjectAltName=DNS:aegislure.local" \
+    -addext "subjectAltName=${admin_san}" \
     -keyout runtime/secrets/admin.key -out runtime/secrets/admin.crt >/dev/null 2>&1
   chmod 600 runtime/secrets/admin.key
   chmod 644 runtime/secrets/admin.crt
@@ -380,13 +424,39 @@ if ! wait_for_aegislure_health; then
   show_startup_diagnostics
   exit 1
 fi
-if ! compose exec -T aegislure /usr/local/bin/hpctl \
-  status --config /var/lib/aegislure/config.json; then
+if ! final_status="$(compose exec -T aegislure /usr/local/bin/hpctl \
+  status --config /var/lib/aegislure/config.json)"; then
   echo "AegisLure installation failed during final status verification." >&2
   show_startup_diagnostics
   exit 1
 fi
-echo "AegisLure is running and passed the database and application health checks. Open the hidden admin path to create the first owner."
+printf '%s\n' "$final_status"
+local_admin_url="$(sed -n 's/^[[:space:]]*"admin_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' <<<"$final_status" | head -n 1)"
+public_admin_url=""
+if [[ -n "$PUBLIC_HOST" && -n "$local_admin_url" ]]; then
+  admin_url_suffix="${local_admin_url#*://127.0.0.1}"
+  formatted_public_host="$PUBLIC_HOST"
+  if [[ "$formatted_public_host" == *:* && "$formatted_public_host" != \[*\] ]]; then
+    formatted_public_host="[$formatted_public_host]"
+  fi
+  public_admin_url="https://${formatted_public_host}${admin_url_suffix}"
+fi
+echo
+echo "AegisLure is running and passed the database and application health checks."
+echo "Local admin URL:  ${local_admin_url}"
+if [[ -n "$public_admin_url" ]]; then
+  echo "Public admin URL: ${public_admin_url}"
+else
+  echo "Public admin URL: not detected; rerun with --public-host YOUR_DOMAIN_OR_IP"
+fi
+if grep -Eq '"admin_initialized"[[:space:]]*:[[:space:]]*false' <<<"$final_status"; then
+  echo "First login: open the admin URL above and create the owner account."
+  echo "Default username: owner"
+  echo "Password: set it yourself on the first-login page (minimum 8 characters)."
+  echo "Important: save the one-time recovery codes shown after setup."
+else
+  echo "Admin account: existing owner retained; its password was not changed or disclosed."
+fi
 echo "Admin TLS certificate fingerprint (SHA-256):"
 openssl x509 -in runtime/secrets/admin.crt -noout -fingerprint -sha256
 echo "Use: ./hpctl status"

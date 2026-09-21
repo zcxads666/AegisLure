@@ -544,7 +544,7 @@ function RecoveryModal({ onClose, onForgot, onRecovery }) {
 
 
 function SetupPage({ onSetup }) {
-  const [username, setUsername] = useState('')
+  const [username, setUsername] = useState('owner')
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
   const [codes, setCodes] = useState([])
@@ -578,7 +578,7 @@ function SetupPage({ onSetup }) {
             <h2>创建管理员</h2>
             <p class="auth-subtitle">设置本地控制台的唯一管理员账号。</p>
             <form class="auth-form" onSubmit=${submit}>
-              <${TextInput} label="管理员账号" placeholder="例如 admin" value=${username} onInput=${setUsername} autoComplete="username" maxLength="128" required=${true} />
+              <${TextInput} label="管理员账号" placeholder="owner" value=${username} onInput=${setUsername} autoComplete="username" maxLength="128" required=${true} />
               <${TextInput} label="密码" placeholder="至少 8 个字符" type="password" value=${password} onInput=${setPassword} minLength="8" maxLength="128" required=${true} />
               <${TextInput} label="确认密码" placeholder="再次输入密码" type="password" value=${confirm} onInput=${setConfirm} minLength="8" maxLength="128" required=${true} />
               <button class="button button-primary button-lg button-full" type="submit" disabled=${busy}>${busy ? '创建中…' : '创建管理员'} ${icon('arrow', 17)}</button>

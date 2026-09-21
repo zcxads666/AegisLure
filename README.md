@@ -15,37 +15,62 @@ AegisLure 面向单机部署，提供 New API、vLLM、Ollama、SGLang、LocalAI
 - 风险事件、审计记录、IP/身份指标、JSON/CSV/plain/STIX2/nftables 导出和有界保留策略。
 - SQLite 默认存储，也支持 PostgreSQL 新部署模式；两种模式均会自动加载默认规则和模型目录。
 
-## Docker Compose 部署
+## 一键 Docker 部署
 
-需要 Docker Engine 和 Docker Compose v2。
+前置条件只有 Docker Engine（Linux）或 Docker Desktop（macOS），并启用 Docker Compose v2。支持 `linux/amd64`、`linux/arm64` 和 Apple Silicon；安装脚本还会检查 Docker daemon、Compose 和 OpenSSL 是否可用。
 
-默认使用 SQLite：
+SQLite（默认，适合单机）：
 
 ```bash
-./install.sh --mode sqlite --version v0.1.0
+curl -fsSL https://raw.githubusercontent.com/zcxads666/AegisLure/main/install-remote.sh | bash -s -- --mode sqlite
 ```
 
-使用内置 PostgreSQL：
+内置 PostgreSQL（数据库不会暴露宿主机端口）：
 
 ```bash
-./install.sh --mode postgres --version v0.1.0
+curl -fsSL https://raw.githubusercontent.com/zcxads666/AegisLure/main/install-remote.sh | bash -s -- --mode postgres
 ```
 
-安装完成后可使用以下命令查看状态：
+命令默认下载 GitHub `main` 源码并在本机 Docker 中构建，安装到当前目录的 `aegislure/`。如需指定目录或公网域名/IP：
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/zcxads666/AegisLure/main/install-remote.sh | \
+  bash -s -- --mode postgres --dir /opt/aegislure --public-host aegis.example.com
+```
+
+安装成功后，脚本会先确认容器健康和数据库连接正常，然后输出：
+
+- 本机后台地址；
+- 自动探测或通过 `--public-host` 指定的公网后台地址；
+- 首次设置提示，管理员用户名默认预填为 `owner`，密码由用户在页面中自行设置（至少 8 个字符）；
+- 管理端自签 TLS 证书的 SHA-256 指纹。
+
+首次打开后台时，浏览器会提示这是自签证书；核对命令输出的指纹后继续。创建 owner 后，恢复码只显示一次，请立即离线保存。安装器不会生成、保存或输出管理员密码。
+
+使用固定 Release 镜像时，将 `--version main` 改为版本号或 `latest`：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zcxads666/AegisLure/main/install-remote.sh | \
+  bash -s -- --mode sqlite --version latest
+```
+
+`latest` 和固定版本会校验 Release 包 SHA-256，并使用 manifest 中的不可变 GHCR 镜像摘要。`main` 适合直接部署当前代码；生产环境发布后优先使用固定版本。
+
+已克隆源码时也可直接安装：
+
+```bash
+./install.sh --mode sqlite
+# 或
+./install.sh --mode postgres --public-host 203.0.113.10
+```
+
+状态与健康检查：
+
+```bash
+cd aegislure
 ./hpctl status
 ./hpctl health
 ```
-
-远程安装：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/zcxads666/AegisLure/main/install-remote.sh \
-  | bash -s -- --mode sqlite --version v0.1.0
-```
-
-将 `--mode sqlite` 改为 `--mode postgres` 可使用 PostgreSQL 模式；`--version last` 可选择最新可用版本。
 
 ## 网络入口
 
@@ -70,7 +95,9 @@ HP_ADMIN_PORT_BIND_IP=0.0.0.0
 
 需要运行 LocalAI 时，将 `HP_PROFILES` 中的 `sub2api` 替换为 `localai`；同时选择两者时服务保留 Sub2API。
 
-管理入口路径由服务生成，可通过 `./hpctl status` 查看。首次访问管理入口时创建 owner，密码至少 8 个字符；请离线保存服务生成的恢复码，并通过防火墙、VPN 或可信反向代理限制管理端口来源。若只需要本机访问，可将 `HP_ADMIN_PORT_BIND_IP` 设置为 `127.0.0.1`。
+管理入口路径由服务随机生成，可通过 `./hpctl status` 查看。一键安装会直接打印包含该隐藏路径的完整地址。首次访问时创建 owner；页面默认填写用户名 `owner`，密码由部署者设置。请离线保存服务生成的恢复码，并通过防火墙、VPN 或可信反向代理限制管理端口来源。若只需要本机访问，可将 `HP_ADMIN_PORT_BIND_IP` 设置为 `127.0.0.1`。
+
+在 VPS 上至少放行实际输出的 `HP_ADMIN_PORT`；公开蜜罐端口是否放行按用途决定。域名、云安全组、防火墙和 NAT 属于 Docker 主机之外的设施，安装器会输出地址但不会擅自修改它们。若自动探测的公网 IP 不适用，重新执行时传入 `--public-host`。
 
 ## 数据库与 IP 情报
 

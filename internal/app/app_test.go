@@ -350,6 +350,9 @@ func TestAdminPageUsesNonceAndCompletesOwnerSetupLogin(t *testing.T) {
 		if resp.Header.Get("Cache-Control") != "no-store" {
 			t.Fatalf("admin asset %s must not be cached across binary upgrades: cache-control=%q", asset.path, resp.Header.Get("Cache-Control"))
 		}
+		if asset.path == "app.js" && !strings.Contains(string(assetBody), "const [username, setUsername] = useState('owner')") {
+			t.Fatal("first-owner setup no longer defaults the username to owner")
+		}
 	}
 
 	base := cfg.AdminPath
