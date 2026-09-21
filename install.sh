@@ -446,8 +446,10 @@ echo "AegisLure is running and passed the database and application health checks
 echo "Local admin URL:  ${local_admin_url}"
 if [[ -n "$public_admin_url" ]]; then
   echo "Public admin URL: ${public_admin_url}"
+  echo "中文提示：请使用上面的公网地址访问管理后台。首次访问时请创建 owner 账户并设置密码。"
 else
   echo "Public admin URL: not detected; rerun with --public-host YOUR_DOMAIN_OR_IP"
+  echo "中文提示：未检测到公网地址，请使用 --public-host YOUR_DOMAIN_OR_IP 重新执行安装。"
 fi
 if grep -Eq '"admin_initialized"[[:space:]]*:[[:space:]]*false' <<<"$final_status"; then
   echo "First login: open the admin URL above and create the owner account."
