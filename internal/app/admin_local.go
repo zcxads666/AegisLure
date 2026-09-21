@@ -733,6 +733,10 @@ func (a *App) adminInstanceRoute(w http.ResponseWriter, r *http.Request, path st
 		a.adminInstanceCompatibility(w, name)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "models" && (r.Method == http.MethodGet || r.Method == http.MethodPut) {
+		a.adminInstanceModels(w, r, name)
+		return
+	}
 	if len(parts) == 1 && r.Method == http.MethodPatch {
 		a.adminInstancePatch(w, r, name)
 		return
@@ -755,11 +759,10 @@ func (a *App) adminInstanceCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request struct {
-		Product   string  `json:"product"`
-		Enabled   *bool   `json:"enabled"`
-		Scenario  *string `json:"scenario"`
-		Port      *int    `json:"port"`
-		ModelName *string `json:"model_name"`
+		Product  string  `json:"product"`
+		Enabled  *bool   `json:"enabled"`
+		Scenario *string `json:"scenario"`
+		Port     *int    `json:"port"`
 	}
 	if err := decodeStrictValue(body, &request); err != nil {
 		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid instance declaration"})
@@ -772,10 +775,6 @@ func (a *App) adminInstanceCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if request.Scenario != nil && (strings.TrimSpace(*request.Scenario) == "" || len(*request.Scenario) > 128 || strings.ContainsAny(*request.Scenario, "\r\n")) {
 		a.writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "scenario is invalid"})
-		return
-	}
-	if request.ModelName != nil && !validDisplayModelName(*request.ModelName) {
-		a.writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "model_name is invalid"})
 		return
 	}
 	if request.Port != nil {
@@ -793,12 +792,6 @@ func (a *App) adminInstanceCreate(w http.ResponseWriter, r *http.Request) {
 		profile.Scenario = a.cfg.Scenario[name]
 		a.profiles[name] = profile
 		if err := config.Save(configPathForApp(), a.cfg); err != nil {
-			a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "instance configuration save failed"})
-			return
-		}
-	}
-	if request.ModelName != nil {
-		if err := a.persistDisplayModelName(name, *request.ModelName); err != nil {
 			a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "instance configuration save failed"})
 			return
 		}
@@ -851,7 +844,11 @@ func (a *App) instanceView(name string) (map[string]any, bool) {
 			bound[kind] = map[string]string{"id": pack.ID, "revision": pack.Revision, "lifecycle": pack.Lifecycle}
 		}
 	}
-	modelName, modelNameCustom := a.instanceDisplayModelName(name)
+	modelEntries, _, _, _ := a.configuredInstanceModelEntries(name)
+	modelPreview := make([]string, 0, len(modelEntries))
+	for _, entry := range modelEntries {
+		modelPreview = append(modelPreview, entry.PublicModelID)
+	}
 	return map[string]any{
 		"id":                   "inst_" + name,
 		"product":              name,
@@ -867,8 +864,8 @@ func (a *App) instanceView(name string) (map[string]any, bool) {
 		"enabled":              containsString(a.cfg.EnabledProfiles, name),
 		"endpoint":             fmt.Sprintf("%s:%d", a.cfg.PublicBind, actualPort),
 		"synthetic_only":       true,
-		"model_name":           modelName,
-		"model_name_custom":    modelNameCustom,
+		"model_count":          len(modelEntries),
+		"model_preview":        modelPreview,
 		"bound_pack_revisions": bound,
 	}, true
 }
@@ -891,7 +888,6 @@ func (a *App) adminInstancePatch(w http.ResponseWriter, r *http.Request, name st
 		Enabled          *bool   `json:"enabled"`
 		Scenario         *string `json:"scenario"`
 		Port             *int    `json:"port"`
-		ModelName        *string `json:"model_name"`
 		Protocol         string  `json:"protocol"`
 		DrainSeconds     int     `json:"drain_seconds"`
 		ExpectedRevision string  `json:"expected_revision"`
@@ -900,16 +896,12 @@ func (a *App) adminInstancePatch(w http.ResponseWriter, r *http.Request, name st
 		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid instance patch"})
 		return
 	}
-	if request.Enabled == nil && request.Scenario == nil && request.Port == nil && request.ModelName == nil {
+	if request.Enabled == nil && request.Scenario == nil && request.Port == nil {
 		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "instance patch is empty"})
 		return
 	}
 	if request.Scenario != nil && (strings.TrimSpace(*request.Scenario) == "" || len(*request.Scenario) > 128 || strings.ContainsAny(*request.Scenario, "\r\n")) {
 		a.writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "scenario is invalid"})
-		return
-	}
-	if request.ModelName != nil && !validDisplayModelName(*request.ModelName) {
-		a.writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "model_name is invalid"})
 		return
 	}
 	if request.Port != nil {
@@ -940,13 +932,6 @@ func (a *App) adminInstancePatch(w http.ResponseWriter, r *http.Request, name st
 		}
 		a.recordAudit(r, "instance.scenario.update", "inst_"+name, "success", map[string]string{"scenario": updated.Scenario})
 	}
-	if request.ModelName != nil {
-		if err := a.persistDisplayModelName(name, *request.ModelName); err != nil {
-			a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "instance configuration save failed"})
-			return
-		}
-		a.recordAudit(r, "instance.model_name.update", "inst_"+name, "success", map[string]string{"model_name": strings.TrimSpace(*request.ModelName)})
-	}
 	if request.Enabled != nil {
 		var err error
 		if *request.Enabled {
@@ -965,55 +950,6 @@ func (a *App) adminInstancePatch(w http.ResponseWriter, r *http.Request, name st
 		a.recordAudit(r, "instance.enabled.update", "inst_"+name, "success", map[string]string{"enabled": fmt.Sprintf("%t", *request.Enabled)})
 	}
 	a.adminInstanceDetail(w, name)
-}
-
-func validDisplayModelName(value string) bool {
-	value = strings.TrimSpace(value)
-	if len(value) > 128 {
-		return false
-	}
-	for _, r := range value {
-		if r < 0x20 || r == 0x7f {
-			return false
-		}
-	}
-	return true
-}
-
-func (a *App) persistDisplayModelName(product, value string) error {
-	a.configMu.Lock()
-	defer a.configMu.Unlock()
-	previous := a.cfg.DisplayModelNames
-	updated := make(map[string]string, len(previous)+1)
-	for key, name := range previous {
-		updated[key] = name
-	}
-	value = strings.TrimSpace(value)
-	if value == "" {
-		delete(updated, product)
-	} else {
-		updated[product] = value
-	}
-	a.cfg.DisplayModelNames = updated
-	if err := config.Save(configPathForApp(), a.cfg); err != nil {
-		a.cfg.DisplayModelNames = previous
-		return err
-	}
-	return nil
-}
-
-func (a *App) instanceDisplayModelName(product string) (string, bool) {
-	a.configMu.RLock()
-	name := strings.TrimSpace(a.cfg.DisplayModelNames[product])
-	a.configMu.RUnlock()
-	if name != "" {
-		return name, true
-	}
-	catalog := a.catalogFor(product)
-	if len(catalog) == 0 {
-		return "", false
-	}
-	return catalog[0].ID, false
 }
 
 func (a *App) adminInstanceCompatibility(w http.ResponseWriter, name string) {

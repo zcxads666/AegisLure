@@ -31,45 +31,6 @@ func TestPersistProfileSelectionMakesLocalAIAndSub2APIMutuallyExclusive(t *testi
 	}
 }
 
-func TestAdminCanCustomizeEveryHoneypotDisplayModelName(t *testing.T) {
-	a, cfg, st := newTestApp(t, true)
-	defer st.Close()
-	admin := &inProcessClient{handler: a.adminHandler(), cookies: map[string]string{}}
-	if resp, _ := doJSON(t, admin, http.MethodPost, cfg.AdminPath+"admin/api/v1/auth/login", map[string]string{"username": "owner", "password": "correct horse battery staple"}); resp.StatusCode != http.StatusOK {
-		t.Fatalf("admin login status = %d", resp.StatusCode)
-	}
-
-	for _, product := range model.Products() {
-		customName := "custom-" + product + "-model"
-		resp, payload := doJSON(t, admin, http.MethodPatch, cfg.AdminPath+"admin/api/v1/instances/"+product, map[string]string{"model_name": customName})
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("patch %s model name status = %d %#v", product, resp.StatusCode, payload)
-		}
-		instance, ok := payload["instance"].(map[string]any)
-		if !ok || instance["model_name"] != customName || instance["model_name_custom"] != true {
-			t.Fatalf("patch %s model response = %#v", product, payload)
-		}
-		catalog := a.catalogFor(product)
-		if len(catalog) != 1 || catalog[0].ID != customName || catalog[0].DisplayName != customName || len(catalog[0].Aliases) != 0 {
-			t.Fatalf("custom %s catalog = %#v", product, catalog)
-		}
-		if cfg.DisplayModelNames[product] != customName {
-			t.Fatalf("custom %s model was not persisted in memory: %#v", product, cfg.DisplayModelNames)
-		}
-	}
-
-	resp, payload := doJSON(t, admin, http.MethodPatch, cfg.AdminPath+"admin/api/v1/instances/ollama", map[string]string{"model_name": ""})
-	instance, _ := payload["instance"].(map[string]any)
-	if resp.StatusCode != http.StatusOK || instance["model_name_custom"] != false || len(a.catalogFor(model.ProductOllama)) < 2 {
-		t.Fatalf("reset Ollama model name = %d %#v", resp.StatusCode, payload)
-	}
-
-	resp, _ = doJSON(t, admin, http.MethodPatch, cfg.AdminPath+"admin/api/v1/instances/vllm", map[string]string{"model_name": strings.Repeat("x", 129)})
-	if resp.StatusCode != http.StatusUnprocessableEntity {
-		t.Fatalf("oversized model name status = %d", resp.StatusCode)
-	}
-}
-
 func TestLocalAdminDetailRoutesAndInstancePatch(t *testing.T) {
 	a, cfg, st := newTestApp(t, true)
 	defer st.Close()

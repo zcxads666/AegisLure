@@ -580,27 +580,31 @@ func (a *App) handleSub2APIPanel(w *captureWriter, r *http.Request, profile prof
 // sub2APIAvailableChannels exposes the same user-facing DTO shape as the
 // official /api/v1/channels/available endpoint.
 func sub2APIAvailableChannels(catalog []profiles.CatalogEntry) []map[string]any {
-	return []map[string]any{
-		sub2APIAvailableChannel(
-			"OpenAI",
-			[]string{"gpt-5.6-sol"},
-			catalog,
-		),
-		sub2APIAvailableChannel(
-			"OpenAI Codex",
-			[]string{"gpt-5.6-codex"},
-			catalog,
-		),
+	groups := []struct {
+		provider string
+		name     string
+	}{
+		{provider: "openai", name: "OpenAI"},
+		{provider: "openai-codex", name: "OpenAI Codex"},
 	}
+	result := make([]map[string]any, 0, len(groups))
+	for _, group := range groups {
+		entries := make([]profiles.CatalogEntry, 0)
+		for _, entry := range catalog {
+			if entry.Provider == group.provider {
+				entries = append(entries, entry)
+			}
+		}
+		if len(entries) > 0 {
+			result = append(result, sub2APIAvailableChannel(group.name, entries))
+		}
+	}
+	return result
 }
 
-func sub2APIAvailableChannel(name string, modelIDs []string, catalog []profiles.CatalogEntry) map[string]any {
-	models := make([]any, 0, len(modelIDs))
-	for _, modelID := range modelIDs {
-		entry, ok := sub2APICatalogEntry(catalog, modelID)
-		if !ok {
-			continue
-		}
+func sub2APIAvailableChannel(name string, entries []profiles.CatalogEntry) map[string]any {
+	models := make([]any, 0, len(entries))
+	for _, entry := range entries {
 		models = append(models, map[string]any{
 			"name":     entry.ID,
 			"platform": "openai",
@@ -669,10 +673,9 @@ func sub2APIOfficialModelPricing(modelID string) map[string]any {
 }
 
 func sub2APIModelPlaza(catalog []profiles.CatalogEntry) map[string]any {
-	models := make([]any, 0, 2)
-	for _, modelID := range []string{"gpt-5.6-sol", "gpt-5.6-codex"} {
-		entry, ok := sub2APICatalogEntry(catalog, modelID)
-		if !ok {
+	models := make([]any, 0, len(catalog))
+	for _, entry := range catalog {
+		if entry.Provider != "openai" && entry.Provider != "openai-codex" {
 			continue
 		}
 		models = append(models, map[string]any{

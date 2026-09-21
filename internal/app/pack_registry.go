@@ -1086,7 +1086,7 @@ func (a *App) adminCatalogModelPatch(w http.ResponseWriter, r *http.Request, id,
 		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "model patch must be a JSON object"})
 		return
 	}
-	allowed := map[string]bool{"public_model_id": true, "display_name": true, "provider": true, "origin": true, "capabilities": true, "api_families": true, "visibility": true, "auth_requirement": true, "virtual_context_tokens": true, "virtual_price_profile": true, "status": true, "aliases": true, "response_template_set": true}
+	allowed := map[string]bool{"public_model_id": true, "display_name": true, "provider": true, "origin": true, "capabilities": true, "api_families": true, "visibility": true, "auth_requirement": true, "virtual_context_tokens": true, "virtual_price_profile": true, "status": true, "aliases": true, "response_template_set": true, "architecture": true, "families": true, "parameter_size": true, "quantization_level": true, "approx_size": true}
 	for key := range fields {
 		if !allowed[key] {
 			a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "model field is immutable or unsupported: " + key})
@@ -1171,6 +1171,16 @@ func applyModelCatalogPatch(entry *packs.ModelCatalogEntry, fields map[string]js
 			target = &entry.Aliases
 		case "response_template_set":
 			target = &entry.ResponseTemplateSet
+		case "architecture":
+			target = &entry.Architecture
+		case "families":
+			target = &entry.Families
+		case "parameter_size":
+			target = &entry.ParameterSize
+		case "quantization_level":
+			target = &entry.QuantizationLevel
+		case "approx_size":
+			target = &entry.ApproxSize
 		default:
 			return fmt.Errorf("unsupported model field %q", key)
 		}

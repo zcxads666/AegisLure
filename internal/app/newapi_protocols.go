@@ -344,6 +344,10 @@ func writeNewAPINamedSSE(w *captureWriter, event string, payload any) {
 
 func newAPIAnthropicModelList(seed string, catalog []profiles.CatalogEntry) map[string]any {
 	cards := profiles.OpenAIModelCardsForCatalog(seed, catalog, "new-api")
+	entries := make(map[string]profiles.CatalogEntry, len(catalog))
+	for _, entry := range catalog {
+		entries[entry.ID] = entry
+	}
 	data := make([]map[string]any, 0, len(cards))
 	firstID, lastID := "", ""
 	for _, card := range cards {
@@ -351,7 +355,7 @@ func newAPIAnthropicModelList(seed string, catalog []profiles.CatalogEntry) map[
 			firstID = card.ID
 		}
 		lastID = card.ID
-		entry, _ := profiles.ResolveModel(model.ProductNewAPI, card.ID)
+		entry := entries[card.ID]
 		displayName := entry.DisplayName
 		if displayName == "" {
 			displayName = card.ID

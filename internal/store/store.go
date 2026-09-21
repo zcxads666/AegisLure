@@ -1922,6 +1922,17 @@ func (s *Store) BindPack(kind, target, packID string) error {
 	})
 }
 
+// UnbindPack restores a target to the compiled/default pack selection.
+func (s *Store) UnbindPack(kind, target string) error {
+	if strings.TrimSpace(kind) == "" || strings.TrimSpace(target) == "" {
+		return errors.New("pack binding is incomplete")
+	}
+	return s.Update(func(state *model.State) error {
+		delete(state.PackBindings, kind+"\x00"+target)
+		return nil
+	})
+}
+
 func (s *Store) PackBindings() map[string]string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

@@ -84,10 +84,10 @@ func (a *App) catalogForSession(product, audience string, session Session) []pro
 func (a *App) catalogForAudienceRevision(product, audience, revision string) []profiles.CatalogEntry {
 	fallback := profiles.Catalog(product)
 	if a.store == nil {
-		return a.applyDisplayModelName(product, fallback)
+		return fallback
 	}
 	if revision == compiledCatalogRevision {
-		return a.applyDisplayModelName(product, fallback)
+		return fallback
 	}
 	var pack model.ConfigPack
 	var ok bool
@@ -97,11 +97,11 @@ func (a *App) catalogForAudienceRevision(product, audience, revision string) []p
 		pack, ok = a.store.BoundPack(model.PackKindModel, "inst_"+product)
 	}
 	if !ok {
-		return a.applyDisplayModelName(product, fallback)
+		return fallback
 	}
 	var document packs.ModelCatalogPack
 	if packs.ValidateDefinition(model.PackKindModel, pack.Definition) != nil || json.Unmarshal(pack.Definition, &document) != nil || packs.ValidateModelCatalogPack(document) != nil {
-		return a.applyDisplayModelName(product, fallback)
+		return fallback
 	}
 	result := make([]profiles.CatalogEntry, 0)
 	seen := make(map[string]bool)
@@ -143,30 +143,9 @@ func (a *App) catalogForAudienceRevision(product, audience, revision string) []p
 		}
 	}
 	if len(result) == 0 && !matchedProduct {
-		return a.applyDisplayModelName(product, fallback)
+		return fallback
 	}
-	return a.applyDisplayModelName(product, result)
-}
-
-// applyDisplayModelName turns a per-instance display-name override into the
-// single synthetic model exposed by that honeypot. Keeping one canonical
-// entry makes model lists, request validation, metrics, and response payloads
-// agree on the configured name across every supported protocol.
-func (a *App) applyDisplayModelName(product string, catalog []profiles.CatalogEntry) []profiles.CatalogEntry {
-	if a.cfg == nil {
-		return catalog
-	}
-	a.configMu.RLock()
-	name := strings.TrimSpace(a.cfg.DisplayModelNames[product])
-	a.configMu.RUnlock()
-	if name == "" || len(catalog) == 0 {
-		return catalog
-	}
-	entry := cloneCatalogEntry(catalog[0])
-	entry.ID = name
-	entry.DisplayName = name
-	entry.Aliases = nil
-	return []profiles.CatalogEntry{entry}
+	return result
 }
 
 func modelEntryVisible(visibility []string, audience string) bool {
@@ -217,6 +196,11 @@ func catalogEntryFromPack(product string, item packs.ModelCatalogEntry, originPo
 	entry.VirtualPriceProfile = item.VirtualPriceProfile
 	entry.ResponseTemplateSet = item.ResponseTemplateSet
 	entry.Aliases = append([]string(nil), item.Aliases...)
+	entry.Architecture = item.Architecture
+	entry.Families = append([]string(nil), item.Families...)
+	entry.ParameterSize = item.ParameterSize
+	entry.QuantizationLevel = item.QuantizationLevel
+	entry.ApproxSize = item.ApproxSize
 	return entry
 }
 

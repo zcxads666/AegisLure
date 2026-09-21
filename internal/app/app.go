@@ -95,7 +95,6 @@ type App struct {
 	oauthBroker          *oauth.Broker
 	serverMu             sync.RWMutex
 	profileLifecycleMu   sync.Mutex
-	configMu             sync.RWMutex
 	profileServers       map[string]*http.Server
 	profilePorts         map[string]net.Listener
 	adminServer          *http.Server

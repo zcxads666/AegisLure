@@ -52,7 +52,6 @@ type Config struct {
 	ProfilePorts         map[string]int    `json:"profile_ports"`
 	EnabledProfiles      []string          `json:"enabled_profiles"`
 	Scenario             map[string]string `json:"scenario"`
-	DisplayModelNames    map[string]string `json:"display_model_names,omitempty"`
 }
 
 const (
@@ -297,7 +296,6 @@ func Init(path, dataDir string) (*Config, error) {
 			"new-api":            "honey-tenant",
 			model.ProductSub2API: "fresh",
 		},
-		DisplayModelNames: make(map[string]string),
 	}
 	if value := os.Getenv("HP_PROFILES"); value != "" {
 		c.EnabledProfiles = NormalizeEnabledProfiles(splitComma(value))

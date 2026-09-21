@@ -92,6 +92,11 @@ type ModelCatalogEntry struct {
 	Status               string   `json:"status,omitempty"`
 	Aliases              []string `json:"aliases,omitempty"`
 	ResponseTemplateSet  string   `json:"response_template_set,omitempty"`
+	Architecture         string   `json:"architecture,omitempty"`
+	Families             []string `json:"families,omitempty"`
+	ParameterSize        string   `json:"parameter_size,omitempty"`
+	QuantizationLevel    string   `json:"quantization_level,omitempty"`
+	ApproxSize           int64    `json:"approx_size,omitempty"`
 }
 
 type ModelCatalogPack struct {
@@ -228,7 +233,7 @@ func ValidateModelCatalogPack(pack ModelCatalogPack) error {
 					return fmt.Errorf("invalid model capability in catalog %q", catalog.ID)
 				}
 			}
-			if len(entry.APIFamilies) > 16 || len(entry.Visibility) > 4 || len(entry.Aliases) > 16 {
+			if len(entry.APIFamilies) > 16 || len(entry.Visibility) > 4 || len(entry.Aliases) > 16 || len(entry.Families) > 16 {
 				return fmt.Errorf("model catalog entry %q has too many list values", entry.ID)
 			}
 			for _, visibility := range entry.Visibility {
@@ -236,7 +241,7 @@ func ValidateModelCatalogPack(pack ModelCatalogPack) error {
 					return fmt.Errorf("invalid model visibility in catalog %q", entry.ID)
 				}
 			}
-			if entry.AuthRequirement != "" && entry.AuthRequirement != "none" && entry.AuthRequirement != "honey_key" {
+			if entry.AuthRequirement != "" && entry.AuthRequirement != "none" && entry.AuthRequirement != "honey_key" && entry.AuthRequirement != "api_key" {
 				return fmt.Errorf("invalid model auth requirement in catalog %q", entry.ID)
 			}
 			if entry.VirtualContextTokens < 0 || entry.VirtualContextTokens > 10_000_000 || len(entry.VirtualPriceProfile) > 128 || len(entry.ResponseTemplateSet) > 128 || strings.ContainsAny(entry.VirtualPriceProfile+entry.ResponseTemplateSet, "\r\n") {
@@ -249,6 +254,14 @@ func ValidateModelCatalogPack(pack ModelCatalogPack) error {
 				if alias == "" || len(alias) > 256 || strings.ContainsAny(alias, "\r\n") || strings.Contains(alias, "://") {
 					return fmt.Errorf("invalid model alias in catalog %q", entry.ID)
 				}
+			}
+			for _, value := range append(append([]string{}, entry.Families...), entry.Architecture, entry.ParameterSize, entry.QuantizationLevel) {
+				if len(value) > 128 || strings.ContainsAny(value, "\r\n") {
+					return fmt.Errorf("invalid self-hosted model metadata in catalog %q", entry.ID)
+				}
+			}
+			if entry.ApproxSize < 0 || entry.ApproxSize > 1<<50 {
+				return fmt.Errorf("invalid approximate model size in catalog %q", entry.ID)
 			}
 		}
 	}

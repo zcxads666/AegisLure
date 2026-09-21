@@ -32,21 +32,6 @@ func TestLoadAppliesSecureRuntimeDefaultsAndEnvironmentOverrides(t *testing.T) {
 	}
 }
 
-func TestDisplayModelNamesRoundTrip(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.json")
-	original := &Config{InstanceID: "instance", InstanceKey: "key", DisplayModelNames: map[string]string{"ollama": "custom-model"}}
-	if err := Save(path, original); err != nil {
-		t.Fatal(err)
-	}
-	loaded, err := Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded.DisplayModelNames["ollama"] != "custom-model" {
-		t.Fatalf("display model names did not round trip: %#v", loaded.DisplayModelNames)
-	}
-}
-
 func TestLoadMigratesSub2APIProfileWithoutCollidingWithExistingPorts(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(`{"instance_id":"instance","instance_key":"key","admin_port":28443,"profile_ports":{"localai":8081}}`), 0600); err != nil {

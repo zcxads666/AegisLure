@@ -2103,12 +2103,16 @@ func (a *App) noteOllamaModelLoaded(profile profiles.Profile, session Session, m
 }
 
 func (a *App) handleSGLang(w *captureWriter, r *http.Request, profile profiles.Profile, session Session, body []byte, obs *Observation) {
+	servedModel := profiles.Catalog(model.ProductSGLang)[0].ID
+	if catalog := a.catalogForSession(model.ProductSGLang, "guest", session); len(catalog) > 0 {
+		servedModel = catalog[0].ID
+	}
 	switch obs.RouteTemplate {
 	case "sglang.health":
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("OK"))
 	case "sglang.model_info":
-		a.writeJSON(w, http.StatusOK, map[string]any{"model_path": "/models/Qwen/Qwen3.6-35B-A3B", "served_model_name": "Qwen/Qwen3.6-35B-A3B", "tp_size": 1, "pp_size": 1})
+		a.writeJSON(w, http.StatusOK, map[string]any{"model_path": "/models/" + servedModel, "served_model_name": servedModel, "tp_size": 1, "pp_size": 1})
 	case "sglang.metrics":
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		w.WriteHeader(http.StatusOK)
@@ -2118,7 +2122,7 @@ func (a *App) handleSGLang(w *captureWriter, r *http.Request, profile profiles.P
 	case "sglang.openapi":
 		a.writeJSON(w, http.StatusOK, sglangOpenAPISchema(profile))
 	case "sglang.server_info":
-		info := map[string]any{"model_path": "/models/Qwen/Qwen3.6-35B-A3B", "api_key": a.derivedHoneyKey(model.ProductSGLang), "ssl_keyfile": "/run/secrets/server.key", "rank": 0, "world_size": 1, "tp_size": 1, "pp_size": 1}
+		info := map[string]any{"model_path": "/models/" + servedModel, "served_model_name": servedModel, "api_key": a.derivedHoneyKey(model.ProductSGLang), "ssl_keyfile": "/run/secrets/server.key", "rank": 0, "world_size": 1, "tp_size": 1, "pp_size": 1}
 		_, effectOwner, _ := virtualEffectOwner(profile, session)
 		for _, effect := range a.store.ActiveEffects(effectOwner, model.ProductSGLang, time.Now().UTC()) {
 			switch effect.EffectType {
