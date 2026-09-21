@@ -1276,7 +1276,8 @@ func (a *App) adminInstances(w http.ResponseWriter) {
 		if port == 0 {
 			port = profile.DefaultPort
 		}
-		instances = append(instances, map[string]any{"id": "inst_" + name, "product": name, "profile_id": profile.ID, "port": port, "port_pool": a.cfg.PortPools[name], "port_revision": portRevisions[name], "scenario": profile.Scenario, "effect_scope": profile.EffectScope, "effect_ttl_seconds": int(profile.EffectTTL / time.Second), "state": state, "enabled": configured[name], "endpoint": fmt.Sprintf("%s:%d", a.cfg.PublicBind, port), "version": profile.DisplayVersion, "synthetic_only": true})
+		modelName, modelNameCustom := a.instanceDisplayModelName(name)
+		instances = append(instances, map[string]any{"id": "inst_" + name, "product": name, "profile_id": profile.ID, "port": port, "port_pool": a.cfg.PortPools[name], "port_revision": portRevisions[name], "scenario": profile.Scenario, "effect_scope": profile.EffectScope, "effect_ttl_seconds": int(profile.EffectTTL / time.Second), "state": state, "enabled": configured[name], "endpoint": fmt.Sprintf("%s:%d", a.cfg.PublicBind, port), "version": profile.DisplayVersion, "synthetic_only": true, "model_name": modelName, "model_name_custom": modelNameCustom})
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"instances": instances})
 }

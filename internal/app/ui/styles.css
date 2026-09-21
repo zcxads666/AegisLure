@@ -1909,6 +1909,26 @@ pre,
   font-size: var(--text-xs);
 }
 
+.instance-model-setting {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.instance-model-setting .text-field {
+  min-width: 0;
+}
+
+.instance-model-hint {
+  display: block;
+  min-height: 32px;
+  margin-bottom: 14px;
+  color: var(--text-3);
+  line-height: 1.45;
+}
+
 .instance-boundary {
   color: var(--text-3);
 }
