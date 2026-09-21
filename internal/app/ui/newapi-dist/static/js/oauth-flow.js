@@ -2,7 +2,7 @@
   'use strict'
 
   const ERROR_KEY = 'newapi_oauth_error'
-  const REGISTER_PATH = '/sign-up'
+  const LOGIN_PATH = '/login'
   const AUTH_PATHS = new Set(['/login', '/sign-in', '/register', '/sign-up'])
 
   function isAuthPage() {
@@ -24,7 +24,7 @@
     notice.id = 'newapi-oauth-error'
     notice.setAttribute('role', 'alert')
     notice.setAttribute('aria-live', 'assertive')
-    notice.textContent = 'OAuth authentication failed. Please try again or use account registration.'
+    notice.textContent = 'OAuth 登录仅在登录页提供，请使用账号密码登录。'
     Object.assign(notice.style, {
       position: 'fixed',
       top: '1rem',
@@ -69,7 +69,7 @@
         body: JSON.stringify({
           provider,
           intent: 'login',
-          surface: window.location.pathname === '/login' || window.location.pathname === '/sign-in' ? 'login' : 'register',
+          surface: 'login',
         }),
       })
     } catch (_) {
@@ -78,7 +78,7 @@
       window.clearTimeout(timeout)
     }
     rememberError()
-    window.location.assign(REGISTER_PATH)
+    window.location.assign(LOGIN_PATH)
   }
 
   function interceptOAuthClick(event) {

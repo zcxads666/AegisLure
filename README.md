@@ -11,7 +11,7 @@ AegisLure 面向单机部署，提供 New API、vLLM、Ollama、SGLang、LocalAI
 - 管理控制台：总览、观测记录、调用分析、交互链路、IP 情报、蜜罐实例、规则策略和系统设置。
 - 规则与策略管理：支持规则、正则条件、身份策略、OAuth 渠道和风险等级的查看与维护。
 - IP 情报：本地/保留地址直接分类，公网地址统一通过 IPinfo API 获取，并在查询失败时回退到“未知”。
-- GitHub、LinuxDO 和 Discord 注册入口，以及 Sub2API 的 GitHub、LinuxDO、Google、WeChat、OIDC、DingTalk 入口，可按身份策略启用或停用；所有入口均为本地合成流程。
+- GitHub、LinuxDO 和 Discord 登录入口，以及 Sub2API 的 GitHub、LinuxDO、Google、WeChat、OIDC、DingTalk 登录入口，可按身份策略启用或停用；所有入口均为本地合成流程。
 - 风险事件、审计记录、IP/身份指标、JSON/CSV/plain/STIX2/nftables 导出和有界保留策略。
 - SQLite 默认存储，也支持 PostgreSQL 新部署模式；两种模式均会自动加载默认规则和模型目录。
 
@@ -70,6 +70,17 @@ curl -fsSL https://raw.githubusercontent.com/zcxads666/AegisLure/main/install-re
 cd aegislure
 ./hpctl status
 ./hpctl health
+```
+
+删除部署（会删除本地运行数据、恢复码、TLS 证书和内置 PostgreSQL 数据卷；外部 PostgreSQL 不受影响）：
+
+```bash
+INSTALL_DIR=/path/to/aegislure
+(
+  cd "$INSTALL_DIR"
+  docker compose -f docker-compose.yml -f docker-compose.pg.yml --profile bundled-pg down --remove-orphans --volumes
+)
+rm -rf "$INSTALL_DIR"
 ```
 
 ## 网络入口

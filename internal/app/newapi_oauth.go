@@ -46,6 +46,7 @@ func fakeNewAPIOAuthClientID(provider string, enabled bool) string {
 func (a *App) newAPIOAuthStatus() map[string]any {
 	status := map[string]any{
 		"oauth_register_enabled": false,
+		"oauth_login_enabled":    false,
 		"github_oauth":           false,
 		"github_client_id":       "",
 		"discord_oauth":          false,
@@ -56,7 +57,7 @@ func (a *App) newAPIOAuthStatus() map[string]any {
 	for _, policy := range a.store.ListOAuthChannelPolicies() {
 		enabled := policy.Enabled
 		if enabled {
-			status["oauth_register_enabled"] = true
+			status["oauth_login_enabled"] = true
 		}
 		switch policy.Provider {
 		case "github":
@@ -147,9 +148,9 @@ func (a *App) handleNewAPIOAuthSimulation(w *captureWriter, r *http.Request, bod
 	}
 	surface := strings.ToLower(strings.TrimSpace(request.Surface))
 	if surface == "" {
-		surface = "register"
+		surface = "login"
 	}
-	if surface != "register" && surface != "login" {
+	if surface != "login" {
 		markNewAPIOAuthObservation(obs, string(provider), intent, "", "unknown", "invalid_request")
 		a.writeNewAPIOAuthRejected(w, http.StatusBadRequest)
 		return

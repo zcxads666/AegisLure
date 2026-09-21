@@ -32,6 +32,15 @@ if [[ -d "$source_repo/docs" ]]; then
 fi
 ln -s "$node_modules_root" "$stage_root/frontend/node_modules"
 
+# OAuth-like buttons are intentionally available on the login page only.
+# Keep the register view's bindings in place so the official build remains type-safe.
+register_view="$stage_root/frontend/src/views/auth/RegisterView.vue"
+if [[ ! -f "$register_view" ]]; then
+  echo "Sub2API register view not found: $register_view" >&2
+  exit 1
+fi
+perl -0pi -e 'my $count = s/v-if="showOAuthLogin"/v-if="false \&\& showOAuthLogin"/; die "expected one register OAuth block, found $count\\n" unless $count == 1' "$register_view"
+
 source_commit="$(git -C "$source_repo" rev-parse --short HEAD 2>/dev/null || printf 'unknown')"
 echo "Building official Sub2API frontend commit $source_commit"
 (
@@ -58,6 +67,7 @@ Source checkout: $source_repo
 Build command: pnpm build
 Upstream copyright: (c) 2026 Wesley Liddick
 Upstream license: GNU Lesser General Public License v3.0 or later (see UPSTREAM-LICENSE.txt)
+Local overlay: RegisterView OAuth controls disabled; LoginView OAuth controls retained.
 EOF
 
 echo "Embedded artifact written to $artifact_root"

@@ -103,12 +103,16 @@ func TestNewAPIOAuthSimulationIsConfigurableAndRecordsNoProviderCredentials(t *t
 	public := &inProcessClient{handler: a.publicHandler(profile), cookies: map[string]string{}}
 
 	resp, statusBody := doRawJSON(t, public, http.MethodGet, "/api/status", nil, nil)
-	if resp.StatusCode != http.StatusOK || !strings.Contains(string(statusBody), `"oauth_register_enabled":false`) {
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(statusBody), `"oauth_register_enabled":false`) || !strings.Contains(string(statusBody), `"oauth_login_enabled":false`) {
 		t.Fatalf("OAuth channels were not disabled by default: %d %s", resp.StatusCode, statusBody)
 	}
-	resp, _ = doJSON(t, public, http.MethodPost, "/api/oauth/state", map[string]string{"provider": "github", "intent": "login", "surface": "register"})
+	resp, _ = doJSON(t, public, http.MethodPost, "/api/oauth/state", map[string]string{"provider": "github", "intent": "login", "surface": "login"})
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("disabled OAuth simulation status = %d", resp.StatusCode)
+	}
+	resp, _ = doJSON(t, public, http.MethodPost, "/api/oauth/state", map[string]string{"provider": "github", "intent": "login", "surface": "register"})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("registration OAuth surface was still accepted: %d", resp.StatusCode)
 	}
 	resp, _ = doJSON(t, public, http.MethodPost, "/api/user/login", map[string]string{"username": "missing-login-user", "password": "wrong-password"})
 	if resp.StatusCode != http.StatusUnauthorized {
@@ -138,10 +142,10 @@ func TestNewAPIOAuthSimulationIsConfigurableAndRecordsNoProviderCredentials(t *t
 	}
 
 	resp, statusBody = doRawJSON(t, public, http.MethodGet, "/api/status", nil, nil)
-	if resp.StatusCode != http.StatusOK || !strings.Contains(string(statusBody), `"oauth_register_enabled":true`) || !strings.Contains(string(statusBody), `"github_oauth":true`) {
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(statusBody), `"oauth_register_enabled":false`) || !strings.Contains(string(statusBody), `"oauth_login_enabled":true`) || !strings.Contains(string(statusBody), `"github_oauth":true`) {
 		t.Fatalf("enabled OAuth status contract failed: %d %s", resp.StatusCode, statusBody)
 	}
-	resp, simulation := doJSON(t, public, http.MethodPost, "/api/oauth/state", map[string]string{"provider": "github", "intent": "login", "surface": "register"})
+	resp, simulation := doJSON(t, public, http.MethodPost, "/api/oauth/state", map[string]string{"provider": "github", "intent": "login", "surface": "login"})
 	if resp.StatusCode != http.StatusUnauthorized || simulation["success"] != false || simulation["code"] != "OAUTH_UNAVAILABLE" {
 		t.Fatalf("OAuth simulation response = %d %#v", resp.StatusCode, simulation)
 	}
@@ -166,7 +170,7 @@ func TestNewAPIOAuthSimulationIsConfigurableAndRecordsNoProviderCredentials(t *t
 		}
 		candidate := event
 		oauthEvent = &candidate
-		if event.Metadata["oauth_outcome"] != "rejected" || event.Metadata["oauth_surface"] != "register" || event.Metadata["risk_equivalent"] != "newapi.user.login.failed" || !containsString(event.ReasonCodes, "newapi_login_failed") || strings.Contains(strings.ToLower(event.BodyPreview), "access_token") || strings.Contains(strings.ToLower(event.BodyPreview), "client_secret") {
+		if event.Metadata["oauth_outcome"] != "rejected" || event.Metadata["oauth_surface"] != "login" || event.Metadata["risk_equivalent"] != "newapi.user.login.failed" || !containsString(event.ReasonCodes, "newapi_login_failed") || strings.Contains(strings.ToLower(event.BodyPreview), "access_token") || strings.Contains(strings.ToLower(event.BodyPreview), "client_secret") {
 			t.Fatalf("OAuth event was not bounded and rejected safely: %+v", event)
 		}
 	}
