@@ -1,7 +1,9 @@
 package app
 
 import (
+	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -89,6 +91,25 @@ func TestAdminIndicatorsDefaultSortRiskSortAndRiskLevelFilter(t *testing.T) {
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("invalid indicator query %q status = %d", query, resp.StatusCode)
 		}
+	}
+
+	raw := admin.do(t, http.MethodGet, cfg.AdminPath+"admin/api/v1/indicators?format=csv", nil, "")
+	allCSV, err := io.ReadAll(raw.Body)
+	_ = raw.Body.Close()
+	if err != nil || raw.StatusCode != http.StatusOK || !strings.Contains(string(allCSV), "203.0.113.10") || !strings.Contains(string(allCSV), "203.0.113.13") || len(strings.Split(strings.TrimSpace(string(allCSV)), "\n")) != 5 {
+		t.Fatalf("full indicator CSV export = %d %v %s", raw.StatusCode, err, allCSV)
+	}
+	raw = admin.do(t, http.MethodGet, cfg.AdminPath+"admin/api/v1/indicators?format=plain&q=203.0.113.12&risk_level=high", nil, "")
+	filteredPlain, err := io.ReadAll(raw.Body)
+	_ = raw.Body.Close()
+	if err != nil || raw.StatusCode != http.StatusOK || string(filteredPlain) != "203.0.113.12\n" {
+		t.Fatalf("filtered indicator plain export = %d %v %q", raw.StatusCode, err, filteredPlain)
+	}
+	raw = admin.do(t, http.MethodGet, cfg.AdminPath+"admin/api/v1/indicators?format=csv&q=203.0.113.12&risk_level=high", nil, "")
+	filteredCSV, err := io.ReadAll(raw.Body)
+	_ = raw.Body.Close()
+	if err != nil || raw.StatusCode != http.StatusOK || len(strings.Split(strings.TrimSpace(string(filteredCSV)), "\n")) != 2 || !strings.Contains(string(filteredCSV), "203.0.113.12") {
+		t.Fatalf("filtered indicator CSV export = %d %v %s", raw.StatusCode, err, filteredCSV)
 	}
 }
 

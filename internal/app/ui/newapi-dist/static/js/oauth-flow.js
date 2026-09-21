@@ -2,11 +2,16 @@
   'use strict'
 
   const ERROR_KEY = 'newapi_oauth_error'
+  const REGISTER_PATH = '/sign-up'
   const LOGIN_PATH = '/login'
   const AUTH_PATHS = new Set(['/login', '/sign-in', '/register', '/sign-up'])
 
   function isAuthPage() {
     return AUTH_PATHS.has(window.location.pathname.replace(/\/$/, '') || '/')
+  }
+
+  function authSurface() {
+    return window.location.pathname === '/login' || window.location.pathname === '/sign-in' ? 'login' : 'register'
   }
 
   function providerFor(button) {
@@ -24,7 +29,7 @@
     notice.id = 'newapi-oauth-error'
     notice.setAttribute('role', 'alert')
     notice.setAttribute('aria-live', 'assertive')
-    notice.textContent = 'OAuth 登录仅在登录页提供，请使用账号密码登录。'
+    notice.textContent = 'OAuth 模拟登录/注册未完成，请重试或使用账号密码继续。'
     Object.assign(notice.style, {
       position: 'fixed',
       top: '1rem',
@@ -58,6 +63,7 @@
   }
 
   async function notifyAndReturn(provider) {
+    const surface = authSurface()
     const controller = typeof AbortController === 'function' ? new AbortController() : null
     const timeout = window.setTimeout(() => controller?.abort(), 1500)
     try {
@@ -68,8 +74,8 @@
         headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
         body: JSON.stringify({
           provider,
-          intent: 'login',
-          surface: 'login',
+          intent: surface,
+          surface,
         }),
       })
     } catch (_) {
@@ -78,7 +84,7 @@
       window.clearTimeout(timeout)
     }
     rememberError()
-    window.location.assign(LOGIN_PATH)
+    window.location.assign(surface === 'login' ? LOGIN_PATH : REGISTER_PATH)
   }
 
   function interceptOAuthClick(event) {

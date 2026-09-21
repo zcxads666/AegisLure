@@ -57,6 +57,7 @@ func (a *App) newAPIOAuthStatus() map[string]any {
 	for _, policy := range a.store.ListOAuthChannelPolicies() {
 		enabled := policy.Enabled
 		if enabled {
+			status["oauth_register_enabled"] = true
 			status["oauth_login_enabled"] = true
 		}
 		switch policy.Provider {
@@ -148,9 +149,12 @@ func (a *App) handleNewAPIOAuthSimulation(w *captureWriter, r *http.Request, bod
 	}
 	surface := strings.ToLower(strings.TrimSpace(request.Surface))
 	if surface == "" {
-		surface = "login"
+		surface = intent
+		if surface != "register" && surface != "login" {
+			surface = "login"
+		}
 	}
-	if surface != "login" {
+	if surface != "register" && surface != "login" {
 		markNewAPIOAuthObservation(obs, string(provider), intent, "", "unknown", "invalid_request")
 		a.writeNewAPIOAuthRejected(w, http.StatusBadRequest)
 		return

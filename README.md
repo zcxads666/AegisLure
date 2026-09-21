@@ -11,7 +11,7 @@ AegisLure 面向单机部署，提供 New API、vLLM、Ollama、SGLang、LocalAI
 - 管理控制台：总览、观测记录、调用分析、交互链路、IP 情报、蜜罐实例、规则策略和系统设置。
 - 规则与策略管理：支持规则、正则条件、身份策略、OAuth 渠道和风险等级的查看与维护。
 - IP 情报：本地/保留地址直接分类，公网地址统一通过 IPinfo API 获取，并在查询失败时回退到“未知”。
-- GitHub、LinuxDO 和 Discord 登录入口，以及 Sub2API 的 GitHub、LinuxDO、Google、WeChat、OIDC、DingTalk 登录入口，可按身份策略启用或停用；所有入口均为本地合成流程。
+- GitHub、LinuxDO 和 Discord 登录、注册入口，以及 Sub2API 官方已有的 GitHub、LinuxDO、Google、WeChat、OIDC、DingTalk 入口（按官方登录/注册页面分别显示），可按身份策略统一启用或停用；所有入口均为本地合成流程。
 - 风险事件、审计记录、IP/身份指标、JSON/CSV/plain/STIX2/nftables 导出和有界保留策略。
 - SQLite 默认存储，也支持 PostgreSQL 新部署模式；两种模式均会自动加载默认规则和模型目录。
 
