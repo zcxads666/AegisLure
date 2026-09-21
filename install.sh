@@ -366,6 +366,41 @@ show_startup_diagnostics() {
   fi
 }
 
+cleanup_build_artifacts() {
+  local cache_path docker_prune_output
+  local -a local_cache_paths=()
+
+  # Compose builds leave their intermediate Go layers in the Docker builder's
+  # cache. The deployed image and running containers are not affected by this
+  # command; runtime data and named volumes are intentionally left untouched.
+  if [[ "$NO_BUILD" -eq 0 ]]; then
+    if docker_prune_output="$(docker builder prune --all --force 2>&1)"; then
+      [[ -z "$docker_prune_output" ]] || printf '%s\n' "$docker_prune_output"
+    else
+      echo "Warning: Docker build-cache cleanup failed; unused builder cache may remain." >&2
+      [[ -z "$docker_prune_output" ]] || printf '%s\n' "$docker_prune_output" >&2
+    fi
+  fi
+
+  # The local toolchain redirects Go's caches into the repository. Only remove
+  # the exact paths configured by scripts/env.sh, never a caller-supplied cache.
+  if [[ "${GOCACHE:-}" == "$ROOT_DIR/.tools/gocache" ]]; then
+    local_cache_paths+=("$GOCACHE")
+  fi
+  if [[ "${GOMODCACHE:-}" == "$ROOT_DIR/.tools/gopath/pkg/mod" ]]; then
+    local_cache_paths+=("$GOMODCACHE")
+  fi
+  for cache_path in "${local_cache_paths[@]}"; do
+    if [[ -d "$cache_path" ]]; then
+      if rm -rf -- "$cache_path"; then
+        echo "Removed local build cache: ${cache_path#"$ROOT_DIR/"}"
+      else
+        echo "Warning: local build-cache cleanup failed: ${cache_path#"$ROOT_DIR/"}" >&2
+      fi
+    fi
+  done
+}
+
 if ! compose config >/dev/null; then
   echo "AegisLure installation failed during Compose configuration validation." >&2
   exit 1
@@ -430,6 +465,7 @@ if ! final_status="$(compose exec -T aegislure /usr/local/bin/hpctl \
   show_startup_diagnostics
   exit 1
 fi
+cleanup_build_artifacts
 printf '%s\n' "$final_status"
 local_admin_url="$(sed -n 's/^[[:space:]]*"admin_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' <<<"$final_status" | head -n 1)"
 public_admin_url=""

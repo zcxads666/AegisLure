@@ -45,6 +45,11 @@ curl -fsSL https://raw.githubusercontent.com/zcxads666/AegisLure/main/install-re
 - 首次设置提示，管理员用户名默认预填为 `owner`，密码由用户在页面中自行设置（至少 8 个字符）；
 - 管理端自签 TLS 证书的 SHA-256 指纹。
 
+最终状态确认成功后，安装器会清理项目本地 Go 编译缓存（`.tools/gocache` 和
+`.tools/gopath/pkg/mod`）。如果本次执行了本地镜像构建，还会清理 Docker daemon
+中未使用的构建缓存；这不会删除正在使用的镜像、容器、运行数据或数据库卷。Docker
+构建缓存按 daemon 管理，因此同一 daemon 上其他项目的未使用构建缓存也可能被回收。
+
 首次打开后台时，浏览器会提示这是自签证书；核对命令输出的指纹后继续。创建 owner 后，恢复码只显示一次，请立即离线保存。安装器不会生成、保存或输出管理员密码。
 
 使用固定 Release 镜像时，将 `--version main` 改为版本号或 `latest`：
