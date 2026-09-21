@@ -246,7 +246,7 @@ func (a *App) sub2APIRegister(w *captureWriter, r *http.Request, session Session
 		ID: "hu_" + security.MustRandomToken(10), InstanceID: a.cfg.InstanceID, UsernameFP: usernameFP,
 		UsernameHint: "user@" + emailDomain(email), EmailLocalFP: emailLocalFingerprint(a.cfg.InstanceKey, email), EmailDomain: emailDomain(email),
 		PasswordFP: security.Fingerprint(a.cfg.InstanceKey, password), PasswordLengthBucket: lengthBucket, PasswordClasses: passwordClasses,
-		PasswordWeakClass: weakClass, VirtualQuota: sub2APIDefaultQuota, CreatedAt: now, LastSeen: now,
+		PasswordWeakClass: weakClass, VirtualQuota: sub2APIDefaultQuota, CreatedAt: now, CreationIP: requestSourceIP(r), LastSeen: now,
 	}
 	if err := a.store.CreateHoneyUser(user); err != nil {
 		obs.EventType = "sub2api.user.register.failed"
@@ -978,7 +978,7 @@ func (a *App) handleSub2APIKeys(w *captureWriter, r *http.Request, body []byte, 
 		if options.name != nil && strings.TrimSpace(*options.name) != "" {
 			name = *options.name
 		}
-		token := model.HoneyToken{ID: "ht_" + security.MustRandomToken(8), HoneyUserID: user.ID, Hash: security.Fingerprint(a.cfg.InstanceKey, raw), PrefixHint: raw[:12], Name: name, ModelAllowlist: append([]string(nil), options.models...), RemainQuota: quota, UnlimitedQuota: unlimited, ExpiredAt: options.expiresAt, CreatedAt: time.Now().UTC()}
+		token := model.HoneyToken{ID: "ht_" + security.MustRandomToken(8), HoneyUserID: user.ID, Hash: security.Fingerprint(a.cfg.InstanceKey, raw), PrefixHint: raw[:12], Name: name, ModelAllowlist: append([]string(nil), options.models...), RemainQuota: quota, UnlimitedQuota: unlimited, ExpiredAt: options.expiresAt, CreatedAt: time.Now().UTC(), CreationIP: requestSourceIP(r)}
 		if options.disabled != nil && *options.disabled {
 			token.DisabledAt = time.Now().UTC()
 		}

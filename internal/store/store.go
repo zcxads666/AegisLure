@@ -2012,6 +2012,84 @@ func (s *Store) GetHoneyUser(id string) (model.HoneyUser, bool) {
 	return user, ok
 }
 
+func (s *Store) ListHoneyUsers() []model.HoneyUser {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]model.HoneyUser, 0, len(s.state.HoneyUsers))
+	for _, user := range s.state.HoneyUsers {
+		user.PasswordClasses = append([]string(nil), user.PasswordClasses...)
+		result = append(result, user)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].ID < result[j].ID
+		}
+		return result[i].CreatedAt.Before(result[j].CreatedAt)
+	})
+	return result
+}
+
+const insightEvidenceVersion = 1
+
+// NeedsInsightEvidenceBackfill reports whether this installation predates
+// durable account/key creation evidence. The migration marker lives in the
+// logical state so it survives both SQLite and PostgreSQL backups/restores.
+func (s *Store) NeedsInsightEvidenceBackfill() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state.InsightEvidenceVersion < insightEvidenceVersion
+}
+
+// BackfillInsightCreationEvidence copies linkable creation IPs from retained
+// events into durable identity state. Older events that lack an identity are
+// deliberately not guessed; the admin insight builder exposes those identities
+// through its explicit legacy-evidence fallback instead.
+func (s *Store) BackfillInsightCreationEvidence(events []model.Event) (int, error) {
+	accountIPs := make(map[string]string)
+	keyIPs := make(map[string]string)
+	for _, event := range events {
+		switch event.EventType {
+		case "newapi.user.register.success", "sub2api.user.register.success":
+			if id := strings.TrimSpace(event.Metadata["honey_user_id"]); id != "" && strings.TrimSpace(event.SourceIP) != "" {
+				if accountIPs[id] == "" {
+					accountIPs[id] = strings.TrimSpace(event.SourceIP)
+				}
+			}
+		case "newapi.token.created", "sub2api.key.created":
+			id := strings.TrimSpace(event.CredentialFingerprint)
+			if id == "" {
+				id = strings.TrimSpace(event.Metadata["key_fingerprint"])
+			}
+			if id != "" && strings.TrimSpace(event.SourceIP) != "" && keyIPs[id] == "" {
+				keyIPs[id] = strings.TrimSpace(event.SourceIP)
+			}
+		}
+	}
+	updated := 0
+	err := s.Update(func(state *model.State) error {
+		if state.InsightEvidenceVersion >= insightEvidenceVersion {
+			return nil
+		}
+		for id, user := range state.HoneyUsers {
+			if user.CreationIP == "" && accountIPs[id] != "" {
+				user.CreationIP = accountIPs[id]
+				state.HoneyUsers[id] = user
+				updated++
+			}
+		}
+		for id, token := range state.HoneyTokens {
+			if token.CreationIP == "" && keyIPs[token.Hash] != "" {
+				token.CreationIP = keyIPs[token.Hash]
+				state.HoneyTokens[id] = token
+				updated++
+			}
+		}
+		state.InsightEvidenceVersion = insightEvidenceVersion
+		return nil
+	})
+	return updated, err
+}
+
 func (s *Store) TouchHoneyUser(id string, update func(*model.HoneyUser)) error {
 	return s.Update(func(state *model.State) error {
 		user, ok := state.HoneyUsers[id]

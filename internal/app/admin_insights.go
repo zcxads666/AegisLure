@@ -20,35 +20,39 @@ const (
 )
 
 type informationInsight struct {
-	ID                 string           `json:"id"`
-	IdentityType       string           `json:"identity_type"`
-	SubjectFingerprint string           `json:"subject_fingerprint"`
-	RelatedAccount     string           `json:"related_account,omitempty"`
-	RelatedKey         string           `json:"related_key,omitempty"`
-	Products           []string         `json:"products,omitempty"`
-	CreationIPs        []string         `json:"creation_ips,omitempty"`
-	UsageIPs           []string         `json:"usage_ips,omitempty"`
-	SourceIPs          []string         `json:"source_ips,omitempty"`
-	DifferentIPCount   int              `json:"different_ip_count"`
-	FirstSeen          time.Time        `json:"first_seen"`
-	LastSeen           time.Time        `json:"last_seen"`
-	EventCount         int              `json:"event_count"`
-	Score              int              `json:"score"`
-	Events             []model.Event    `json:"events"`
-	DetectionFindings  []map[string]any `json:"detection_findings,omitempty"`
-	RootAccountGroup   bool             `json:"root_account_group,omitempty"`
+	ID                      string           `json:"id"`
+	IdentityType            string           `json:"identity_type"`
+	SubjectFingerprint      string           `json:"subject_fingerprint"`
+	RelatedAccount          string           `json:"related_account,omitempty"`
+	RelatedKey              string           `json:"related_key,omitempty"`
+	Products                []string         `json:"products,omitempty"`
+	CreationIPs             []string         `json:"creation_ips,omitempty"`
+	UsageIPs                []string         `json:"usage_ips,omitempty"`
+	SourceIPs               []string         `json:"source_ips,omitempty"`
+	DifferentIPCount        int              `json:"different_ip_count"`
+	FirstSeen               time.Time        `json:"first_seen"`
+	LastSeen                time.Time        `json:"last_seen"`
+	EventCount              int              `json:"event_count"`
+	Score                   int              `json:"score"`
+	Events                  []model.Event    `json:"events"`
+	DetectionFindings       []map[string]any `json:"detection_findings,omitempty"`
+	RootAccountGroup        bool             `json:"root_account_group,omitempty"`
+	CreationEvidenceMissing bool             `json:"creation_evidence_missing,omitempty"`
+	EventIDs                []string         `json:"-"`
 }
 
 type insightAccumulator struct {
-	view         informationInsight
-	creationIPs  map[string]bool
-	usageIPs     map[string]bool
-	sourceIPs    map[string]bool
-	products     map[string]bool
-	eventIDs     map[string]bool
-	creationSeen bool
-	usageSeen    bool
-	rootExcluded bool
+	view               informationInsight
+	creationIPs        map[string]bool
+	usageIPs           map[string]bool
+	sourceIPs          map[string]bool
+	products           map[string]bool
+	eventIDs           map[string]bool
+	creationSeen       bool
+	usageSeen          bool
+	rootExcluded       bool
+	persistentIdentity bool
+	eventCount         int
 }
 
 func (a *App) adminInsights(w http.ResponseWriter, r *http.Request) {
@@ -88,6 +92,7 @@ func (a *App) adminInsights(w http.ResponseWriter, r *http.Request) {
 	response["aggregation"] = map[string]any{
 		"account":                "creation event + authenticated use event with a different source IP",
 		"key":                    "key creation event + key use event with a different source IP",
+		"legacy_identity":        "durable identity with missing historical creation evidence + use from at least two source IPs",
 		"root_accounts_excluded": true,
 	}
 	a.writeJSON(w, http.StatusOK, response)
@@ -97,6 +102,26 @@ func (a *App) buildInformationInsights(events []model.Event) []informationInsigh
 	accounts := make(map[string]*insightAccumulator)
 	keys := make(map[string]*insightAccumulator)
 	detections := make(map[string]*insightAccumulator)
+	for _, user := range a.store.ListHoneyUsers() {
+		if user.ID == "" || a.isNewAPIRootUser(user) {
+			continue
+		}
+		accountID := security.Fingerprint(a.cfg.InstanceKey, "account\x00"+user.ID)[:20]
+		account := newInsightAccumulator(a.cfg.InstanceKey, insightAccount, accountID)
+		account.persistentIdentity = true
+		account.addPersistedCreation(user.CreationIP, user.CreatedAt)
+		accounts[accountID] = account
+	}
+	for _, token := range a.store.ListTokens("") {
+		keyID := strings.TrimSpace(token.Hash)
+		if keyID == "" {
+			continue
+		}
+		key := newInsightAccumulator(a.cfg.InstanceKey, insightKey, keyID)
+		key.persistentIdentity = true
+		key.addPersistedCreation(token.CreationIP, token.CreatedAt)
+		keys[keyID] = key
+	}
 	for _, event := range events {
 		accountID, accountOK := a.insightAccountID(event)
 		keyID := insightKeyID(event)
@@ -154,14 +179,14 @@ func (a *App) buildInformationInsights(events []model.Event) []informationInsigh
 	result := make([]informationInsight, 0, len(accounts)+len(keys)+len(detections))
 	for _, item := range accounts {
 		finished := item.finish()
-		if item.rootExcluded || !item.creationSeen || !item.usageSeen || finished.DifferentIPCount == 0 {
+		if item.rootExcluded || !item.usageSeen || finished.DifferentIPCount == 0 {
 			continue
 		}
 		result = append(result, finished)
 	}
 	for _, item := range keys {
 		finished := item.finish()
-		if !item.creationSeen || !item.usageSeen || finished.DifferentIPCount == 0 {
+		if !item.usageSeen || finished.DifferentIPCount == 0 {
 			continue
 		}
 		result = append(result, finished)
@@ -204,6 +229,17 @@ func (a *insightAccumulator) addCreation(event model.Event) {
 	}
 }
 
+func (a *insightAccumulator) addPersistedCreation(ip string, createdAt time.Time) {
+	ip = strings.TrimSpace(ip)
+	if ip != "" {
+		a.creationSeen = true
+		a.creationIPs[ip] = true
+	}
+	if !createdAt.IsZero() && (a.view.FirstSeen.IsZero() || createdAt.Before(a.view.FirstSeen)) {
+		a.view.FirstSeen = createdAt
+	}
+}
+
 func (a *insightAccumulator) addUsage(event model.Event) {
 	if event.SourceIP != "" {
 		a.usageIPs[event.SourceIP] = true
@@ -217,8 +253,24 @@ func (a *insightAccumulator) addEvent(event model.Event) {
 	if event.EventID != "" {
 		a.eventIDs[event.EventID] = true
 	}
+	for _, eventID := range event.AggregateEventIDs {
+		if eventID != "" {
+			a.eventIDs[eventID] = true
+		}
+	}
+	a.eventCount++
 	if len(a.view.Events) < 200 {
 		a.view.Events = append(a.view.Events, event)
+	} else {
+		oldest := 0
+		for index := 1; index < len(a.view.Events); index++ {
+			if insightEventBefore(a.view.Events[index], a.view.Events[oldest]) {
+				oldest = index
+			}
+		}
+		if insightEventBefore(a.view.Events[oldest], event) {
+			a.view.Events[oldest] = event
+		}
 	}
 	if event.SourceIP != "" {
 		a.sourceIPs[event.SourceIP] = true
@@ -238,16 +290,26 @@ func (a *insightAccumulator) addEvent(event model.Event) {
 }
 
 func (a *insightAccumulator) finish() informationInsight {
-	for ip := range a.usageIPs {
-		if !a.creationIPs[ip] {
-			a.view.DifferentIPCount++
+	if a.creationSeen {
+		for ip := range a.usageIPs {
+			if !a.creationIPs[ip] {
+				a.view.DifferentIPCount++
+			}
 		}
+	} else if a.persistentIdentity && len(a.usageIPs) > 1 {
+		a.view.DifferentIPCount = len(a.usageIPs) - 1
+		a.view.CreationEvidenceMissing = true
 	}
 	a.view.CreationIPs = sortedInsightSet(a.creationIPs)
 	a.view.UsageIPs = sortedInsightSet(a.usageIPs)
 	a.view.SourceIPs = sortedInsightSet(a.sourceIPs)
 	a.view.Products = sortedInsightSet(a.products)
-	a.view.EventCount = len(a.view.Events)
+	a.view.EventCount = a.eventCount
+	a.view.EventIDs = make([]string, 0, len(a.eventIDs))
+	for eventID := range a.eventIDs {
+		a.view.EventIDs = append(a.view.EventIDs, eventID)
+	}
+	sort.Strings(a.view.EventIDs)
 	sort.SliceStable(a.view.Events, func(i, j int) bool {
 		if !a.view.Events[i].ObservedAt.Equal(a.view.Events[j].ObservedAt) {
 			return a.view.Events[i].ObservedAt.Before(a.view.Events[j].ObservedAt)
@@ -255,6 +317,13 @@ func (a *insightAccumulator) finish() informationInsight {
 		return a.view.Events[i].EventID < a.view.Events[j].EventID
 	})
 	return a.view
+}
+
+func insightEventBefore(left, right model.Event) bool {
+	if !left.ObservedAt.Equal(right.ObservedAt) {
+		return left.ObservedAt.Before(right.ObservedAt)
+	}
+	return left.EventID < right.EventID
 }
 
 func sortedInsightSet(values map[string]bool) []string {
@@ -372,10 +441,7 @@ func (a *App) adminDeleteInsight(w http.ResponseWriter, r *http.Request, rawID s
 		a.writeJSON(w, http.StatusNotFound, map[string]string{"error": "insight not found"})
 		return
 	}
-	ids := make([]string, 0, len(item.Events))
-	for _, event := range item.Events {
-		ids = append(ids, adminDisplayEventIDs(event)...)
-	}
+	ids := append([]string(nil), item.EventIDs...)
 	deleted, err := a.store.SoftDeleteEventIDs(uniqueStrings(ids))
 	if err != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "insight delete failed"})

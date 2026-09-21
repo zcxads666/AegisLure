@@ -33,6 +33,17 @@ The Compose installation requires the generated admin certificate/key and sets `
 
 Event storage is bounded by `event_retention_days` (default 30) and `event_max_entries` (default 100000). The equivalent environment overrides are `HP_EVENT_RETENTION_DAYS` and `HP_EVENT_MAX_ENTRIES`; invalid or out-of-range values are ignored by the config loader. `HP_DB_DRIVER=sqlite` is the default. Set `HP_DB_DRIVER=postgres` with `HP_DATABASE_URL`/`HP_DATABASE_URL_FILE`, or with the `HP_DB_HOST`, `HP_DB_PORT`, `HP_DB_NAME`, `HP_DB_USER`, `HP_DB_PASSWORD_FILE` and `HP_DB_SSLMODE` component settings. SQLite keeps bounded JSONL/state mirrors; PostgreSQL is authoritative without those mirrors.
 
+Account and honey-key creation IPs are stored in logical identity state, so
+information insights continue to correlate later cross-IP use after the
+creating event leaves the retention window. On the first start after upgrading
+from a version without durable creation evidence, the service performs a
+one-time, idempotent backfill from retained creation events. It never guesses an
+IP for an event that lacks an account ID or key fingerprint. A still-existing
+legacy identity that cannot be backfilled is shown only after use from at least
+two distinct IPs and is explicitly marked as missing historical creation
+evidence. Backups and restores preserve both the evidence and the migration
+marker because they are part of the backend-independent logical state.
+
 The current admin profile intentionally has no Bootstrap code and no TOTP/MFA. The first owner is created directly at `<admin_path>/setup/create-owner`; use an 8+ character password and store the one-time recovery codes. Treat the hidden path as an additional locator only: restrict the management port to a trusted network or VPN in production.
 
 ## Backups

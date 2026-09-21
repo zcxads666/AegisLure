@@ -123,6 +123,7 @@ type HoneyUser struct {
 	PasswordWeakClass    string    `json:"password_weak_class,omitempty"`
 	VirtualQuota         int64     `json:"virtual_quota"`
 	CreatedAt            time.Time `json:"created_at"`
+	CreationIP           string    `json:"creation_ip,omitempty"`
 	LastSeen             time.Time `json:"last_seen"`
 	CheckedInAt          time.Time `json:"checked_in_at,omitempty"`
 	CheckinDay           string    `json:"checkin_day,omitempty"`
@@ -145,6 +146,7 @@ type HoneyToken struct {
 	AutoGroups      []string  `json:"auto_groups,omitempty"`
 	CrossGroupRetry bool      `json:"cross_group_retry,omitempty"`
 	CreatedAt       time.Time `json:"created_at"`
+	CreationIP      string    `json:"creation_ip,omitempty"`
 	DisabledAt      time.Time `json:"disabled_at,omitempty"`
 	LastUsedAt      time.Time `json:"last_used_at,omitempty"`
 }
@@ -281,6 +283,7 @@ type State struct {
 	IdentityIndicatorDecisions map[string]IdentityIndicatorDecision `json:"identity_indicator_decisions,omitempty"`
 	OAuthChannelPolicies       map[string]OAuthChannelPolicy        `json:"oauth_channel_policies,omitempty"`
 	Sub2APIOAuthPolicies       map[string]OAuthChannelPolicy        `json:"sub2api_oauth_policies,omitempty"`
+	InsightEvidenceVersion     int                                  `json:"insight_evidence_version,omitempty"`
 }
 
 // InteractionChainConfig controls how the local admin view groups the

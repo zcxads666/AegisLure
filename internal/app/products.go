@@ -114,7 +114,7 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 			a.writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "OAuth login could not be completed"})
 			return
 		}
-		user, _, err := a.bindHoneyOAuthIdentity(identity, broker.PolicyMode(provider))
+		user, _, err := a.bindHoneyOAuthIdentity(identity, broker.PolicyMode(provider), requestSourceIP(r))
 		if err != nil {
 			obs.Metadata["oauth_callback_outcome"] = "binding_failed"
 			a.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"success": false, "message": "OAuth login could not be completed"})
@@ -174,7 +174,7 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		lengthBucket, passwordClasses, weakClass := passwordProfile(password)
 		userID := "hu_" + security.MustRandomToken(10)
 		now := time.Now().UTC()
-		user := model.HoneyUser{ID: userID, InstanceID: a.cfg.InstanceID, UsernameFP: security.Fingerprint(a.cfg.InstanceKey, username), UsernameHint: security.RedactPreview(username, 3), EmailLocalFP: emailLocalFingerprint(a.cfg.InstanceKey, email), EmailDomain: emailDomain(email), PasswordFP: security.Fingerprint(a.cfg.InstanceKey, password), PasswordLengthBucket: lengthBucket, PasswordClasses: passwordClasses, PasswordWeakClass: weakClass, VirtualQuota: newAPIRegisteredUserQuota, CreatedAt: now, LastSeen: now}
+		user := model.HoneyUser{ID: userID, InstanceID: a.cfg.InstanceID, UsernameFP: security.Fingerprint(a.cfg.InstanceKey, username), UsernameHint: security.RedactPreview(username, 3), EmailLocalFP: emailLocalFingerprint(a.cfg.InstanceKey, email), EmailDomain: emailDomain(email), PasswordFP: security.Fingerprint(a.cfg.InstanceKey, password), PasswordLengthBucket: lengthBucket, PasswordClasses: passwordClasses, PasswordWeakClass: weakClass, VirtualQuota: newAPIRegisteredUserQuota, CreatedAt: now, CreationIP: requestSourceIP(r), LastSeen: now}
 		if err := a.store.CreateHoneyUser(user); err != nil {
 			// Keep duplicate usernames indistinguishable from other invalid
 			// registration attempts; the username fingerprint never leaves the
@@ -381,7 +381,7 @@ func (a *App) handleNewAPI(w *captureWriter, r *http.Request, profile profiles.P
 		if options.ExpiredTime != nil && *options.ExpiredTime > 0 {
 			expiredAt = time.Unix(*options.ExpiredTime, 0).UTC()
 		}
-		token := model.HoneyToken{ID: "ht_" + security.MustRandomToken(8), HoneyUserID: user.ID, Hash: security.Fingerprint(a.cfg.InstanceKey, raw), PrefixHint: raw[:12], Name: name, ModelAllowlist: append([]string(nil), options.ModelAllowlist...), RemainQuota: remainQuota, UnlimitedQuota: unlimited, ExpiredAt: expiredAt, Group: group, AllowIPs: stringPointerValue(options.AllowIPs), AutoGroups: append([]string(nil), options.AutoGroups...), CrossGroupRetry: boolValue(options.CrossGroupRetry), CreatedAt: time.Now().UTC()}
+		token := model.HoneyToken{ID: "ht_" + security.MustRandomToken(8), HoneyUserID: user.ID, Hash: security.Fingerprint(a.cfg.InstanceKey, raw), PrefixHint: raw[:12], Name: name, ModelAllowlist: append([]string(nil), options.ModelAllowlist...), RemainQuota: remainQuota, UnlimitedQuota: unlimited, ExpiredAt: expiredAt, Group: group, AllowIPs: stringPointerValue(options.AllowIPs), AutoGroups: append([]string(nil), options.AutoGroups...), CrossGroupRetry: boolValue(options.CrossGroupRetry), CreatedAt: time.Now().UTC(), CreationIP: requestSourceIP(r)}
 		if err := a.store.AddToken(token); err != nil {
 			a.writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false})
 			return
@@ -1082,7 +1082,7 @@ func newAPIOAuthProvider(path string, callback bool) (oauth.Provider, bool) {
 	return oauth.ParseProvider(value)
 }
 
-func (a *App) bindHoneyOAuthIdentity(identity oauth.Identity, policyMode string) (model.HoneyUser, model.HoneyIdentity, error) {
+func (a *App) bindHoneyOAuthIdentity(identity oauth.Identity, policyMode, creationIP string) (model.HoneyUser, model.HoneyIdentity, error) {
 	if identity.Provider == "" || identity.SubjectHMAC == "" {
 		return model.HoneyUser{}, model.HoneyIdentity{}, fmt.Errorf("oauth identity is incomplete")
 	}
@@ -1106,6 +1106,7 @@ func (a *App) bindHoneyOAuthIdentity(identity oauth.Identity, policyMode string)
 		PasswordClasses:      []string{"oauth"},
 		VirtualQuota:         newAPIRegisteredUserQuota,
 		CreatedAt:            now,
+		CreationIP:           creationIP,
 		LastSeen:             now,
 	}
 	linked := model.HoneyIdentity{ID: "hi_" + security.MustRandomToken(8), Provider: provider, SubjectHMAC: identity.SubjectHMAC, HoneyUserID: user.ID, Scopes: append([]string(nil), identity.Scopes...), PolicyMode: policyMode, LinkedAt: now, LastSeenAt: now}

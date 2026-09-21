@@ -124,6 +124,16 @@ func New(cfg *config.Config, st *store.Store) *App {
 	a.ruleEngine = detect.NewRuleEngine()
 	seedBuiltinPacks(a)
 	loadPersistedRuleEngine(a)
+	if st != nil && st.NeedsInsightEvidenceBackfill() {
+		events, err := st.EventSummaries(-1, "", "")
+		if err != nil {
+			a.log.Printf("information insight evidence migration read failed: %v", err)
+		} else if updated, backfillErr := st.BackfillInsightCreationEvidence(events); backfillErr != nil {
+			a.log.Printf("information insight evidence migration failed: %v", backfillErr)
+		} else if updated > 0 {
+			a.log.Printf("information insight evidence migration completed: identities=%d", updated)
+		}
+	}
 	if err := a.ensureNewAPIRootAccount(); err != nil {
 		a.log.Printf("New API root account initialization failed: %v", err)
 	}

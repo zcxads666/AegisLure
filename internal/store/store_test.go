@@ -166,6 +166,49 @@ func TestEventRetentionRemovesExpiredAndOldestEntries(t *testing.T) {
 	}
 }
 
+func TestBackfillInsightCreationEvidenceMigratesRetainedEventsOnce(t *testing.T) {
+	st, err := Open(t.TempDir(), "insight-migration-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	createdAt := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
+	user := model.HoneyUser{ID: "hu_upgrade", UsernameFP: "upgrade-user", CreatedAt: createdAt}
+	if err := st.CreateHoneyUser(user); err != nil {
+		t.Fatal(err)
+	}
+	token := model.HoneyToken{ID: "ht_upgrade", HoneyUserID: user.ID, Hash: "upgrade-key", CreatedAt: createdAt}
+	if err := st.AddToken(token); err != nil {
+		t.Fatal(err)
+	}
+	events := []model.Event{
+		{EventID: "upgrade-account-create", EventType: "newapi.user.register.success", SourceIP: "198.51.100.40", ObservedAt: createdAt, Metadata: map[string]string{"honey_user_id": user.ID}},
+		{EventID: "upgrade-key-create", EventType: "newapi.token.created", SourceIP: "198.51.100.41", ObservedAt: createdAt.Add(time.Minute), CredentialFingerprint: token.Hash},
+	}
+	if !st.NeedsInsightEvidenceBackfill() {
+		t.Fatal("new store unexpectedly has the insight migration marker")
+	}
+	updated, err := st.BackfillInsightCreationEvidence(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated != 2 || st.NeedsInsightEvidenceBackfill() {
+		t.Fatalf("backfill updated=%d needsMigration=%v", updated, st.NeedsInsightEvidenceBackfill())
+	}
+	migratedUser, ok := st.GetHoneyUser(user.ID)
+	if !ok || migratedUser.CreationIP != "198.51.100.40" {
+		t.Fatalf("migrated user = %#v exists=%v", migratedUser, ok)
+	}
+	migratedToken, ok := st.FindToken(token.Hash)
+	if !ok || migratedToken.CreationIP != "198.51.100.41" {
+		t.Fatalf("migrated token = %#v exists=%v", migratedToken, ok)
+	}
+	updated, err = st.BackfillInsightCreationEvidence(events)
+	if err != nil || updated != 0 {
+		t.Fatalf("repeated backfill updated=%d err=%v", updated, err)
+	}
+}
+
 func TestBackupToCreatesConsistentSQLiteSnapshot(t *testing.T) {
 	dir := t.TempDir()
 	st, err := Open(dir, "snapshot-key")
