@@ -22,6 +22,8 @@ MODE="${MODE:-sqlite}"
 VERSION="${VERSION:-$DEFAULT_VERSION}"
 NO_BUILD=0
 PULL=0
+BUILD_CACHE_SNAPSHOT_BEFORE=""
+BUILD_CACHE_SNAPSHOT_AFTER=""
 
 usage() {
   cat <<'EOF'
@@ -366,40 +368,69 @@ show_startup_diagnostics() {
   fi
 }
 
-cleanup_build_artifacts() {
-  local cache_path docker_prune_output
-  local -a local_cache_paths=()
-
-  # Compose builds leave their intermediate Go layers in the Docker builder's
-  # cache. The deployed image and running containers are not affected by this
-  # command; runtime data and named volumes are intentionally left untouched.
-  if [[ "$NO_BUILD" -eq 0 ]]; then
-    if docker_prune_output="$(docker builder prune --all --force 2>&1)"; then
-      [[ -z "$docker_prune_output" ]] || printf '%s\n' "$docker_prune_output"
-    else
-      echo "Warning: Docker build-cache cleanup failed; unused builder cache may remain." >&2
-      [[ -z "$docker_prune_output" ]] || printf '%s\n' "$docker_prune_output" >&2
-    fi
-  fi
-
-  # The local toolchain redirects Go's caches into the repository. Only remove
-  # the exact paths configured by scripts/env.sh, never a caller-supplied cache.
-  if [[ "${GOCACHE:-}" == "$ROOT_DIR/.tools/gocache" ]]; then
-    local_cache_paths+=("$GOCACHE")
-  fi
-  if [[ "${GOMODCACHE:-}" == "$ROOT_DIR/.tools/gopath/pkg/mod" ]]; then
-    local_cache_paths+=("$GOMODCACHE")
-  fi
-  for cache_path in "${local_cache_paths[@]}"; do
-    if [[ -d "$cache_path" ]]; then
-      if rm -rf -- "$cache_path"; then
-        echo "Removed local build cache: ${cache_path#"$ROOT_DIR/"}"
-      else
-        echo "Warning: local build-cache cleanup failed: ${cache_path#"$ROOT_DIR/"}" >&2
-      fi
-    fi
-  done
+capture_build_cache_ids() {
+  local output_path="$1"
+  docker buildx du --format '{{.ID}}' 2>/dev/null \
+    | sed -E 's/\*?$//' \
+    | awk '/^[[:alnum:]]+$/ { print }' \
+    | LC_ALL=C sort -u >"$output_path"
 }
+
+prepare_build_cache_cleanup() {
+  local before after
+
+  if ! before="$(mktemp "${TMPDIR:-/tmp}/aegislure-build-cache-before.XXXXXX")"; then
+    echo "Warning: unable to snapshot Docker build cache; build-cache cleanup will be skipped." >&2
+    return 0
+  fi
+  if ! after="$(mktemp "${TMPDIR:-/tmp}/aegislure-build-cache-after.XXXXXX")"; then
+    rm -f -- "$before"
+    echo "Warning: unable to prepare Docker build-cache snapshot; cleanup will be skipped." >&2
+    return 0
+  fi
+  if ! capture_build_cache_ids "$before"; then
+    rm -f -- "$before" "$after"
+    echo "Warning: unable to read Docker build cache; build-cache cleanup will be skipped." >&2
+    return 0
+  fi
+  BUILD_CACHE_SNAPSHOT_BEFORE="$before"
+  BUILD_CACHE_SNAPSHOT_AFTER="$after"
+}
+
+cleanup_build_artifacts() {
+  local cache_id cleaned_count=0
+
+  if [[ -z "$BUILD_CACHE_SNAPSHOT_BEFORE" || -z "$BUILD_CACHE_SNAPSHOT_AFTER" ]]; then
+    return 0
+  fi
+  if ! capture_build_cache_ids "$BUILD_CACHE_SNAPSHOT_AFTER"; then
+    echo "Warning: unable to read Docker build cache after deployment; cleanup skipped." >&2
+    return 0
+  fi
+
+  # Restrict pruning to cache IDs that did not exist before this installation.
+  # Never run an unfiltered builder/system prune: other projects may share the
+  # same Docker daemon and its cache.
+  while IFS= read -r cache_id; do
+    [[ -n "$cache_id" ]] || continue
+    if docker builder prune --all --force \
+      --filter "id=$cache_id" --filter "inuse=false" --filter "private=true" >/dev/null 2>&1; then
+      cleaned_count=$((cleaned_count + 1))
+    else
+      echo "Warning: unable to remove newly created Docker cache record: $cache_id" >&2
+    fi
+  done < <(comm -13 "$BUILD_CACHE_SNAPSHOT_BEFORE" "$BUILD_CACHE_SNAPSHOT_AFTER")
+  if (( cleaned_count > 0 )); then
+    echo "Removed $cleaned_count Docker build-cache record(s) created by this installation."
+  fi
+}
+
+cleanup_build_cache_snapshots() {
+  [[ -z "$BUILD_CACHE_SNAPSHOT_BEFORE" ]] || rm -f -- "$BUILD_CACHE_SNAPSHOT_BEFORE" || true
+  [[ -z "$BUILD_CACHE_SNAPSHOT_AFTER" ]] || rm -f -- "$BUILD_CACHE_SNAPSHOT_AFTER" || true
+  return 0
+}
+trap cleanup_build_cache_snapshots EXIT
 
 if ! compose config >/dev/null; then
   echo "AegisLure installation failed during Compose configuration validation." >&2
@@ -410,6 +441,7 @@ if ! require_edge_egress; then
   exit 1
 fi
 if [[ "$NO_BUILD" -eq 0 ]]; then
+  prepare_build_cache_cleanup
   if ! compose build; then
     echo "AegisLure installation failed during image build." >&2
     exit 1
