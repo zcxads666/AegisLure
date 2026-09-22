@@ -539,7 +539,7 @@ func (a *App) adminRuleList(w http.ResponseWriter, r *http.Request, kind, id str
 		return
 	}
 	pack, _ := a.store.GetPack(kind, id)
-	page, query, pageErr := adminPageParams(r)
+	page, pageSize, query, pageErr := adminPageParams(r)
 	if pageErr != nil {
 		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": pageErr.Error()})
 		return
@@ -556,7 +556,7 @@ func (a *App) adminRuleList(w http.ResponseWriter, r *http.Request, kind, id str
 		}
 		rules = filtered
 	}
-	pageRules, pagination := paginateAdminValues(rules, page)
+	pageRules, pagination := paginateAdminValues(rules, page, pageSize)
 	response := adminPagePayload(pagination)
 	response["pack_id"] = id
 	response["revision"] = document.Revision

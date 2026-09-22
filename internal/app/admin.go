@@ -818,7 +818,7 @@ func (a *App) adminEvents(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	page, query, err := adminPageParams(r)
+	page, pageSize, query, err := adminPageParams(r)
 	if err != nil {
 		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -830,7 +830,7 @@ func (a *App) adminEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := a.store.EventPageContext(r.Context(), store.EventQuery{
 		Page:     page,
-		PageSize: adminPageSize,
+		PageSize: pageSize,
 		Query:    query,
 		Product:  r.URL.Query().Get("product"),
 		SourceIP: r.URL.Query().Get("ip"),
@@ -862,7 +862,7 @@ func (a *App) adminEvents(w http.ResponseWriter, r *http.Request) {
 		}
 		events = allEvents
 		events = adminDisplayEvents(events)
-		pageEvents, pagination := paginateAdminValues(events, page)
+		pageEvents, pagination := paginateAdminValues(events, page, pageSize)
 		response := adminPagePayload(pagination)
 		response["events"] = pageEvents
 		response["count"] = len(pageEvents)
@@ -884,12 +884,12 @@ func (a *App) adminInvocations(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	page, query, err := adminPageParams(r)
+	page, pageSize, query, err := adminPageParams(r)
 	if err != nil {
 		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	result, err := a.store.EventPageContext(r.Context(), store.EventQuery{Page: page, PageSize: adminPageSize, Query: query, Product: r.URL.Query().Get("product"), SourceIP: r.URL.Query().Get("ip"), InvocationOnly: true, InvocationLevel: r.URL.Query().Get("level"), AuthOutcome: r.URL.Query().Get("auth"), ExecutionOutcome: r.URL.Query().Get("execution"), Summary: adminSummaryRequested(r)})
+	result, err := a.store.EventPageContext(r.Context(), store.EventQuery{Page: page, PageSize: pageSize, Query: query, Product: r.URL.Query().Get("product"), SourceIP: r.URL.Query().Get("ip"), InvocationOnly: true, InvocationLevel: r.URL.Query().Get("level"), AuthOutcome: r.URL.Query().Get("auth"), ExecutionOutcome: r.URL.Query().Get("execution"), Summary: adminSummaryRequested(r)})
 	if err != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "invocation query failed"})
 		return
@@ -930,7 +930,7 @@ func (a *App) adminInteractionChains(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	page, query, err := adminPageParams(r)
+	page, pageSize, query, err := adminPageParams(r)
 	if err != nil {
 		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -958,7 +958,7 @@ func (a *App) adminInteractionChains(w http.ResponseWriter, r *http.Request) {
 		}
 		result = filtered
 	}
-	pageResult, pagination := paginateAdminValues(result, page)
+	pageResult, pagination := paginateAdminValues(result, page, pageSize)
 	response := adminPagePayload(pagination)
 	response["chains"] = pageResult
 	response["count"] = len(pageResult)
@@ -1213,12 +1213,12 @@ func (a *App) adminIndicators(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(content))
 		return
 	}
-	page, _, pageErr := adminPageParams(r)
+	page, pageSize, _, pageErr := adminPageParams(r)
 	if pageErr != nil {
 		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": pageErr.Error()})
 		return
 	}
-	pageItems, pagination := paginateAdminValues(items, page)
+	pageItems, pagination := paginateAdminValues(items, page, pageSize)
 	views := make([]map[string]any, 0, len(pageItems))
 	rawIPs := make([]string, 0, len(items))
 	for _, item := range pageItems {
@@ -1363,29 +1363,32 @@ func queryInt(r *http.Request, name string, fallback int) int {
 
 const (
 	adminPageSize                 = 10
+	adminPageSizeMax              = 100
 	adminPageFullAggregationLimit = 1000
 )
 
-func adminPageParams(r *http.Request) (int, string, error) {
+func adminPageParams(r *http.Request) (int, int, string, error) {
 	page := 1
+	pageSize := adminPageSize
 	if raw := strings.TrimSpace(r.URL.Query().Get("page")); raw != "" {
 		parsed, err := strconv.Atoi(raw)
 		if err != nil || parsed < 1 {
-			return 0, "", errors.New("page must be a positive integer")
+			return 0, 0, "", errors.New("page must be a positive integer")
 		}
 		page = parsed
 	}
 	if raw := strings.TrimSpace(r.URL.Query().Get("page_size")); raw != "" {
 		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed != adminPageSize {
-			return 0, "", fmt.Errorf("page_size is fixed at %d", adminPageSize)
+		if err != nil || parsed < 1 || parsed > adminPageSizeMax {
+			return 0, 0, "", fmt.Errorf("page_size must be between 1 and %d", adminPageSizeMax)
 		}
+		pageSize = parsed
 	}
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	if len(query) > 256 {
-		return 0, "", errors.New("q is too long")
+		return 0, 0, "", errors.New("q is too long")
 	}
-	return page, query, nil
+	return page, pageSize, query, nil
 }
 
 func adminSummaryRequested(r *http.Request) bool {
@@ -1393,12 +1396,15 @@ func adminSummaryRequested(r *http.Request) bool {
 	return value == "summary" || value == "compact" || value == "1"
 }
 
-func adminPagination(total, page int) store.PageInfo {
+func adminPagination(total, page, pageSize int) store.PageInfo {
+	if pageSize < 1 {
+		pageSize = adminPageSize
+	}
 	totalPages := 0
 	if total > 0 {
-		totalPages = (total + adminPageSize - 1) / adminPageSize
+		totalPages = (total + pageSize - 1) / pageSize
 	}
-	return store.PageInfo{Page: page, PageSize: adminPageSize, Total: total, TotalPages: totalPages, HasNext: page < totalPages, HasPrevious: page > 1 && totalPages > 0}
+	return store.PageInfo{Page: page, PageSize: pageSize, Total: total, TotalPages: totalPages, HasNext: page < totalPages, HasPrevious: page > 1 && totalPages > 0}
 }
 
 func adminPagePayload(info store.PageInfo) map[string]any {
@@ -1409,13 +1415,13 @@ func adminPagePayload(info store.PageInfo) map[string]any {
 	}
 }
 
-func paginateAdminValues[T any](values []T, page int) ([]T, store.PageInfo) {
-	info := adminPagination(len(values), page)
-	start := (page - 1) * adminPageSize
+func paginateAdminValues[T any](values []T, page, pageSize int) ([]T, store.PageInfo) {
+	info := adminPagination(len(values), page, pageSize)
+	start := (page - 1) * info.PageSize
 	if start >= len(values) {
 		return []T{}, info
 	}
-	end := start + adminPageSize
+	end := start + info.PageSize
 	if end > len(values) {
 		end = len(values)
 	}

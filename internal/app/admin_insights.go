@@ -60,7 +60,7 @@ func (a *App) adminInsights(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	page, query, err := adminPageParams(r)
+	page, pageSize, query, err := adminPageParams(r)
 	if err != nil {
 		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -83,7 +83,7 @@ func (a *App) adminInsights(w http.ResponseWriter, r *http.Request) {
 		}
 		items = filtered
 	}
-	pageItems, pagination := paginateAdminValues(items, page)
+	pageItems, pagination := paginateAdminValues(items, page, pageSize)
 	response := adminPagePayload(pagination)
 	response["insights"] = pageItems
 	response["items"] = pageItems

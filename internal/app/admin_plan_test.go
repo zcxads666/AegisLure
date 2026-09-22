@@ -232,13 +232,17 @@ func TestAdminPaginationSearchBoundaryAndLogicalDelete(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || len(pageOne["events"].([]any)) != 10 || pageOne["total"].(float64) != 21 || pageOne["total_pages"].(float64) != 3 || pageOne["has_next"] != true || pageOne["page_size"].(float64) != 10 {
 		t.Fatalf("page one = %d %#v", resp.StatusCode, pageOne)
 	}
+	resp, pageSizeTwenty := doJSON(t, admin, http.MethodGet, cfg.AdminPath+"admin/api/v1/events?page=1&page_size=20", nil)
+	if resp.StatusCode != http.StatusOK || len(pageSizeTwenty["events"].([]any)) != 20 || pageSizeTwenty["total_pages"].(float64) != 2 || pageSizeTwenty["page_size"].(float64) != 20 {
+		t.Fatalf("page size twenty = %d %#v", resp.StatusCode, pageSizeTwenty)
+	}
 	resp, search := doJSON(t, admin, http.MethodGet, cfg.AdminPath+"admin/api/v1/events?page=1&q=page-event-20", nil)
 	if resp.StatusCode != http.StatusOK || len(search["events"].([]any)) != 1 || search["total"].(float64) != 1 {
 		t.Fatalf("search page = %d %#v", resp.StatusCode, search)
 	}
-	resp, _ = doJSON(t, admin, http.MethodGet, cfg.AdminPath+"admin/api/v1/events?page=1&page_size=11", nil)
+	resp, _ = doJSON(t, admin, http.MethodGet, cfg.AdminPath+"admin/api/v1/events?page=1&page_size=101", nil)
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("non-fixed page size status = %d", resp.StatusCode)
+		t.Fatalf("oversized page size status = %d", resp.StatusCode)
 	}
 	resp, lastPage := doJSON(t, admin, http.MethodGet, cfg.AdminPath+"admin/api/v1/events?page=3", nil)
 	if resp.StatusCode != http.StatusOK || len(lastPage["events"].([]any)) != 1 {

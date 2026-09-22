@@ -1749,6 +1749,14 @@ pre,
   font-size: var(--text-xs);
 }
 
+.pagination-size-select {
+  min-width: 96px;
+}
+
+.pagination-size-select select {
+  min-height: 32px;
+}
+
 /* Fleet and configuration */
 
 .fleet-summary {

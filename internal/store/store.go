@@ -58,8 +58,8 @@ type Options struct {
 }
 
 // EventQuery is the bounded, server-side query used by management lists.
-// Page numbers are one-based. The admin API fixes PageSize at ten; the store
-// keeps the type reusable for offline callers and tests.
+// Page numbers are one-based. The admin API bounds PageSize to a safe range;
+// the store keeps the type reusable for offline callers and tests.
 type EventQuery struct {
 	Page             int
 	PageSize         int
