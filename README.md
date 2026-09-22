@@ -115,6 +115,123 @@ HP_ADMIN_PORT_BIND_IP=0.0.0.0
 
 在 VPS 上至少放行实际输出的 `HP_ADMIN_PORT`；公开蜜罐端口是否放行按用途决定。域名、云安全组、防火墙和 NAT 属于 Docker 主机之外的设施，安装器会输出地址但不会擅自修改它们。若自动探测的公网 IP 不适用，重新执行时传入 `--public-host`。
 
+## IP 列表 API
+
+管理后台可以把当前隐藏管理地址的 `/api` 路径开放为只读 IP 风险列表接口。接口默认关闭，开启后只返回本地已经聚合出的 IP 指标，不会访问真实模型或上游服务。
+
+### 后台配置与 API key
+
+登录管理后台后，进入“管理设置 → IP 列表接口”：
+
+- 使用开关启用或停用接口。停用时请求返回 `404`。
+- 页面会显示当前接口地址、请求方式和鉴权方式。
+- 首次启用时自动生成 API key；也可以点击“轮换 key”生成新 key。旧 key 会立即失效。
+- 完整 key 只在首次生成或轮换的响应中返回，页面刷新后只显示遮罩前缀；请在响应后立即保存。
+- 服务只保存 key 的不可逆指纹，不保存完整 key。
+
+后台的管理 API（需要已登录的管理会话）如下：
+
+| 方法 | 地址 | 用途 |
+| --- | --- | --- |
+| `GET` | `{ADMIN_BASE}/admin/api/v1/ip-list-api` | 查看开关、接口地址、key 状态和参数说明；不会返回完整 key |
+| `PUT` | `{ADMIN_BASE}/admin/api/v1/ip-list-api` | 更新开关，JSON body 为 `{"enabled": true}` 或 `{"enabled": false}` |
+| `POST` | `{ADMIN_BASE}/admin/api/v1/ip-list-api/key:rotate` | 轮换 key；完整新 key 只在本次响应中返回 |
+
+其中 `{ADMIN_BASE}` 是当前管理后台的完整地址，例如 `https://admin.example.com/<随机后台路径>`，不要把 `/admin/api/v1` 当作对外 IP 列表接口的路径。
+
+### 查询接口
+
+```text
+GET {ADMIN_BASE}/api
+```
+
+支持两种等价的鉴权写法，推荐使用 Bearer：
+
+```bash
+curl -fsS \
+  -H 'Authorization: Bearer <API_KEY>' \
+  '{ADMIN_BASE}/api'
+
+# 或
+curl -fsS \
+  -H 'X-API-Key: <API_KEY>' \
+  '{ADMIN_BASE}/api'
+```
+
+查询参数：
+
+| 参数 | 类型 | 可选值 | 说明 |
+| --- | --- | --- | --- |
+| `days` | 整数 | `1`–`3650` | 查询最近 N 天；与 `month` 互斥 |
+| `month` | 字符串 | `YYYY-MM` | 查询自然月，例如 `2026-09`；与 `days` 互斥，按 `Asia/Shanghai` 解析 |
+| `risk_level` | 字符串 | `all`、`low`、`medium`、`high` | 风险筛选，默认 `all` |
+| `risk` | 字符串 | `all`、`low`、`medium`、`high` | `risk_level` 的兼容短参数；同时传入时以 `risk_level` 为准 |
+
+不带筛选参数时返回全量 IP。风险等级按指标分数划分：`low` 为 `0–29`，`medium` 为 `30–59`，`high` 为 `60` 及以上（当前风险分数范围为 `0–100`）。
+
+示例：
+
+```bash
+# 全量 IP
+curl -fsS -H 'Authorization: Bearer <API_KEY>' \
+  '{ADMIN_BASE}/api'
+
+# 最近 7 天的高风险 IP
+curl -fsS -H 'Authorization: Bearer <API_KEY>' \
+  '{ADMIN_BASE}/api?days=7&risk_level=high'
+
+# 2026 年 9 月的中风险 IP
+curl -fsS -H 'X-API-Key: <API_KEY>' \
+  '{ADMIN_BASE}/api?month=2026-09&risk=medium'
+```
+
+`days` 和 `month` 不能同时使用；`days` 必须在 `1–3650` 范围内；`month` 必须是有效的 `YYYY-MM`。接口按来源 IP 限制为每分钟 60 次请求，并返回 `Retry-After: 60`。
+
+### 响应格式
+
+响应是 JSON，`items` 按 IP 聚合，每个 IP 返回一条指标：
+
+```json
+{
+  "schema_version": 1,
+  "success": true,
+  "generated_at": "2026-09-22T08:00:00Z",
+  "timezone": "Asia/Shanghai",
+  "filters": {
+    "days": 7,
+    "risk": "high",
+    "start_at": "2026-09-15T00:00:00Z",
+    "end_at": "2026-09-22T00:00:00Z"
+  },
+  "count": 1,
+  "items": [
+    {
+      "id": "indicator-id",
+      "ip": "203.0.113.10",
+      "score": 80,
+      "risk_level": "high",
+      "confidence": "high",
+      "first_seen": "2026-09-20T12:00:00Z",
+      "last_seen": "2026-09-22T07:30:00Z",
+      "expires_at": "2026-10-22T07:30:00Z",
+      "reason_codes": ["example_reason"],
+      "products": ["new-api"],
+      "sensor_count": 1,
+      "site_count": 1,
+      "recommended_action": "observe",
+      "evidence_count": 3,
+      "associated": false,
+      "associated_ips": null,
+      "association_reasons": null
+    }
+  ]
+}
+```
+
+字段说明：`count` 是返回条数；`score` 是风险分数；`first_seen`、`last_seen` 和 `expires_at` 使用 RFC 3339 时间；`reason_codes` 是风险原因；`products` 是观测到该 IP 的服务类型；`evidence_count` 是证据数量；`associated`、`associated_ips` 和 `association_reasons` 表示 IP 关联关系。
+
+常见错误：`401` 表示 key 缺失或无效，`404` 表示接口未启用，`400` 表示查询参数不合法，`429` 表示触发频率限制。
+
 ## 数据库与 IP 情报
 
 SQLite 是默认数据库。PostgreSQL 模式使用 `docker-compose.pg.yml`，内部数据库端口不会发布到宿主机；也可以通过 `HP_DATABASE_URL` 或 `HP_DATABASE_URL_FILE` 连接托管 PostgreSQL。
