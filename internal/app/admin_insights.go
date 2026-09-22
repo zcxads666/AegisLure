@@ -14,31 +14,38 @@ import (
 )
 
 const (
-	insightAccount = "account"
-	insightKey     = "key"
-	insightDetect  = "detection"
+	insightAccount  = "account"
+	insightKey      = "key"
+	insightIdentity = "identity"
+	insightDetect   = "detection"
 )
 
 type informationInsight struct {
-	ID                      string           `json:"id"`
-	IdentityType            string           `json:"identity_type"`
-	SubjectFingerprint      string           `json:"subject_fingerprint"`
-	RelatedAccount          string           `json:"related_account,omitempty"`
-	RelatedKey              string           `json:"related_key,omitempty"`
-	Products                []string         `json:"products,omitempty"`
-	CreationIPs             []string         `json:"creation_ips,omitempty"`
-	UsageIPs                []string         `json:"usage_ips,omitempty"`
-	SourceIPs               []string         `json:"source_ips,omitempty"`
-	DifferentIPCount        int              `json:"different_ip_count"`
-	FirstSeen               time.Time        `json:"first_seen"`
-	LastSeen                time.Time        `json:"last_seen"`
-	EventCount              int              `json:"event_count"`
-	Score                   int              `json:"score"`
-	Events                  []model.Event    `json:"events"`
-	DetectionFindings       []map[string]any `json:"detection_findings,omitempty"`
-	RootAccountGroup        bool             `json:"root_account_group,omitempty"`
-	CreationEvidenceMissing bool             `json:"creation_evidence_missing,omitempty"`
-	EventIDs                []string         `json:"-"`
+	ID                      string            `json:"id"`
+	IdentityType            string            `json:"identity_type"`
+	SubjectFingerprint      string            `json:"subject_fingerprint"`
+	SubjectFingerprints     []string          `json:"subject_fingerprints,omitempty"`
+	IdentityTypes           []string          `json:"identity_types,omitempty"`
+	IdentityCount           int               `json:"identity_count,omitempty"`
+	RelatedAccount          string            `json:"related_account,omitempty"`
+	RelatedKey              string            `json:"related_key,omitempty"`
+	RelatedAccounts         []string          `json:"related_accounts,omitempty"`
+	RelatedKeys             []string          `json:"related_keys,omitempty"`
+	Products                []string          `json:"products,omitempty"`
+	CreationIPs             []string          `json:"creation_ips,omitempty"`
+	UsageIPs                []string          `json:"usage_ips,omitempty"`
+	SourceIPs               []string          `json:"source_ips,omitempty"`
+	DifferentIPCount        int               `json:"different_ip_count"`
+	FirstSeen               time.Time         `json:"first_seen"`
+	LastSeen                time.Time         `json:"last_seen"`
+	EventCount              int               `json:"event_count"`
+	Score                   int               `json:"score"`
+	Events                  []model.Event     `json:"events"`
+	DetectionFindings       []map[string]any  `json:"detection_findings,omitempty"`
+	RootAccountGroup        bool              `json:"root_account_group,omitempty"`
+	CreationEvidenceMissing bool              `json:"creation_evidence_missing,omitempty"`
+	EventIDs                []string          `json:"-"`
+	EventSourceIPs          map[string]string `json:"-"`
 }
 
 type insightAccumulator struct {
@@ -92,6 +99,7 @@ func (a *App) adminInsights(w http.ResponseWriter, r *http.Request) {
 	response["aggregation"] = map[string]any{
 		"account":                "creation event + authenticated use event with a different source IP",
 		"key":                    "key creation event + key use event with a different source IP",
+		"ip_pair":                "each unordered source IP pair is emitted once with all linked identities and evidence",
 		"legacy_identity":        "durable identity with missing historical creation evidence + use from at least two source IPs",
 		"root_accounts_excluded": true,
 	}
@@ -176,21 +184,22 @@ func (a *App) buildInformationInsights(events []model.Event) []informationInsigh
 		}
 	}
 
-	result := make([]informationInsight, 0, len(accounts)+len(keys)+len(detections))
+	identities := make([]informationInsight, 0, len(accounts)+len(keys))
 	for _, item := range accounts {
 		finished := item.finish()
 		if item.rootExcluded || !item.usageSeen || finished.DifferentIPCount == 0 {
 			continue
 		}
-		result = append(result, finished)
+		identities = append(identities, finished)
 	}
 	for _, item := range keys {
 		finished := item.finish()
 		if !item.usageSeen || finished.DifferentIPCount == 0 {
 			continue
 		}
-		result = append(result, finished)
+		identities = append(identities, finished)
 	}
+	result := a.aggregateInformationInsightsByIPPair(identities)
 	for _, item := range detections {
 		result = append(result, item.finish())
 	}
@@ -206,6 +215,180 @@ func (a *App) buildInformationInsights(events []model.Event) []informationInsigh
 	return result
 }
 
+type insightIPPairAccumulator struct {
+	view          informationInsight
+	identityKeys  map[string]bool
+	identityTypes map[string]bool
+	subjects      map[string]bool
+	accounts      map[string]bool
+	keys          map[string]bool
+	creationIPs   map[string]bool
+	usageIPs      map[string]bool
+	sourceIPs     map[string]bool
+	products      map[string]bool
+	eventIDs      map[string]bool
+	events        map[string]model.Event
+}
+
+// aggregateInformationInsightsByIPPair turns identity-scoped findings into
+// relationship-scoped findings. An unordered pair is deliberate: if separate
+// identities travel in opposite directions between the same two addresses,
+// the information-insight page still shows that IP relationship exactly once.
+func (a *App) aggregateInformationInsightsByIPPair(items []informationInsight) []informationInsight {
+	pairs := make(map[string]*insightIPPairAccumulator)
+	for _, item := range items {
+		if item.CreationEvidenceMissing {
+			for left := 0; left < len(item.UsageIPs); left++ {
+				for right := left + 1; right < len(item.UsageIPs); right++ {
+					mergeInsightIPPair(pairs, a.cfg.InstanceKey, item.UsageIPs[left], item.UsageIPs[right], item, "", "")
+				}
+			}
+			continue
+		}
+		for _, creationIP := range item.CreationIPs {
+			for _, usageIP := range item.UsageIPs {
+				if creationIP == "" || usageIP == "" || creationIP == usageIP {
+					continue
+				}
+				mergeInsightIPPair(pairs, a.cfg.InstanceKey, creationIP, usageIP, item, creationIP, usageIP)
+			}
+		}
+	}
+	result := make([]informationInsight, 0, len(pairs))
+	for _, pair := range pairs {
+		result = append(result, pair.finish())
+	}
+	return result
+}
+
+func mergeInsightIPPair(pairs map[string]*insightIPPairAccumulator, instanceKey, leftIP, rightIP string, item informationInsight, creationIP, usageIP string) {
+	leftIP = strings.TrimSpace(leftIP)
+	rightIP = strings.TrimSpace(rightIP)
+	if leftIP == "" || rightIP == "" || leftIP == rightIP {
+		return
+	}
+	if rightIP < leftIP {
+		leftIP, rightIP = rightIP, leftIP
+	}
+	pairKey := leftIP + "\x00" + rightIP
+	pair := pairs[pairKey]
+	if pair == nil {
+		pair = &insightIPPairAccumulator{
+			view: informationInsight{
+				ID:        "insight_" + security.Fingerprint(instanceKey, "ip-pair\x00"+pairKey)[:20],
+				FirstSeen: time.Time{},
+				Events:    make([]model.Event, 0),
+			},
+			identityKeys:  make(map[string]bool),
+			identityTypes: make(map[string]bool),
+			subjects:      make(map[string]bool),
+			accounts:      make(map[string]bool),
+			keys:          make(map[string]bool),
+			creationIPs:   make(map[string]bool),
+			usageIPs:      make(map[string]bool),
+			sourceIPs:     make(map[string]bool),
+			products:      make(map[string]bool),
+			eventIDs:      make(map[string]bool),
+			events:        make(map[string]model.Event),
+		}
+		pairs[pairKey] = pair
+	}
+	pair.sourceIPs[leftIP] = true
+	pair.sourceIPs[rightIP] = true
+	if creationIP == "" && usageIP == "" {
+		pair.usageIPs[leftIP] = true
+		pair.usageIPs[rightIP] = true
+	}
+	pair.add(item, creationIP, usageIP)
+}
+
+func (a *insightIPPairAccumulator) add(item informationInsight, creationIP, usageIP string) {
+	identityKey := item.IdentityType + "\x00" + item.SubjectFingerprint
+	if item.SubjectFingerprint != "" {
+		a.identityKeys[identityKey] = true
+		a.subjects[item.SubjectFingerprint] = true
+	}
+	if item.IdentityType != "" {
+		a.identityTypes[item.IdentityType] = true
+	}
+	switch item.IdentityType {
+	case insightAccount:
+		if item.SubjectFingerprint != "" {
+			a.accounts[item.SubjectFingerprint] = true
+		}
+	case insightKey:
+		if item.SubjectFingerprint != "" {
+			a.keys[item.SubjectFingerprint] = true
+		}
+	}
+	if creationIP != "" {
+		a.creationIPs[creationIP] = true
+	}
+	if usageIP != "" {
+		a.usageIPs[usageIP] = true
+	}
+	a.view.CreationEvidenceMissing = a.view.CreationEvidenceMissing || item.CreationEvidenceMissing
+	for _, product := range item.Products {
+		a.products[product] = true
+	}
+	for _, eventID := range item.EventIDs {
+		if eventID != "" && a.sourceIPs[item.EventSourceIPs[eventID]] {
+			a.eventIDs[eventID] = true
+		}
+	}
+	for _, event := range item.Events {
+		if event.EventID == "" || !a.sourceIPs[event.SourceIP] {
+			continue
+		}
+		if _, exists := a.events[event.EventID]; !exists {
+			a.events[event.EventID] = event
+		}
+	}
+	if a.view.FirstSeen.IsZero() || (!item.FirstSeen.IsZero() && item.FirstSeen.Before(a.view.FirstSeen)) {
+		a.view.FirstSeen = item.FirstSeen
+	}
+	if item.LastSeen.After(a.view.LastSeen) {
+		a.view.LastSeen = item.LastSeen
+	}
+	if item.Score > a.view.Score {
+		a.view.Score = item.Score
+	}
+}
+
+func (a *insightIPPairAccumulator) finish() informationInsight {
+	a.view.IdentityTypes = sortedInsightSet(a.identityTypes)
+	if len(a.view.IdentityTypes) == 1 {
+		a.view.IdentityType = a.view.IdentityTypes[0]
+	} else {
+		a.view.IdentityType = insightIdentity
+	}
+	a.view.SubjectFingerprints = sortedInsightSet(a.subjects)
+	if len(a.view.SubjectFingerprints) == 1 {
+		a.view.SubjectFingerprint = a.view.SubjectFingerprints[0]
+	}
+	a.view.IdentityCount = len(a.identityKeys)
+	a.view.RelatedAccounts = sortedInsightSet(a.accounts)
+	a.view.RelatedKeys = sortedInsightSet(a.keys)
+	a.view.CreationIPs = sortedInsightSet(a.creationIPs)
+	a.view.UsageIPs = sortedInsightSet(a.usageIPs)
+	a.view.SourceIPs = sortedInsightSet(a.sourceIPs)
+	a.view.Products = sortedInsightSet(a.products)
+	a.view.DifferentIPCount = 1
+	a.view.EventIDs = sortedInsightSet(a.eventIDs)
+	a.view.EventCount = len(a.view.EventIDs)
+	a.view.Events = make([]model.Event, 0, len(a.events))
+	for _, event := range a.events {
+		a.view.Events = append(a.view.Events, event)
+	}
+	sort.SliceStable(a.view.Events, func(i, j int) bool {
+		return insightEventBefore(a.view.Events[i], a.view.Events[j])
+	})
+	if len(a.view.Events) > 200 {
+		a.view.Events = append([]model.Event(nil), a.view.Events[len(a.view.Events)-200:]...)
+	}
+	return a.view
+}
+
 func newInsightAccumulator(key, identityType, subject string) *insightAccumulator {
 	return &insightAccumulator{
 		view: informationInsight{
@@ -214,6 +397,7 @@ func newInsightAccumulator(key, identityType, subject string) *insightAccumulato
 			SubjectFingerprint: subject,
 			FirstSeen:          time.Time{},
 			Events:             make([]model.Event, 0),
+			EventSourceIPs:     make(map[string]string),
 		},
 		creationIPs: make(map[string]bool),
 		usageIPs:    make(map[string]bool),
@@ -252,10 +436,12 @@ func (a *insightAccumulator) addEvent(event model.Event) {
 	}
 	if event.EventID != "" {
 		a.eventIDs[event.EventID] = true
+		a.view.EventSourceIPs[event.EventID] = event.SourceIP
 	}
 	for _, eventID := range event.AggregateEventIDs {
 		if eventID != "" {
 			a.eventIDs[eventID] = true
+			a.view.EventSourceIPs[eventID] = event.SourceIP
 		}
 	}
 	a.eventCount++

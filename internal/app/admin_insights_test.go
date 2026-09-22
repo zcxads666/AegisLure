@@ -75,13 +75,71 @@ func TestBuildInformationInsightsUsesDurableCreationEvidence(t *testing.T) {
 		t.Fatalf("durable insight count = %d, want account + key: %#v", len(insights), insights)
 	}
 	for _, insight := range insights {
-		wantDifferent := 1
-		if insight.IdentityType == insightAccount {
-			wantDifferent = 2
-		}
-		if insight.DifferentIPCount != wantDifferent || len(insight.CreationIPs) != 1 || insight.CreationIPs[0] != "198.51.100.10" || insight.CreationEvidenceMissing {
+		if insight.DifferentIPCount != 1 || len(insight.CreationIPs) != 1 || insight.CreationIPs[0] != "198.51.100.10" || insight.CreationEvidenceMissing {
 			t.Fatalf("durable insight = %#v", insight)
 		}
+	}
+}
+
+func TestBuildInformationInsightsAggregatesEachIPPairOnce(t *testing.T) {
+	a, _, st := newTestApp(t, true)
+	defer st.Close()
+
+	base := time.Date(2026, 9, 21, 8, 0, 0, 0, time.UTC)
+	events := make([]model.Event, 0, 6)
+	for index := 0; index < 2; index++ {
+		userID := fmt.Sprintf("hu_pair_%d", index)
+		keyID := fmt.Sprintf("pair-key-%d", index)
+		events = append(events,
+			model.Event{EventID: fmt.Sprintf("pair-account-create-%d", index), EventType: "sub2api.user.register.success", SourceIP: "8.219.150.152", ObservedAt: base.Add(time.Duration(index) * time.Minute), Metadata: map[string]string{"honey_user_id": userID}},
+			model.Event{EventID: fmt.Sprintf("pair-key-create-%d", index), EventType: "sub2api.key.created", SourceIP: "8.219.150.152", ObservedAt: base.Add(time.Duration(index)*time.Minute + time.Second), CredentialFingerprint: keyID, Metadata: map[string]string{"honey_user_id": userID, "key_fingerprint": keyID}},
+			model.Event{EventID: fmt.Sprintf("pair-use-%d", index), EventType: "sub2api.gateway.responses.accepted", SourceIP: "107.173.42.94", ObservedAt: base.Add(time.Duration(index+1) * time.Hour), CredentialFingerprint: keyID, Metadata: map[string]string{"honey_user_id": userID}},
+		)
+	}
+
+	insights := a.buildInformationInsights(events)
+	if len(insights) != 1 {
+		t.Fatalf("same IP pair produced %d insights, want 1: %#v", len(insights), insights)
+	}
+	insight := insights[0]
+	if insight.IdentityType != insightIdentity || insight.IdentityCount != 4 || len(insight.RelatedAccounts) != 2 || len(insight.RelatedKeys) != 2 {
+		t.Fatalf("merged identity evidence = %#v", insight)
+	}
+	if got := strings.Join(insight.SourceIPs, "|"); got != "107.173.42.94|8.219.150.152" {
+		t.Fatalf("merged source IPs = %q", got)
+	}
+	if insight.EventCount != 6 || len(insight.Events) != 6 || len(insight.EventIDs) != 6 {
+		t.Fatalf("merged evidence counts = events %d retained %d ids %d", insight.EventCount, len(insight.Events), len(insight.EventIDs))
+	}
+}
+
+func TestBuildInformationInsightsKeepsEveryUniqueIPPair(t *testing.T) {
+	a, _, st := newTestApp(t, true)
+	defer st.Close()
+
+	base := time.Date(2026, 9, 21, 10, 0, 0, 0, time.UTC)
+	events := []model.Event{
+		{EventID: "forward-create", EventType: "sub2api.user.register.success", SourceIP: "192.0.2.1", ObservedAt: base, Metadata: map[string]string{"honey_user_id": "hu_forward"}},
+		{EventID: "forward-use-b", EventType: "sub2api.user.login.success", SourceIP: "192.0.2.2", ObservedAt: base.Add(time.Minute), Metadata: map[string]string{"honey_user_id": "hu_forward"}},
+		{EventID: "forward-use-c", EventType: "sub2api.user.login.success", SourceIP: "192.0.2.3", ObservedAt: base.Add(2 * time.Minute), Metadata: map[string]string{"honey_user_id": "hu_forward"}},
+		{EventID: "reverse-create", EventType: "sub2api.user.register.success", SourceIP: "192.0.2.2", ObservedAt: base.Add(3 * time.Minute), Metadata: map[string]string{"honey_user_id": "hu_reverse"}},
+		{EventID: "reverse-use", EventType: "sub2api.user.login.success", SourceIP: "192.0.2.1", ObservedAt: base.Add(4 * time.Minute), Metadata: map[string]string{"honey_user_id": "hu_reverse"}},
+	}
+
+	insights := a.buildInformationInsights(events)
+	if len(insights) != 2 {
+		t.Fatalf("unique IP pair count = %d, want 2: %#v", len(insights), insights)
+	}
+	pairs := make(map[string]informationInsight, len(insights))
+	for _, insight := range insights {
+		pairs[strings.Join(insight.SourceIPs, "|")] = insight
+	}
+	shared, ok := pairs["192.0.2.1|192.0.2.2"]
+	if !ok || shared.IdentityCount != 2 {
+		t.Fatalf("reverse relationship was not merged: %#v", pairs)
+	}
+	if _, ok := pairs["192.0.2.1|192.0.2.3"]; !ok {
+		t.Fatalf("second relationship was lost: %#v", pairs)
 	}
 }
 
