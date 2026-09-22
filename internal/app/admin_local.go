@@ -350,12 +350,16 @@ func (a *App) filteredIndicators(r *http.Request) ([]model.Indicator, map[string
 	if query == "" {
 		query = strings.ToLower(strings.TrimSpace(r.URL.Query().Get("ip")))
 	}
+	productFilter := strings.TrimSpace(r.URL.Query().Get("product"))
 	filtered := make([]model.Indicator, 0, len(items))
 	for _, item := range items {
 		if item.Score < minScore || item.SensorCount < minSensors || !indicatorMatchesRiskLevel(item.Score, riskLevel) || (confidenceFilter != "" && item.Confidence != confidenceFilter) || (!seenSince.IsZero() && item.LastSeen.Before(seenSince)) {
 			continue
 		}
 		if query != "" && !strings.Contains(strings.ToLower(item.IP), query) {
+			continue
+		}
+		if productFilter != "" && !containsString(item.Products, productFilter) {
 			continue
 		}
 		if statusFilter != "all" && indicatorDecisionStatus(decisions[item.IP], now) != statusFilter {

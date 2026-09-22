@@ -154,6 +154,48 @@ func TestAdminIndicatorsExposeAssociatedIPMarker(t *testing.T) {
 	}
 }
 
+func TestAdminIndicatorsExposeAndFilterHoneypots(t *testing.T) {
+	a, cfg, st := newTestApp(t, true)
+	defer st.Close()
+	base := time.Date(2026, time.September, 22, 9, 0, 0, 0, time.UTC)
+	for _, event := range []model.Event{
+		{EventID: "indicator-new-api", Product: model.ProductNewAPI, SourceIP: "198.51.100.40", ObservedAt: base, Score: 40},
+		{EventID: "indicator-ollama", Product: model.ProductOllama, SourceIP: "198.51.100.40", ObservedAt: base.Add(time.Minute), Score: 50},
+		{EventID: "indicator-sub2api", Product: model.ProductSub2API, SourceIP: "198.51.100.41", ObservedAt: base.Add(2 * time.Minute), Score: 60},
+	} {
+		if err := st.AppendEvent(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	admin := &inProcessClient{handler: a.adminHandler(), cookies: map[string]string{}}
+	if resp, _ := doJSON(t, admin, http.MethodPost, cfg.AdminPath+"admin/api/v1/auth/login", map[string]string{"username": "owner", "password": "correct horse battery staple"}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin login status = %d", resp.StatusCode)
+	}
+	resp, body := doJSON(t, admin, http.MethodGet, cfg.AdminPath+"admin/api/v1/indicators?product="+model.ProductOllama, nil)
+	if resp.StatusCode != http.StatusOK || body["product"] != model.ProductOllama {
+		t.Fatalf("indicator honeypot filter = %d %#v", resp.StatusCode, body)
+	}
+	items, ok := body["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("filtered indicator items = %#v", body["items"])
+	}
+	item := items[0].(map[string]any)
+	if item["ip"] != "198.51.100.40" {
+		t.Fatalf("filtered indicator = %#v", item)
+	}
+	products, ok := item["products"].([]any)
+	if !ok || len(products) != 2 || products[0] != model.ProductNewAPI || products[1] != model.ProductOllama {
+		t.Fatalf("indicator honeypots = %#v", item["products"])
+	}
+	raw := admin.do(t, http.MethodGet, cfg.AdminPath+"admin/api/v1/indicators?format=plain&product="+model.ProductSub2API, nil, "")
+	filteredPlain, err := io.ReadAll(raw.Body)
+	_ = raw.Body.Close()
+	if err != nil || raw.StatusCode != http.StatusOK || string(filteredPlain) != "198.51.100.41\n" {
+		t.Fatalf("honeypot-filtered indicator export = %d %v %q", raw.StatusCode, err, filteredPlain)
+	}
+}
+
 func equalStrings(left, right []string) bool {
 	if len(left) != len(right) {
 		return false

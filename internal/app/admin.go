@@ -897,6 +897,7 @@ func (a *App) adminInvocations(w http.ResponseWriter, r *http.Request) {
 	response := adminPagePayload(result.Pagination)
 	response["invocations"] = result.Events
 	response["count"] = len(result.Events)
+	response["product"] = strings.TrimSpace(r.URL.Query().Get("product"))
 	response["synthetic_only"] = true
 	a.writeJSON(w, http.StatusOK, response)
 }
@@ -1241,6 +1242,7 @@ func (a *App) adminIndicators(w http.ResponseWriter, r *http.Request) {
 	sortMode, _ := indicatorSortQuery(r)
 	response["risk_level"] = riskLevel
 	response["sort"] = sortMode
+	response["product"] = strings.TrimSpace(r.URL.Query().Get("product"))
 	response["approved_only"] = r.URL.Query().Get("status") == "approved"
 	response["note"] = "Standalone decisions require manual approval and always carry a TTL; no permanent block is emitted."
 	a.writeJSON(w, http.StatusOK, response)
