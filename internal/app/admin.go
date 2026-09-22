@@ -49,6 +49,15 @@ func (a *App) adminHandler() http.Handler {
 			return
 		}
 		path = strings.TrimPrefix(path, "/")
+		if path == ipListAPIPath {
+			if r.Method != http.MethodGet {
+				w.Header().Set("Allow", http.MethodGet)
+				a.writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
+			}
+			a.ipListAPI(w, r)
+			return
+		}
 		switch {
 		case path == "setup/status" && r.Method == http.MethodGet:
 			a.setupStatus(w)
@@ -375,6 +384,10 @@ func (a *App) handleAdminAPI(w http.ResponseWriter, r *http.Request, path string
 	switch {
 	case path == "dashboard":
 		a.adminDashboard(w, r)
+	case path == "ip-list-api" && (r.Method == http.MethodGet || r.Method == http.MethodPut):
+		a.adminIPListAPISettings(w, r)
+	case path == "ip-list-api/key:rotate" && r.Method == http.MethodPost:
+		a.rotateIPListAPIKey(w, r)
 	case (path == "ipinfo" || path == "ipinfo-lite" || path == "geoip") && (r.Method == http.MethodGet || r.Method == http.MethodPut):
 		a.adminIPInfoSettings(w, r)
 	case path == "frontend-detection" && (r.Method == http.MethodGet || r.Method == http.MethodPut || r.Method == http.MethodPatch):

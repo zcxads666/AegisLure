@@ -2337,6 +2337,74 @@ pre,
   max-width: 620px;
 }
 
+.ip-list-api-card {
+  max-width: 680px;
+}
+
+.api-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-top: 18px;
+  padding: 13px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: rgba(12, 25, 41, .58);
+}
+
+.api-toggle-row > span {
+  display: grid;
+  gap: 4px;
+}
+
+.api-toggle-row b {
+  color: var(--text-1);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.api-toggle-row small {
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+
+.api-list-facts {
+  margin-top: 14px;
+}
+
+.api-key-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 13px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: rgba(12, 25, 41, .58);
+}
+
+.api-key-panel > div:first-child {
+  display: grid;
+  gap: 6px;
+}
+
+.api-key-panel > div:first-child > span {
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+
+.api-key-display {
+  overflow-wrap: anywhere;
+  color: var(--text-2);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.api-key-display.is-revealed {
+  color: var(--accent);
+}
+
 .account-preview {
   display: flex;
   align-items: center;

@@ -251,6 +251,17 @@ type AdminRecoveryCode struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
+// IPListAPIConfig controls the optional read-only IP indicator endpoint that
+// is served below the administrator's hidden entry path. The raw API key is
+// deliberately never persisted; only its instance-keyed fingerprint and a
+// short display prefix are retained.
+type IPListAPIConfig struct {
+	Enabled   bool      `json:"enabled"`
+	KeyHash   string    `json:"key_hash,omitempty"`
+	KeyPrefix string    `json:"key_prefix,omitempty"`
+	RotatedAt time.Time `json:"rotated_at,omitempty"`
+}
+
 // AuditEntry is a local tamper-evident record for administrator and runtime
 // configuration changes. The chain is authoritative in the selected database
 // backend; Metadata must contain only bounded, already-redacted values.
@@ -283,6 +294,7 @@ type State struct {
 	IdentityIndicatorDecisions map[string]IdentityIndicatorDecision `json:"identity_indicator_decisions,omitempty"`
 	OAuthChannelPolicies       map[string]OAuthChannelPolicy        `json:"oauth_channel_policies,omitempty"`
 	Sub2APIOAuthPolicies       map[string]OAuthChannelPolicy        `json:"sub2api_oauth_policies,omitempty"`
+	IPListAPI                  IPListAPIConfig                      `json:"ip_list_api,omitempty"`
 	InsightEvidenceVersion     int                                  `json:"insight_evidence_version,omitempty"`
 }
 

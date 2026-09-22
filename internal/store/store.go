@@ -1699,6 +1699,27 @@ func (s *Store) Admin() model.AdminState {
 	return s.state.Admin
 }
 
+// IPListAPIConfig returns the persisted settings for the optional read-only
+// IP indicator endpoint. The raw API key is never part of this value.
+func (s *Store) IPListAPIConfig() model.IPListAPIConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state.IPListAPI
+}
+
+// UpdateIPListAPIConfig applies one atomic update to the IP indicator API
+// settings so SQLite and PostgreSQL deployments share the same persistence
+// and cross-process update semantics as the other control-plane settings.
+func (s *Store) UpdateIPListAPIConfig(update func(*model.IPListAPIConfig)) error {
+	if update == nil {
+		return errors.New("ip list api update is incomplete")
+	}
+	return s.Update(func(state *model.State) error {
+		update(&state.IPListAPI)
+		return nil
+	})
+}
+
 func (s *Store) InteractionChainConfig() model.InteractionChainConfig {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
