@@ -1,6 +1,7 @@
 package app
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +27,11 @@ type AdminSession struct {
 	LastSeen  time.Time
 }
 
+const (
+	adminUIRequestTokenCookie = "hp_admin_ui_csrf"
+	adminUIRequestTokenHeader = "X-AegisLure-Admin-UI"
+)
+
 var errOwnerAlreadyInitialized = fmt.Errorf("owner already initialized")
 
 func (a *App) adminHandler() http.Handler {
@@ -41,7 +47,7 @@ func (a *App) adminHandler() http.Handler {
 		}
 		path := strings.TrimPrefix(r.URL.Path, a.cfg.AdminPath)
 		if r.Method == http.MethodGet && isAdminUIPath(path) {
-			a.adminPage(w)
+			a.adminPage(w, r)
 			return
 		}
 		if r.Method == http.MethodGet && (strings.HasPrefix(path, "/assets/") || strings.HasPrefix(path, "assets/")) {
@@ -325,6 +331,7 @@ func (a *App) adminLogout(w http.ResponseWriter, r *http.Request) {
 		a.deleteAdminSession(cookie.Value)
 	}
 	http.SetCookie(w, &http.Cookie{Name: "hp_admin", Value: "", Path: a.cfg.AdminPath, MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: a.adminCookieSecure(r)})
+	http.SetCookie(w, &http.Cookie{Name: adminUIRequestTokenCookie, Value: "", Path: a.cfg.AdminPath, MaxAge: -1, SameSite: http.SameSiteStrictMode, Secure: a.adminCookieSecure(r)})
 	a.writeJSON(w, http.StatusOK, map[string]bool{"success": true})
 }
 
@@ -1462,7 +1469,15 @@ func sameOriginRequest(r *http.Request) bool {
 // reachable from the embedded admin page while rejecting copied HTTP
 // commands that omit browser-origin context.
 func sameOriginAdminUIRequest(r *http.Request) bool {
-	return strings.TrimSpace(r.Header.Get("Origin")) != "" && sameOriginRequest(r)
+	if strings.TrimSpace(r.Header.Get("Origin")) == "" || !sameOriginRequest(r) {
+		return false
+	}
+	cookie, err := r.Cookie(adminUIRequestTokenCookie)
+	if err != nil || strings.TrimSpace(cookie.Value) == "" {
+		return false
+	}
+	header := strings.TrimSpace(r.Header.Get(adminUIRequestTokenHeader))
+	return header != "" && subtle.ConstantTimeCompare([]byte(header), []byte(cookie.Value)) == 1
 }
 
 func requestScheme(r *http.Request) string {

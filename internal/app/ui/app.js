@@ -11,6 +11,8 @@ import {
 const ADMIN_BASE = document.body.dataset.adminBase || '/'
 const BASE = ADMIN_BASE.endsWith('/') ? ADMIN_BASE : `${ADMIN_BASE}/`
 const jsonHeaders = { 'Content-Type': 'application/json', Accept: 'application/json' }
+const ADMIN_UI_TOKEN_COOKIE = 'hp_admin_ui_csrf'
+const ADMIN_UI_TOKEN_HEADER = 'X-AegisLure-Admin-UI'
 
 const NAV_ITEMS = [
   { id: 'dashboard', label: '总览', icon: 'grid' },
@@ -219,10 +221,13 @@ function responsePagination(result) {
 }
 
 async function request(path, options = {}) {
+  const headers = { Accept: 'application/json', ...(options.body ? jsonHeaders : {}), ...(options.headers || {}) }
+  const uiToken = document.cookie.split(';').map((value) => value.trim()).find((value) => value.startsWith(`${ADMIN_UI_TOKEN_COOKIE}=`))?.slice(ADMIN_UI_TOKEN_COOKIE.length + 1)
+  if (uiToken) headers[ADMIN_UI_TOKEN_HEADER] = decodeURIComponent(uiToken)
   const response = await fetch(path.startsWith('setup/') ? `${BASE}${path}` : apiPath(path), {
     credentials: 'same-origin',
     ...options,
-    headers: { Accept: 'application/json', ...(options.body ? jsonHeaders : {}), ...(options.headers || {}) },
+    headers,
   })
   const type = response.headers.get('content-type') || ''
   const data = type.includes('json') ? await response.json().catch(() => ({})) : await response.text()

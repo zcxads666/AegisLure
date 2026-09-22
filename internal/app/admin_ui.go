@@ -26,11 +26,12 @@ var adminRuntimeJS []byte
 //go:embed ui/vendor/THIRD_PARTY_NOTICES.txt
 var adminThirdPartyNotices []byte
 
-func (a *App) adminPage(w http.ResponseWriter) {
+func (a *App) adminPage(w http.ResponseWriter, r *http.Request) {
 	nonce := security.MustRandomToken(18)
 	body := strings.ReplaceAll(adminIndexHTML, "{{ADMIN_BASE}}", htmlEscape(a.cfg.AdminPath))
 	body = strings.ReplaceAll(body, "{{NONCE}}", htmlEscape(nonce))
 	setSecurityHeaders(w)
+	http.SetCookie(w, &http.Cookie{Name: adminUIRequestTokenCookie, Value: security.MustRandomToken(24), Path: a.cfg.AdminPath, SameSite: http.SameSiteStrictMode, Secure: a.adminCookieSecure(r), MaxAge: 8 * 3600})
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; base-uri 'none'; connect-src 'self'; style-src 'self' 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; script-src 'nonce-"+nonce+"' 'self'")

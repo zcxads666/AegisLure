@@ -27,6 +27,15 @@ func TestIPListAPISettingsAuthenticationAndFilters(t *testing.T) {
 	}
 
 	admin := &inProcessClient{handler: a.adminHandler(), cookies: map[string]string{}}
+	pageResponse := admin.do(t, http.MethodGet, cfg.AdminPath, nil, "")
+	if pageResponse.StatusCode != http.StatusOK {
+		t.Fatalf("admin page status = %d", pageResponse.StatusCode)
+	}
+	pageResponse.Body.Close()
+	uiToken := admin.cookies[adminUIRequestTokenCookie]
+	if uiToken == "" {
+		t.Fatal("admin page did not issue UI request token")
+	}
 	if resp, _ := doJSON(t, admin, http.MethodPost, cfg.AdminPath+"admin/api/v1/auth/login", map[string]string{"username": "owner", "password": "correct horse battery staple"}); resp.StatusCode != http.StatusOK {
 		t.Fatalf("admin login status = %d", resp.StatusCode)
 	}
@@ -46,8 +55,11 @@ func TestIPListAPISettingsAuthenticationAndFilters(t *testing.T) {
 	if resp, _ := doJSONWithHeaders(t, admin, http.MethodPut, cfg.AdminPath+"admin/api/v1/ip-list-api", map[string]any{"enabled": true}, map[string]string{"Origin": "https://external.test"}); resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("cross-origin IP list API enable status = %d, want %d", resp.StatusCode, http.StatusForbidden)
 	}
+	if resp, _ := doJSONWithHeaders(t, admin, http.MethodPut, cfg.AdminPath+"admin/api/v1/ip-list-api", map[string]any{"enabled": true}, map[string]string{"Origin": "https://admin.test"}); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("missing UI token IP list API enable status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
 
-	uiHeaders := map[string]string{"Origin": "https://admin.test"}
+	uiHeaders := map[string]string{"Origin": "https://admin.test", adminUIRequestTokenHeader: uiToken}
 	resp, enabled := doJSONWithHeaders(t, admin, http.MethodPut, cfg.AdminPath+"admin/api/v1/ip-list-api", map[string]any{"enabled": true}, uiHeaders)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("enable IP list API status = %d %#v", resp.StatusCode, enabled)
