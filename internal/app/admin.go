@@ -1457,6 +1457,14 @@ func sameOriginRequest(r *http.Request) bool {
 	return true
 }
 
+// sameOriginAdminUIRequest deliberately requires an Origin header in
+// addition to validating it. This keeps sensitive IP list API mutations
+// reachable from the embedded admin page while rejecting copied HTTP
+// commands that omit browser-origin context.
+func sameOriginAdminUIRequest(r *http.Request) bool {
+	return strings.TrimSpace(r.Header.Get("Origin")) != "" && sameOriginRequest(r)
+}
+
 func requestScheme(r *http.Request) string {
 	if r.TLS != nil {
 		return "https"

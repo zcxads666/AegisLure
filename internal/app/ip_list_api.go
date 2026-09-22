@@ -80,8 +80,8 @@ func (a *App) adminIPListAPISettings(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, http.StatusOK, a.ipListAPISettingsView(r, a.store.IPListAPIConfig()))
 		return
 	}
-	if !sameOriginRequest(r) {
-		a.writeJSON(w, http.StatusForbidden, map[string]string{"error": "cross-site request rejected"})
+	if !sameOriginAdminUIRequest(r) {
+		a.writeJSON(w, http.StatusForbidden, map[string]string{"error": "admin page request required"})
 		return
 	}
 	if !a.allowRate("admin-ip-list-api-settings:"+requestSourceIP(r), 20, time.Minute) {
@@ -139,8 +139,8 @@ func (a *App) adminIPListAPISettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) rotateIPListAPIKey(w http.ResponseWriter, r *http.Request) {
-	if !sameOriginRequest(r) {
-		a.writeJSON(w, http.StatusForbidden, map[string]string{"error": "cross-site request rejected"})
+	if !sameOriginAdminUIRequest(r) {
+		a.writeJSON(w, http.StatusForbidden, map[string]string{"error": "admin page request required"})
 		return
 	}
 	if !a.allowRate("admin-ip-list-api-key-rotate:"+requestSourceIP(r), 10, time.Minute) {

@@ -40,7 +40,15 @@ func TestIPListAPISettingsAuthenticationAndFilters(t *testing.T) {
 		t.Fatalf("disabled IP list API status = %d, want %d", resp.StatusCode, http.StatusNotFound)
 	}
 
-	resp, enabled := doJSON(t, admin, http.MethodPut, cfg.AdminPath+"admin/api/v1/ip-list-api", map[string]any{"enabled": true})
+	if resp, _ := doJSON(t, admin, http.MethodPut, cfg.AdminPath+"admin/api/v1/ip-list-api", map[string]any{"enabled": true}); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("external-style IP list API enable status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+	if resp, _ := doJSONWithHeaders(t, admin, http.MethodPut, cfg.AdminPath+"admin/api/v1/ip-list-api", map[string]any{"enabled": true}, map[string]string{"Origin": "https://external.test"}); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("cross-origin IP list API enable status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+
+	uiHeaders := map[string]string{"Origin": "https://admin.test"}
+	resp, enabled := doJSONWithHeaders(t, admin, http.MethodPut, cfg.AdminPath+"admin/api/v1/ip-list-api", map[string]any{"enabled": true}, uiHeaders)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("enable IP list API status = %d %#v", resp.StatusCode, enabled)
 	}
@@ -93,7 +101,10 @@ func TestIPListAPISettingsAuthenticationAndFilters(t *testing.T) {
 		}
 	}
 
-	resp, rotated := doJSON(t, admin, http.MethodPost, cfg.AdminPath+"admin/api/v1/ip-list-api/key:rotate", nil)
+	if resp, _ := doJSON(t, admin, http.MethodPost, cfg.AdminPath+"admin/api/v1/ip-list-api/key:rotate", nil); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("external-style IP list API rotate status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+	resp, rotated := doJSONWithHeaders(t, admin, http.MethodPost, cfg.AdminPath+"admin/api/v1/ip-list-api/key:rotate", nil, uiHeaders)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("rotate IP list API key status = %d %#v", resp.StatusCode, rotated)
 	}

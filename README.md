@@ -129,15 +129,9 @@ HP_ADMIN_PORT_BIND_IP=0.0.0.0
 - 完整 key 只在首次生成或轮换的响应中返回，页面刷新后只显示遮罩前缀；请在响应后立即保存。
 - 服务只保存 key 的不可逆指纹，不保存完整 key。
 
-后台的管理 API（需要已登录的管理会话）如下：
+- 开关和 key 轮换不是对外 API，只能在管理后台页面操作。服务端会要求变更请求带有与当前后台地址一致的浏览器 `Origin`；直接复制命令、缺少 `Origin` 或跨站请求都会返回 `403`。
 
-| 方法 | 地址 | 用途 |
-| --- | --- | --- |
-| `GET` | `{ADMIN_BASE}/admin/api/v1/ip-list-api` | 查看开关、接口地址、key 状态和参数说明；不会返回完整 key |
-| `PUT` | `{ADMIN_BASE}/admin/api/v1/ip-list-api` | 更新开关，JSON body 为 `{"enabled": true}` 或 `{"enabled": false}` |
-| `POST` | `{ADMIN_BASE}/admin/api/v1/ip-list-api/key:rotate` | 轮换 key；完整新 key 只在本次响应中返回 |
-
-其中 `{ADMIN_BASE}` 是当前管理后台的完整地址，例如 `https://admin.example.com/<随机后台路径>`，不要把 `/admin/api/v1` 当作对外 IP 列表接口的路径。
+其中 `{ADMIN_BASE}` 是当前管理后台的完整地址，例如 `https://admin.example.com/<随机后台路径>`。
 
 ### 查询接口
 
