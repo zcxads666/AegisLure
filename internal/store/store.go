@@ -2893,6 +2893,20 @@ func (s *Store) EventsByQuery(query EventQuery) ([]model.Event, error) {
 // EventRowsContext reads one page without issuing a COUNT query. Callers that
 // already have an exact total (for example the <=1000 synthetic aggregation
 // path) can therefore avoid repeating the count.
+func checkedEventPageOffset(page, pageSize int) (int, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 10
+	}
+	maxInt := int(^uint(0) >> 1)
+	if page-1 > maxInt/pageSize {
+		return 0, errors.New("event page offset is too large")
+	}
+	return (page - 1) * pageSize, nil
+}
+
 func (s *Store) EventRowsContext(ctx context.Context, query EventQuery) ([]model.Event, error) {
 	if query.Page < 1 {
 		query.Page = 1
@@ -2900,13 +2914,17 @@ func (s *Store) EventRowsContext(ctx context.Context, query EventQuery) ([]model
 	if query.PageSize < 1 {
 		query.PageSize = 10
 	}
+	offset, err := checkedEventPageOffset(query.Page, query.PageSize)
+	if err != nil {
+		return nil, err
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.db != nil {
-		return s.queryEventRowsLocked(ctx, buildEventListFilter(query), true, query.PageSize, (query.Page-1)*query.PageSize, query.Summary)
+		return s.queryEventRowsLocked(ctx, buildEventListFilter(query), true, query.PageSize, offset, query.Summary)
 	}
 	all, err := s.readEventsLocked(query.Product, query.SourceIP)
 	if err != nil {
@@ -2921,12 +2939,14 @@ func (s *Store) EventRowsContext(ctx context.Context, query EventQuery) ([]model
 	for i, j := 0, len(filtered)-1; i < j; i, j = i+1, j-1 {
 		filtered[i], filtered[j] = filtered[j], filtered[i]
 	}
-	start := (query.Page - 1) * query.PageSize
-	if start >= len(filtered) {
+	if offset >= len(filtered) {
 		return []model.Event{}, nil
 	}
-	end := minInt(start+query.PageSize, len(filtered))
-	page := filtered[start:end]
+	end := len(filtered)
+	if query.PageSize < len(filtered)-offset {
+		end = offset + query.PageSize
+	}
+	page := filtered[offset:end]
 	if query.Summary {
 		for index := range page {
 			page[index] = eventListProjection(page[index])
@@ -3068,7 +3088,7 @@ func pageInfo(page, pageSize, total int) PageInfo {
 	}
 	totalPages := 0
 	if total > 0 {
-		totalPages = (total + pageSize - 1) / pageSize
+		totalPages = 1 + (total-1)/pageSize
 	}
 	return PageInfo{Page: page, PageSize: pageSize, Total: total, TotalPages: totalPages, HasNext: page < totalPages, HasPrevious: page > 1 && totalPages > 0}
 }
@@ -3083,6 +3103,10 @@ func (s *Store) EventPageContext(ctx context.Context, query EventQuery) (EventPa
 	}
 	if query.PageSize < 1 {
 		query.PageSize = 10
+	}
+	offset, err := checkedEventPageOffset(query.Page, query.PageSize)
+	if err != nil {
+		return EventPage{}, err
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -3104,15 +3128,14 @@ func (s *Store) EventPageContext(ctx context.Context, query EventQuery) (EventPa
 			filtered[i], filtered[j] = filtered[j], filtered[i]
 		}
 		pagination := pageInfo(query.Page, query.PageSize, len(filtered))
-		start := (pagination.Page - 1) * pagination.PageSize
-		if start >= len(filtered) {
+		if offset >= len(filtered) {
 			return EventPage{Events: []model.Event{}, Pagination: pagination}, nil
 		}
-		end := start + pagination.PageSize
-		if end > len(filtered) {
-			end = len(filtered)
+		end := len(filtered)
+		if pagination.PageSize < len(filtered)-offset {
+			end = offset + pagination.PageSize
 		}
-		page := filtered[start:end]
+		page := filtered[offset:end]
 		if query.Summary {
 			for index := range page {
 				page[index] = eventListProjection(page[index])
@@ -3127,7 +3150,7 @@ func (s *Store) EventPageContext(ctx context.Context, query EventQuery) (EventPa
 	if err := s.db.QueryRowContext(ctx, s.bind(countQuery), filter.args...).Scan(&total); err != nil {
 		return EventPage{}, fmt.Errorf("count %s event page: %w", s.driver, err)
 	}
-	page, err := s.queryEventRowsLocked(ctx, filter, true, query.PageSize, (query.Page-1)*query.PageSize, query.Summary)
+	page, err := s.queryEventRowsLocked(ctx, filter, true, query.PageSize, offset, query.Summary)
 	if err != nil {
 		return EventPage{}, err
 	}

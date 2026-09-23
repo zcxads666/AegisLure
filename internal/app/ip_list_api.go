@@ -105,18 +105,23 @@ func (a *App) adminIPListAPISettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	settings := a.store.IPListAPIConfig()
-	generatedKey := ""
+	candidateKey := ""
 	if enabled && strings.TrimSpace(settings.KeyHash) == "" {
 		var err error
-		generatedKey, err = newIPListAPIKey()
+		candidateKey, err = newIPListAPIKey()
 		if err != nil {
 			a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "API key generation failed"})
 			return
 		}
 	}
+	generatedKey := ""
 	if err := a.store.UpdateIPListAPIConfig(func(current *model.IPListAPIConfig) {
 		current.Enabled = enabled
-		if generatedKey != "" {
+		// Another admin request may have generated the first key after the
+		// snapshot above. Install and return this candidate only if the key is
+		// still absent inside the same atomic store update.
+		if candidateKey != "" && strings.TrimSpace(current.KeyHash) == "" {
+			generatedKey = candidateKey
 			current.KeyHash = security.Fingerprint(a.cfg.InstanceKey, generatedKey)
 			current.KeyPrefix = ipListAPIKeyDisplayPrefix(generatedKey)
 			current.RotatedAt = time.Now().UTC()

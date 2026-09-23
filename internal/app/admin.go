@@ -1406,6 +1406,10 @@ func adminPageParams(r *http.Request) (int, int, string, error) {
 		}
 		pageSize = parsed
 	}
+	maxInt := int(^uint(0) >> 1)
+	if page > 1 && page-1 > maxInt/pageSize {
+		return 0, 0, "", errors.New("page offset is too large")
+	}
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	if len(query) > 256 {
 		return 0, 0, "", errors.New("q is too long")
@@ -1419,12 +1423,15 @@ func adminSummaryRequested(r *http.Request) bool {
 }
 
 func adminPagination(total, page, pageSize int) store.PageInfo {
+	if page < 1 {
+		page = 1
+	}
 	if pageSize < 1 {
 		pageSize = adminPageSize
 	}
 	totalPages := 0
 	if total > 0 {
-		totalPages = (total + pageSize - 1) / pageSize
+		totalPages = 1 + (total-1)/pageSize
 	}
 	return store.PageInfo{Page: page, PageSize: pageSize, Total: total, TotalPages: totalPages, HasNext: page < totalPages, HasPrevious: page > 1 && totalPages > 0}
 }
@@ -1439,13 +1446,13 @@ func adminPagePayload(info store.PageInfo) map[string]any {
 
 func paginateAdminValues[T any](values []T, page, pageSize int) ([]T, store.PageInfo) {
 	info := adminPagination(len(values), page, pageSize)
-	start := (page - 1) * info.PageSize
-	if start >= len(values) {
+	if info.TotalPages == 0 || info.Page > info.TotalPages {
 		return []T{}, info
 	}
-	end := start + info.PageSize
-	if end > len(values) {
-		end = len(values)
+	start := (info.Page - 1) * info.PageSize
+	end := len(values)
+	if info.PageSize < len(values)-start {
+		end = start + info.PageSize
 	}
 	return values[start:end], info
 }
