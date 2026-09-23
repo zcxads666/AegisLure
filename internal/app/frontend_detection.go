@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -232,19 +232,33 @@ func (a *App) handleFrontendDetectionReport(w *captureWriter, r *http.Request, s
 	metadata["ip_region"] = boundedFrontendValue(firstNonEmpty(location.Region, location.Country), 128)
 	metadata["geo_source"] = boundedFrontendValue(location.Source, 64)
 	metadata["geo_status"] = boundedFrontendValue(location.Status, 64)
+	regionStatus := frontendRegionConsistencyStatus(config.DNSLeakDetection, visitorCode, serverCode)
+	metadata["region_consistency_status"] = regionStatus
 
 	kinds := make([]string, 0, 2)
 	var inferredIP, inferredRegion string
-	if config.DNSLeakDetection && visitorCode != "" && serverCode != "" && visitorCode != serverCode {
+	if regionStatus == "mismatch" {
 		kinds = append(kinds, "dns_region")
 		inferredIP = sourceIP
 		inferredRegion = firstNonEmpty(location.Region, location.Country, serverCode)
 	}
 	if config.WebRTCIPDetection {
-		for _, candidate := range frontendCandidateIPs(report.WebRTCCandidates) {
-			if candidate == "" || candidate == sourceIP {
+		candidates := frontendCandidateIPs(report.WebRTCCandidates)
+		metadata["webrtc_public_candidate_count"] = strconv.Itoa(len(candidates))
+		switch {
+		case len(candidates) == 0:
+			metadata["webrtc_check_status"] = "no_public_candidate"
+		case frontendPublicIP(sourceIP) == "":
+			metadata["webrtc_check_status"] = "source_ip_unavailable"
+		default:
+			metadata["webrtc_check_status"] = "source_ip_match"
+		}
+		publicSourceIP := frontendPublicIP(sourceIP)
+		for _, candidate := range candidates {
+			if candidate == publicSourceIP || publicSourceIP == "" {
 				continue
 			}
+			metadata["webrtc_check_status"] = "public_ip_mismatch"
 			candidateLocation := a.resolveIPInfo(candidate)
 			kinds = append(kinds, "webrtc_ip")
 			inferredIP = candidate
@@ -254,14 +268,17 @@ func (a *App) handleFrontendDetectionReport(w *captureWriter, r *http.Request, s
 			metadata["webrtc_geo_status"] = boundedFrontendValue(candidateLocation.Status, 64)
 			break
 		}
+	} else {
+		metadata["webrtc_check_status"] = "disabled"
 	}
 	metadata["detection_mismatch"] = strconv.FormatBool(len(kinds) > 0)
+	metadata["detection_reported"] = "true"
+	metadata["detection_result"] = frontendDetectionResult(config, regionStatus, metadata["webrtc_check_status"])
 	if len(kinds) > 0 {
 		kinds = uniqueStrings(kinds)
 		metadata["detection_kind"] = strings.Join(kinds, ",")
 		metadata["inferred_ip"] = inferredIP
 		metadata["inferred_region"] = boundedFrontendValue(inferredRegion, 128)
-		metadata["detection_reported"] = "true"
 		reasons := make([]string, 0, len(kinds))
 		for _, kind := range kinds {
 			reasons = append(reasons, frontendDetectionReason(kind))
@@ -305,6 +322,32 @@ func normalizeFrontendRegion(value string) string {
 	return ""
 }
 
+func frontendRegionConsistencyStatus(enabled bool, visitorCode, serverCode string) string {
+	if !enabled {
+		return "disabled"
+	}
+	if visitorCode == "" || serverCode == "" {
+		return "unknown"
+	}
+	if visitorCode != serverCode {
+		return "mismatch"
+	}
+	return "match"
+}
+
+func frontendDetectionResult(config model.FrontendDetectionConfig, regionStatus, webrtcStatus string) string {
+	if config.DNSLeakDetection && regionStatus == "mismatch" || config.WebRTCIPDetection && webrtcStatus == "public_ip_mismatch" {
+		return "mismatch"
+	}
+	if config.DNSLeakDetection && regionStatus != "match" || config.WebRTCIPDetection && webrtcStatus != "source_ip_match" {
+		return "indeterminate"
+	}
+	if !config.DNSLeakDetection && !config.WebRTCIPDetection {
+		return "indeterminate"
+	}
+	return "consistent"
+}
+
 func boundedFrontendValue(value string, limit int) string {
 	return security.RedactPreview(strings.TrimSpace(value), limit)
 }
@@ -315,11 +358,10 @@ func frontendCandidateIPs(candidates []string) []string {
 	for _, candidate := range candidates {
 		for _, field := range strings.Fields(candidate) {
 			field = strings.Trim(field, "[](),")
-			ip := net.ParseIP(field)
-			if ip == nil || ip.IsUnspecified() || ip.IsMulticast() || ip.IsLoopback() {
+			canonical := frontendPublicIP(field)
+			if canonical == "" {
 				continue
 			}
-			canonical := ip.String()
 			if !seen[canonical] {
 				seen[canonical] = true
 				result = append(result, canonical)
@@ -327,6 +369,42 @@ func frontendCandidateIPs(candidates []string) []string {
 		}
 	}
 	return result
+}
+
+var frontendNonPublicIPPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("192.88.99.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("100::/64"),
+	netip.MustParsePrefix("2001::/23"),
+	netip.MustParsePrefix("2001:db8::/32"),
+	netip.MustParsePrefix("2002::/16"),
+	netip.MustParsePrefix("3fff::/20"),
+}
+
+func frontendPublicIP(value string) string {
+	addr, err := netip.ParseAddr(strings.TrimSpace(value))
+	if err != nil {
+		return ""
+	}
+	addr = addr.Unmap()
+	if !addr.IsGlobalUnicast() || addr.IsPrivate() || addr.IsLoopback() || addr.IsLinkLocalUnicast() || addr.IsMulticast() || addr.IsUnspecified() {
+		return ""
+	}
+	for _, prefix := range frontendNonPublicIPPrefixes {
+		if prefix.Contains(addr) {
+			return ""
+		}
+	}
+	return addr.String()
 }
 
 func (a *App) adminFrontendDetection(w http.ResponseWriter, r *http.Request) {

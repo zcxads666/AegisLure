@@ -135,7 +135,7 @@ func (a *App) buildInformationInsights(events []model.Event) []informationInsigh
 		keyID := insightKeyID(event)
 		isAccountCreation := isInsightAccountCreation(event)
 		isKeyCreation := isInsightKeyCreation(event)
-		isDetection := event.Metadata["detection_mismatch"] == "true" && event.EventType == "frontend.detection.mismatch"
+		isDetection := event.EventType == "frontend.detection.mismatch" && event.Metadata["detection_mismatch"] == "true" || event.EventType == "frontend.detection.report" && event.Metadata["detection_reported"] == "true"
 
 		if accountOK {
 			account := accounts[accountID]
@@ -562,19 +562,34 @@ func isInsightKeyUse(event model.Event) bool {
 }
 
 func detectionFinding(event model.Event) map[string]any {
+	kind := event.Metadata["detection_kind"]
+	if kind == "" {
+		switch event.Metadata["detection_result"] {
+		case "consistent":
+			kind = "detection_consistent"
+		case "indeterminate":
+			kind = "detection_indeterminate"
+		default:
+			kind = "detection_result"
+		}
+	}
 	return map[string]any{
-		"event_id":         event.EventID,
-		"kind":             event.Metadata["detection_kind"],
-		"inferred_ip":      event.Metadata["inferred_ip"],
-		"inferred_region":  event.Metadata["inferred_region"],
-		"visitor_region":   event.Metadata["visitor_region"],
-		"visitor_timezone": event.Metadata["visitor_timezone"],
-		"server_ip":        event.Metadata["server_ip"],
-		"ip_region":        event.Metadata["ip_region"],
-		"ip_country_code":  event.Metadata["ip_country_code"],
-		"geo_source":       event.Metadata["geo_source"],
-		"geo_status":       event.Metadata["geo_status"],
-		"observed_at":      event.ObservedAt,
+		"event_id":          event.EventID,
+		"kind":              kind,
+		"result":            event.Metadata["detection_result"],
+		"region_status":     event.Metadata["region_consistency_status"],
+		"webrtc_status":     event.Metadata["webrtc_check_status"],
+		"webrtc_candidates": event.Metadata["webrtc_public_candidate_count"],
+		"inferred_ip":       event.Metadata["inferred_ip"],
+		"inferred_region":   event.Metadata["inferred_region"],
+		"visitor_region":    event.Metadata["visitor_region"],
+		"visitor_timezone":  event.Metadata["visitor_timezone"],
+		"server_ip":         event.Metadata["server_ip"],
+		"ip_region":         event.Metadata["ip_region"],
+		"ip_country_code":   event.Metadata["ip_country_code"],
+		"geo_source":        event.Metadata["geo_source"],
+		"geo_status":        event.Metadata["geo_status"],
+		"observed_at":       event.ObservedAt,
 	}
 }
 

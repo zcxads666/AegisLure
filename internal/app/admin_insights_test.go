@@ -204,6 +204,33 @@ func TestBuildInformationInsightsKeepsLatestEvidenceAndTrueCount(t *testing.T) {
 	}
 }
 
+func TestBuildInformationInsightsShowsIndeterminateFrontendDetection(t *testing.T) {
+	a, _, st := newTestApp(t, true)
+	defer st.Close()
+
+	event := model.Event{
+		EventID:    "frontend-report-indeterminate",
+		EventType:  "frontend.detection.report",
+		ObservedAt: time.Date(2026, 9, 23, 8, 0, 0, 0, time.UTC),
+		Metadata: map[string]string{
+			"detection_reported":            "true",
+			"detection_result":              "indeterminate",
+			"region_consistency_status":     "disabled",
+			"webrtc_check_status":           "no_public_candidate",
+			"webrtc_public_candidate_count": "0",
+		},
+	}
+
+	insights := a.buildInformationInsights([]model.Event{event})
+	if len(insights) != 1 || len(insights[0].DetectionFindings) != 1 {
+		t.Fatalf("indeterminate detection insight = %#v", insights)
+	}
+	finding := insights[0].DetectionFindings[0]
+	if finding["kind"] != "detection_indeterminate" || finding["webrtc_status"] != "no_public_candidate" {
+		t.Fatalf("indeterminate detection finding = %#v", finding)
+	}
+}
+
 func TestFrontendDetectionReportRecordsWebRTCMismatch(t *testing.T) {
 	a, _, st := newTestApp(t, true)
 	defer st.Close()
@@ -211,9 +238,9 @@ func TestFrontendDetectionReportRecordsWebRTCMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	body := `{"detection_version":"1","login_path":"/login","locale":"en-US","languages":["en-US"],"timezone":"UTC","visitor_region":"US","visitor_country_code":"US","webrtc_candidates":["candidate 1 1 udp 1 198.51.100.5 12345 typ srflx"]}`
+	body := `{"detection_version":"1","login_path":"/login","locale":"en-US","languages":["en-US"],"timezone":"UTC","visitor_region":"US","visitor_country_code":"US","webrtc_candidates":["candidate 1 1 udp 1 8.8.8.8 12345 typ srflx"]}`
 	req := httptest.NewRequest(http.MethodPost, "/__aegislure/frontend-detection/report", strings.NewReader(body))
-	req.RemoteAddr = "198.51.100.4:443"
+	req.RemoteAddr = "1.1.1.1:443"
 	recorder := httptest.NewRecorder()
 	writer := &captureWriter{ResponseWriter: recorder, personaProduct: model.ProductNewAPI}
 	obs := &Observation{Metadata: map[string]string{}}
@@ -222,10 +249,13 @@ func TestFrontendDetectionReportRecordsWebRTCMismatch(t *testing.T) {
 	if recorder.Code != http.StatusNoContent {
 		t.Fatalf("report status = %d, want %d", recorder.Code, http.StatusNoContent)
 	}
-	if obs.EventType != "frontend.detection.mismatch" || obs.Metadata["detection_mismatch"] != "true" || obs.Metadata["inferred_ip"] != "198.51.100.5" {
+	if obs.EventType != "frontend.detection.mismatch" || obs.Metadata["detection_mismatch"] != "true" || obs.Metadata["inferred_ip"] != "8.8.8.8" {
 		t.Fatalf("WebRTC mismatch metadata = %#v, event=%q", obs.Metadata, obs.EventType)
 	}
-	if obs.Metadata[model.MetadataRiskAssociatedIPs] != "198.51.100.5" || obs.Metadata[model.MetadataRiskAssociationReason] != "frontend_webrtc_ip_mismatch" {
+	if obs.Metadata["webrtc_check_status"] != "public_ip_mismatch" || obs.Metadata["webrtc_public_candidate_count"] != "1" {
+		t.Fatalf("WebRTC status metadata = %#v", obs.Metadata)
+	}
+	if obs.Metadata[model.MetadataRiskAssociatedIPs] != "8.8.8.8" || obs.Metadata[model.MetadataRiskAssociationReason] != "frontend_webrtc_ip_mismatch" {
 		t.Fatalf("WebRTC mismatch association metadata = %#v", obs.Metadata)
 	}
 	if !containsAppString(obs.ExtraReasons, "frontend_webrtc_ip_mismatch") || !containsAppString(obs.ExtraReasons, "frontend_identity_consistency_mismatch") {
@@ -233,6 +263,92 @@ func TestFrontendDetectionReportRecordsWebRTCMismatch(t *testing.T) {
 	}
 	if obs.ExtraScore != 25 {
 		t.Fatalf("WebRTC mismatch extra risk score = %d, want 25", obs.ExtraScore)
+	}
+}
+
+func TestFrontendDetectionReportDoesNotFlagPrivateWebRTCCandidate(t *testing.T) {
+	a, _, st := newTestApp(t, true)
+	defer st.Close()
+	if err := st.SetFrontendDetectionConfig(model.FrontendDetectionConfig{WebRTCIPDetection: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := `{"detection_version":"1","login_path":"/login","webrtc_candidates":["candidate:1 1 udp 1 192.168.1.24 12345 typ host"]}`
+	req := httptest.NewRequest(http.MethodPost, "/__aegislure/frontend-detection/report", strings.NewReader(body))
+	req.RemoteAddr = "1.1.1.1:443"
+	recorder := httptest.NewRecorder()
+	writer := &captureWriter{ResponseWriter: recorder, personaProduct: model.ProductNewAPI}
+	obs := &Observation{Metadata: map[string]string{}}
+	a.handleFrontendDetectionReport(writer, req, Session{UserID: "hu_regular"}, []byte(body), obs, model.ProductNewAPI)
+
+	if obs.EventType != "frontend.detection.report" || obs.Metadata["detection_mismatch"] != "false" {
+		t.Fatalf("private candidate was treated as mismatch: event=%q metadata=%#v", obs.EventType, obs.Metadata)
+	}
+	if obs.Metadata["webrtc_check_status"] != "no_public_candidate" || obs.Metadata["webrtc_public_candidate_count"] != "0" {
+		t.Fatalf("private-only candidate status = %#v", obs.Metadata)
+	}
+}
+
+func TestFrontendCandidateIPsKeepOnlyPublicAddresses(t *testing.T) {
+	candidates := []string{
+		"candidate:1 1 udp 1 8.8.8.8 12345 typ srflx",
+		"candidate:2 1 udp 1 192.168.1.24 12345 typ host",
+		"candidate:3 1 udp 1 100.64.1.2 12345 typ srflx",
+		"candidate:4 1 udp 1 198.51.100.10 12345 typ srflx",
+		"candidate:5 1 udp 1 2001:4860:4860::8888 12345 typ srflx",
+		"candidate:6 1 udp 1 fd00::1 12345 typ host",
+		"candidate:7 1 udp 1 2001:db8::1 12345 typ host",
+	}
+	got := frontendCandidateIPs(candidates)
+	want := []string{"8.8.8.8", "2001:4860:4860::8888"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("public candidate IPs = %#v, want %#v", got, want)
+	}
+}
+
+func TestFrontendRegionConsistencyStatus(t *testing.T) {
+	tests := []struct {
+		name        string
+		enabled     bool
+		visitorCode string
+		serverCode  string
+		want        string
+	}{
+		{name: "disabled", want: "disabled"},
+		{name: "unknown", enabled: true, visitorCode: "US", want: "unknown"},
+		{name: "match", enabled: true, visitorCode: "US", serverCode: "US", want: "match"},
+		{name: "mismatch", enabled: true, visitorCode: "US", serverCode: "SG", want: "mismatch"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := frontendRegionConsistencyStatus(tt.enabled, tt.visitorCode, tt.serverCode); got != tt.want {
+				t.Fatalf("status = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFrontendDetectionResultDistinguishesMismatchAndUnknown(t *testing.T) {
+	tests := []struct {
+		name         string
+		config       model.FrontendDetectionConfig
+		regionStatus string
+		webrtcStatus string
+		want         string
+	}{
+		{name: "region mismatch", config: model.FrontendDetectionConfig{DNSLeakDetection: true}, regionStatus: "mismatch", want: "mismatch"},
+		{name: "region unknown", config: model.FrontendDetectionConfig{DNSLeakDetection: true}, regionStatus: "unknown", want: "indeterminate"},
+		{name: "region match", config: model.FrontendDetectionConfig{DNSLeakDetection: true}, regionStatus: "match", want: "consistent"},
+		{name: "no public WebRTC candidate", config: model.FrontendDetectionConfig{WebRTCIPDetection: true}, webrtcStatus: "no_public_candidate", want: "indeterminate"},
+		{name: "WebRTC source match", config: model.FrontendDetectionConfig{WebRTCIPDetection: true}, webrtcStatus: "source_ip_match", want: "consistent"},
+		{name: "WebRTC public IP mismatch", config: model.FrontendDetectionConfig{WebRTCIPDetection: true}, webrtcStatus: "public_ip_mismatch", want: "mismatch"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := frontendDetectionResult(tt.config, tt.regionStatus, tt.webrtcStatus); got != tt.want {
+				t.Fatalf("result = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
