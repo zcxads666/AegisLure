@@ -1,31 +1,56 @@
-# AegisLure
+<h1 align="center"><img src="docs/images/logo.png" alt="AegisLure" width="220"></h1>
 
-AI/LLM 服务蜜罐与 IP 风险情报平台。
+<p align="center"><strong>AI/LLM 服务蜜罐与 IP 风险情报平台</strong></p>
 
-AegisLure 面向单机部署，提供 New API、vLLM、Ollama、SGLang、LocalAI 和 Sub2API 的协议兼容入口，用于记录访问、认证、模型目录、调用行为和风险事件。服务返回合成数据，不连接真实模型供应商，不执行真实推理，也不下载、解析或转发访问者提交的内容。
+<p align="center">
+  <a href="https://github.com/zcxads666/AegisLure/actions/workflows/ci.yml"><img src="https://github.com/zcxads666/AegisLure/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/Go-1.25.0-00ADD8?logo=go" alt="Go 1.25.0">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT License"></a>
+</p>
 
-## 功能
+<p align="center">
+  为 New API、vLLM、Ollama、SGLang、LocalAI 和 Sub2API 提供兼容式蜜罐入口，记录访问、认证、调用行为与风险事件。
+</p>
 
-- 六类 AI/LLM 服务协议兼容入口和模型目录仿真。
-- New API 风格的首页、登录、注册、模型、密钥、用量和调用日志页面。
-- 管理控制台：总览、观测记录、调用分析、交互链路、IP 情报、蜜罐实例、规则策略和系统设置。
-- 规则与策略管理：支持规则、正则条件、身份策略、OAuth 渠道和风险等级的查看与维护。
-- IP 情报：本地/保留地址直接分类，公网地址统一通过 IPinfo API 获取，并在查询失败时回退到“未知”。
-- GitHub、LinuxDO 和 Discord 登录、注册入口，以及 Sub2API 官方已有的 GitHub、LinuxDO、Google、WeChat、OIDC、DingTalk 入口（按官方登录/注册页面分别显示），可按身份策略统一启用或停用；所有入口均为本地合成流程。
-- 风险事件、审计记录、IP/身份指标、JSON/CSV/plain/STIX2/nftables 导出和有界保留策略。
-- SQLite 默认存储，也支持 PostgreSQL 新部署模式；两种模式均会自动加载默认规则和模型目录。
+<p align="center"><em>所有响应均为合成数据：不连接真实模型供应商、不执行真实推理，也不转发访问者提交的内容。</em></p>
 
-## 一键 Docker 部署
+<p align="center">
+  <a href="#quick-start">快速开始</a> ·
+  <a href="#admin-preview">管理后台预览</a> ·
+  <a href="#network-ports">网络入口</a> ·
+  <a href="#ip-list-api">IP 列表 API</a> ·
+  <a href="docs/OPERATIONS.md">运维文档</a>
+</p>
+
+<h2 align="center" id="admin-preview">管理后台预览</h2>
+
+<p align="center">
+  <img src="docs/images/dashboard-overview.png" alt="AegisLure 管理后台总览" width="100%">
+</p>
+
+<p align="center"><sub>管理控制台总览：观测记录、风险趋势与 IP 来源区域。</sub></p>
+
+<h2 align="center" id="core-capabilities">核心能力</h2>
+
+- **多协议蜜罐：** 提供六类 AI/LLM 服务协议兼容入口与模型目录仿真。
+- **完整管理界面：** 包含 New API 风格的用户页面，以及总览、观测记录、调用分析、交互链路、IP 情报、蜜罐实例和系统设置。
+- **规则与身份策略：** 支持规则、正则条件、身份策略、OAuth 渠道和风险等级的查看与维护。
+- **仿真登录入口：** 提供 GitHub、LinuxDO、Discord，以及 Sub2API 官方支持的 GitHub、LinuxDO、Google、WeChat、OIDC、DingTalk 入口；均为本地合成流程，可按身份策略启停。
+- **IP 风险情报：** 本地及保留地址直接分类，公网地址通过 IPinfo API 查询，失败时回退为“未知”。
+- **审计与导出：** 记录风险事件和审计信息，提供 IP/身份指标、JSON/CSV/plain/STIX2/nftables 导出与有界保留策略。
+- **灵活部署：** 默认使用 SQLite，也支持 PostgreSQL；两种模式都会自动加载默认规则和模型目录。
+
+<h2 align="center" id="quick-start">一键 Docker 部署</h2>
 
 前置条件只有 Docker Engine（Linux）或 Docker Desktop（macOS），并启用 Docker Compose v2。支持 `linux/amd64`、`linux/arm64` 和 Apple Silicon；安装脚本还会检查 Docker daemon、Compose 和 OpenSSL 是否可用。
 
-SQLite（默认，适合单机）：
+<p align="center"><strong>SQLite（默认，适合单机）</strong></p>
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zcxads666/AegisLure/main/install-remote.sh | bash -s -- --mode sqlite
 ```
 
-内置 PostgreSQL（数据库不会暴露宿主机端口）：
+<p align="center"><strong>内置 PostgreSQL（数据库不会暴露宿主机端口）</strong></p>
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zcxads666/AegisLure/main/install-remote.sh | bash -s -- --mode postgres
@@ -88,7 +113,7 @@ INSTALL_DIR=/path/to/aegislure
 rm -rf "$INSTALL_DIR"
 ```
 
-## 网络入口
+<h2 align="center" id="network-ports">网络入口</h2>
 
 Docker 默认启用五类公开 profile，并使用正常项目端口；LocalAI 与 Sub2API 互斥，默认启用 Sub2API：
 
@@ -115,7 +140,7 @@ HP_ADMIN_PORT_BIND_IP=0.0.0.0
 
 在 VPS 上至少放行实际输出的 `HP_ADMIN_PORT`；公开蜜罐端口是否放行按用途决定。域名、云安全组、防火墙和 NAT 属于 Docker 主机之外的设施，安装器会输出地址但不会擅自修改它们。若自动探测的公网 IP 不适用，重新执行时传入 `--public-host`。
 
-## IP 列表 API
+<h2 align="center" id="ip-list-api">IP 列表 API</h2>
 
 管理后台可以把当前隐藏管理地址的 `/api` 路径开放为只读 IP 风险列表接口。接口默认关闭，开启后只返回本地已经聚合出的 IP 指标，不会访问真实模型或上游服务。
 
@@ -226,7 +251,7 @@ curl -fsS -H 'X-API-Key: <API_KEY>' \
 
 常见错误：`401` 表示 key 缺失或无效，`404` 表示接口未启用，`400` 表示查询参数不合法，`429` 表示触发频率限制。
 
-## 数据库与 IP 情报
+<h2 align="center" id="database-intelligence">数据库与 IP 情报</h2>
 
 SQLite 是默认数据库。PostgreSQL 模式使用 `docker-compose.pg.yml`，内部数据库端口不会发布到宿主机；也可以通过 `HP_DATABASE_URL` 或 `HP_DATABASE_URL_FILE` 连接托管 PostgreSQL。
 
@@ -236,7 +261,7 @@ Docker Compose 的 `edge_net` 默认开启 masquerade，为 IPinfo API 查询提
 
 备份只能恢复到相同数据库类型，SQLite 与 PostgreSQL 之间不执行隐式迁移。
 
-## 安全与数据边界
+<h2 align="center" id="security-data">安全与数据边界</h2>
 
 - 所有模型响应、额度、密钥和账户数据均为虚拟数据。
 - 不执行真实模型推理、工具调用、URL 访问、重定向、下载或上游转发。
@@ -244,7 +269,7 @@ Docker Compose 的 `edge_net` 默认开启 masquerade，为 IPinfo API 查询提
 - 密码、Cookie、Authorization、验证码和 token 不以明文写入事件预览；新事件的完整受限原始请求只通过认证管理端展示，备份必须按敏感证据保护。
 - 风险分用于表示观测证据，不等同于真实身份或自动封禁决定。
 
-## 项目文件
+<h2 align="center" id="project-docs">项目文件</h2>
 
 - [运维说明](docs/OPERATIONS.md)
 - [架构说明](docs/ARCHITECTURE.md)
@@ -253,6 +278,6 @@ Docker Compose 的 `edge_net` 默认开启 masquerade，为 IPinfo API 查询提
 - [安全策略](SECURITY.md)
 - [第三方归属](NOTICE)
 
-## 许可证
+<h2 align="center" id="license">许可证</h2>
 
-本项目使用 AGPL v3.0 协议。使用、修改和分发本项目时请遵守许可证要求。
+本项目使用 MIT License。使用、修改和分发本项目时请遵守 [许可证条款](LICENSE)。
