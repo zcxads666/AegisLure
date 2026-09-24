@@ -1,3 +1,5 @@
+<p align="center"><strong>简体中文</strong> | <a href="README_EN.md">English</a></p>
+
 <h1 align="center"><img src="docs/images/logo.png" alt="AegisLure" width="220"></h1>
 
 <p align="center"><strong>AI/LLM 服务蜜罐与 IP 风险情报平台</strong></p>
@@ -281,3 +283,7 @@ Docker Compose 的 `edge_net` 默认开启 masquerade，为 IPinfo API 查询提
 <h2 align="center" id="license">许可证</h2>
 
 本项目使用 MIT License。使用、修改和分发本项目时请遵守 [许可证条款](LICENSE)。
+
+<h2 align="center" id="friends">友情链接</h2>
+
+<p align="center"><a href="https://linux.do/">Linux.Do — A new ideal community</a></p>
